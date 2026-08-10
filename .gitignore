@@ -1,0 +1,17 @@
+# Xcode / build products
+*.xcodeproj
+DerivedData/
+build/
+*.xcresult
+
+# XcodeGen output is generated from project.yml
+!project.yml
+
+# Third-party build artifacts (built via Scripts/build_dependencies.sh)
+ThirdParty/
+
+# Local signing configuration
+Config/Signing.xcconfig
+
+# macOS
+.DS_Store

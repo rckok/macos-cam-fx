@@ -1,0 +1,71 @@
+name: CameraEffects
+options:
+  bundleIdPrefix: com.ralphkok
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+
+configFiles:
+  Debug: Config/Signing.xcconfig
+  Release: Config/Signing.xcconfig
+
+settings:
+  base:
+    SWIFT_VERSION: "5.10"
+    CLANG_CXX_LANGUAGE_STANDARD: c++17
+    CODE_SIGN_STYLE: Automatic
+    CURRENT_PROJECT_VERSION: 1
+    MARKETING_VERSION: 0.1.0
+    ENABLE_HARDENED_RUNTIME: YES
+
+targets:
+  CameraEffects:
+    type: application
+    platform: macOS
+    sources:
+      - path: App/Sources
+      - path: Shared
+      - path: App/Resources/BuiltInEffects
+        type: folder
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ralphkok.CameraEffects
+        INFOPLIST_FILE: App/Info.plist
+        CODE_SIGN_ENTITLEMENTS: App/CameraEffects.entitlements
+        SWIFT_OBJC_BRIDGING_HEADER: App/Sources/Bridging/BridgingHeader.h
+        HEADER_SEARCH_PATHS:
+          - $(PROJECT_DIR)/Transpiler/include
+        LIBRARY_SEARCH_PATHS:
+          - $(PROJECT_DIR)/ThirdParty/lib
+        OTHER_LDFLAGS:
+          - -lShaderDeps
+          - -lc++
+    dependencies:
+      - target: ShaderTranspiler
+      - target: CameraEffectsExtension
+        embed: true
+
+  CameraEffectsExtension:
+    type: system-extension
+    platform: macOS
+    sources:
+      - path: Extension/Sources
+      - path: Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ralphkok.CameraEffects.Extension
+        INFOPLIST_FILE: Extension/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Extension/CameraEffectsExtension.entitlements
+        SWIFT_OBJC_INTERFACE_HEADER_NAME: ""
+
+  ShaderTranspiler:
+    type: library.static
+    platform: macOS
+    sources:
+      - path: Transpiler
+    settings:
+      base:
+        HEADER_SEARCH_PATHS:
+          - $(PROJECT_DIR)/ThirdParty/include
+          - $(PROJECT_DIR)/Transpiler/include
+        GCC_WARN_64_TO_32_BIT_CONVERSION: NO
