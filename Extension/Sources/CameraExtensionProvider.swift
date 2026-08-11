@@ -35,7 +35,7 @@ final class CameraExtensionDeviceSource: NSObject, CMIOExtensionDeviceSource {
         device = CMIOExtensionDevice(
             localizedName: localizedName,
             deviceID: VirtualCamera.deviceUID,
-            legacyDeviceID: nil,
+            legacyDeviceID: VirtualCamera.deviceUID.uuidString,
             source: self
         )
 
@@ -133,6 +133,7 @@ final class CameraExtensionDeviceSource: NSObject, CMIOExtensionDeviceSource {
             _sinkClient = client
             _sinkStreaming = true
         }
+        extensionLogger.info("Sink stream started, beginning consume loop")
         consumeNextBuffer(client: client)
     }
 
@@ -156,19 +157,26 @@ final class CameraExtensionDeviceSource: NSObject, CMIOExtensionDeviceSource {
             if let sampleBuffer {
                 let hostTimeNs = UInt64(clock_gettime_nsec_np(CLOCK_UPTIME_RAW))
                 self._stateQueue.sync { self._lastSinkFrameHostTime = hostTimeNs }
-                // Always republish to clients of the source stream. If nobody is
-                // watching yet, still consume so the app's queue does not stall.
-                self._sourceStreamSource.stream.send(
-                    sampleBuffer,
-                    discontinuity: discontinuity,
+
+                // Forward to video-call clients only when someone is watching the source stream.
+                if self._stateQueue.sync(execute: { self._streamingCounter > 0 }) {
+                    self._sourceStreamSource.stream.send(
+                        sampleBuffer,
+                        discontinuity: discontinuity,
+                        hostTimeInNanoseconds: hostTimeNs
+                    )
+                }
+
+                // Tell the host app this buffer was consumed so it can enqueue the next one.
+                let scheduledOutput = CMIOExtensionScheduledOutput(
+                    sequenceNumber: sequenceNumber,
                     hostTimeInNanoseconds: hostTimeNs
                 )
-                self._sinkStreamSource.notifyConsumed()
+                self._sinkStreamSource.stream.notifyScheduledOutputChanged(scheduledOutput)
             }
             if let error {
                 extensionLogger.error("consumeSampleBuffer error: \(error.localizedDescription, privacy: .public)")
             }
-            // Keep pulling as long as the sink client is streaming.
             self.consumeNextBuffer(client: client)
         }
     }
@@ -182,10 +190,9 @@ final class CameraExtensionDeviceSource: NSObject, CMIOExtensionDeviceSource {
         timer.schedule(deadline: .now(), repeating: 1.0 / Double(VirtualCamera.frameRate), leeway: .milliseconds(5))
         timer.setEventHandler { [weak self] in
             guard let self else { return }
+            // While the app is feeding the sink, don't overlay the placeholder card.
+            if self._stateQueue.sync(execute: { self._sinkStreaming }) { return }
             let nowNs = UInt64(clock_gettime_nsec_np(CLOCK_UPTIME_RAW))
-            let lastSink = self._stateQueue.sync { self._lastSinkFrameHostTime }
-            // If the app delivered a frame within the last half second, stay quiet.
-            if lastSink != 0, nowNs &- lastSink < 500_000_000 { return }
             self.emitPlaceholderFrame(hostTimeNs: nowNs)
         }
         timer.resume()
@@ -374,7 +381,6 @@ final class CameraExtensionSinkStreamSource: NSObject, CMIOExtensionStreamSource
     private let _streamFormat: CMIOExtensionStreamFormat
     private weak var _deviceSource: CameraExtensionDeviceSource?
     private var _client: CMIOExtensionClient?
-    private var _consumedCount: UInt64 = 0
 
     init(
         localizedName: String,
@@ -418,7 +424,7 @@ final class CameraExtensionSinkStreamSource: NSObject, CMIOExtensionStreamSource
             streamProperties.frameDuration = CMTime(value: 1, timescale: CMTimeScale(VirtualCamera.frameRate))
         }
         if properties.contains(.streamSinkBufferQueueSize) {
-            streamProperties.sinkBufferQueueSize = 8
+            streamProperties.sinkBufferQueueSize = 3
         }
         if properties.contains(.streamSinkBuffersRequiredForStartup) {
             streamProperties.sinkBuffersRequiredForStartup = 1
@@ -446,10 +452,6 @@ final class CameraExtensionSinkStreamSource: NSObject, CMIOExtensionStreamSource
 
     func stopStream() throws {
         _deviceSource?.stopSinkStreaming()
-    }
-
-    func notifyConsumed() {
-        _consumedCount += 1
     }
 }
 

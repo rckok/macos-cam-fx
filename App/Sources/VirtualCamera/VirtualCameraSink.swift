@@ -1,3 +1,4 @@
+import AVFoundation
 import CoreMedia
 import CoreMediaIO
 import CoreVideo
@@ -5,6 +6,28 @@ import Foundation
 import os.log
 
 private let sinkLogger = Logger(subsystem: "studio.polyglot.CameraEffects", category: "sink")
+
+/// C callback invoked when the extension finishes consuming a sink buffer.
+private func sinkScheduledOutputProc(
+    sequenceNumber: UInt64,
+    outputHostTime: UInt64,
+    refcon: UnsafeMutableRawPointer?
+) {
+    guard let refcon else { return }
+    let sink = Unmanaged<VirtualCameraSink>.fromOpaque(refcon).takeUnretainedValue()
+    sink.markReadyToEnqueue()
+}
+
+/// C callback invoked when the sink stream's CMSimpleQueue is altered (space available).
+private func sinkQueueAlteredProc(
+    streamID: CMIOStreamID,
+    token: UnsafeMutableRawPointer?,
+    refcon: UnsafeMutableRawPointer?
+) {
+    guard let refcon else { return }
+    let sink = Unmanaged<VirtualCameraSink>.fromOpaque(refcon).takeUnretainedValue()
+    sink.markReadyToEnqueue()
+}
 
 /// Publishes rendered frames to the camera extension by locating the virtual
 /// camera's sink stream through the CoreMediaIO C API and enqueueing sample
@@ -40,12 +63,21 @@ final class VirtualCameraSink: ObservableObject {
     private var streamStarted = false
     private var formatDescription: CMFormatDescription?
     private var reconnectTimer: DispatchSourceTimer?
-    private var framesEnqueued: UInt64 = 0
+    private var nextSequenceNumber: UInt64 = 0
+    private var readyToEnqueue = false
+
+    init() {
+        Self.enableVirtualCameraDevices()
+    }
+
+    fileprivate func markReadyToEnqueue() {
+        queue.async { [weak self] in
+            self?.readyToEnqueue = true
+        }
+    }
 
     // MARK: Connection
 
-    /// Attempts to find the extension's device and open its sink stream.
-    /// Safe to call repeatedly; retries until the extension is installed.
     func connect() {
         queue.async { [weak self] in
             self?.connectLocked()
@@ -63,6 +95,8 @@ final class VirtualCameraSink: ObservableObject {
             self.sinkStreamID = nil
             self.deviceID = nil
             self.formatDescription = nil
+            self.readyToEnqueue = false
+            self.nextSequenceNumber = 0
             DispatchQueue.main.async {
                 self.isConnected = false
             }
@@ -94,7 +128,7 @@ final class VirtualCameraSink: ObservableObject {
     private func connectLocked() {
         guard bufferQueue == nil else { return }
 
-        guard let deviceID = findDevice(uid: VirtualCamera.deviceUID.uuidString) else {
+        guard let deviceID = findDevice() else {
             setError("Virtual camera device not found — is the extension installed and approved?")
             return
         }
@@ -103,11 +137,13 @@ final class VirtualCameraSink: ObservableObject {
             return
         }
 
+        let refcon = Unmanaged.passUnretained(self).toOpaque()
+
         var queueOut: Unmanaged<CMSimpleQueue>?
         let queueStatus = CMIOStreamCopyBufferQueue(
             sinkStreamID,
-            { _, _, _ in },
-            nil,
+            sinkQueueAlteredProc,
+            refcon,
             &queueOut
         )
         guard queueStatus == noErr, let queueOut else {
@@ -115,9 +151,31 @@ final class VirtualCameraSink: ObservableObject {
             return
         }
 
+        var procAndRefCon = CMIOStreamScheduledOutputNotificationProcAndRefCon(
+            scheduledOutputNotificationProc: sinkScheduledOutputProc,
+            scheduledOutputNotificationRefCon: refcon
+        )
+        var sonpAddress = CMIOObjectPropertyAddress(
+            mSelector: CMIOObjectPropertySelector(kCMIOStreamPropertyScheduledOutputNotificationProc),
+            mScope: CMIOObjectPropertyScope(kCMIOObjectPropertyScopeGlobal),
+            mElement: CMIOObjectPropertyElement(kCMIOObjectPropertyElementMain)
+        )
+        let sonpStatus = CMIOObjectSetPropertyData(
+            sinkStreamID,
+            &sonpAddress,
+            0,
+            nil,
+            UInt32(MemoryLayout<CMIOStreamScheduledOutputNotificationProcAndRefCon>.size),
+            &procAndRefCon
+        )
+        guard sonpStatus == noErr else {
+            setError("Failed to register sink output callback (status \(sonpStatus))")
+            return
+        }
+
         self.deviceID = deviceID
         self.sinkStreamID = sinkStreamID
-        self.bufferQueue = queueOut.takeRetainedValue()
+        self.bufferQueue = queueOut.takeUnretainedValue()
 
         let startStatus = CMIODeviceStartStream(deviceID, sinkStreamID)
         guard startStatus == noErr else {
@@ -129,7 +187,8 @@ final class VirtualCameraSink: ObservableObject {
         }
 
         streamStarted = true
-        framesEnqueued = 0
+        nextSequenceNumber = 0
+        readyToEnqueue = true
         sinkLogger.info("Connected to virtual camera sink stream")
         DispatchQueue.main.async {
             self.isConnected = true
@@ -147,7 +206,6 @@ final class VirtualCameraSink: ObservableObject {
 
     // MARK: Frame delivery
 
-    /// Enqueues one rendered frame. Called from a Metal completion handler.
     func send(pixelBuffer: CVPixelBuffer, timestamp: CMTime) {
         guard enabled else { return }
         queue.async { [weak self] in
@@ -155,19 +213,15 @@ final class VirtualCameraSink: ObservableObject {
             if self.bufferQueue == nil {
                 self.connectLocked()
             }
-            guard let bufferQueue = self.bufferQueue else { return }
+            guard self.bufferQueue != nil else { return }
+            guard self.readyToEnqueue else { return }
 
             let width = CVPixelBufferGetWidth(pixelBuffer)
             let height = CVPixelBufferGetHeight(pixelBuffer)
             guard width == VirtualCamera.width, height == VirtualCamera.height else {
-                // Drop mismatched frames rather than poison the sink stream.
                 sinkLogger.error("Dropping frame with unexpected size \(width)x\(height)")
                 return
             }
-
-            let capacity = CMSimpleQueueGetCapacity(bufferQueue)
-            let count = CMSimpleQueueGetCount(bufferQueue)
-            guard count < capacity else { return }
 
             if self.formatDescription == nil {
                 var description: CMFormatDescription?
@@ -186,20 +240,31 @@ final class VirtualCameraSink: ObservableObject {
                 decodeTimeStamp: .invalid
             )
             var sampleBuffer: CMSampleBuffer?
-            let status = CMSampleBufferCreateReadyWithImageBuffer(
+            let createStatus = CMSampleBufferCreateReadyWithImageBuffer(
                 allocator: kCFAllocatorDefault,
                 imageBuffer: pixelBuffer,
                 formatDescription: formatDescription,
                 sampleTiming: &timing,
                 sampleBufferOut: &sampleBuffer
             )
-            guard status == noErr, let sampleBuffer else { return }
+            guard createStatus == noErr, let sampleBuffer else { return }
 
-            let enqueueStatus = CMSimpleQueueEnqueue(bufferQueue, element: Unmanaged.passRetained(sampleBuffer).toOpaque())
+            // CMIO sink streams require monotonically increasing sequence numbers.
+            CMIOSampleBufferSetSequenceNumber(
+                kCFAllocatorDefault,
+                sampleBuffer,
+                self.nextSequenceNumber
+            )
+            self.nextSequenceNumber &+= 1
+
+            guard let bufferQueue = self.bufferQueue else { return }
+            let enqueueStatus = CMSimpleQueueEnqueue(
+                bufferQueue,
+                element: Unmanaged.passRetained(sampleBuffer).toOpaque()
+            )
             if enqueueStatus == noErr {
-                self.framesEnqueued += 1
+                self.readyToEnqueue = false
             } else {
-                // Balance the retain from passRetained if enqueue failed.
                 Unmanaged<CMSampleBuffer>.passUnretained(sampleBuffer).release()
                 sinkLogger.error("CMSimpleQueueEnqueue failed: \(enqueueStatus)")
             }
@@ -208,16 +273,43 @@ final class VirtualCameraSink: ObservableObject {
 
     // MARK: CMIO object graph lookup
 
-    private func propertyAddress(_ selector: CMIOObjectPropertySelector) -> CMIOObjectPropertyAddress {
-        CMIOObjectPropertyAddress(
-            mSelector: selector,
+    private static func enableVirtualCameraDevices() {
+        var address = CMIOObjectPropertyAddress(
+            mSelector: CMIOObjectPropertySelector(kCMIOHardwarePropertyAllowScreenCaptureDevices),
             mScope: CMIOObjectPropertyScope(kCMIOObjectPropertyScopeGlobal),
             mElement: CMIOObjectPropertyElement(kCMIOObjectPropertyElementMain)
         )
+        var allow: UInt32 = 1
+        CMIOObjectSetPropertyData(
+            CMIOObjectID(kCMIOObjectSystemObject),
+            &address,
+            0,
+            nil,
+            UInt32(MemoryLayout<UInt32>.size),
+            &allow
+        )
+    }
+
+    /// Finds the virtual camera CMIO device by matching the AVFoundation device UID.
+    private func findDevice() -> CMIODeviceID? {
+        let discovery = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.external],
+            mediaType: .video,
+            position: .unspecified
+        )
+        guard let avDevice = discovery.devices.first(where: { $0.localizedName == VirtualCamera.deviceName }) else {
+            // Fall back to the fixed UUID from our extension manifest.
+            return findDevice(uid: VirtualCamera.deviceUID.uuidString)
+        }
+        return findDevice(uid: avDevice.uniqueID)
     }
 
     private func findDevice(uid: String) -> CMIODeviceID? {
-        var address = propertyAddress(CMIOObjectPropertySelector(kCMIOHardwarePropertyDevices))
+        var address = CMIOObjectPropertyAddress(
+            mSelector: CMIOObjectPropertySelector(kCMIOHardwarePropertyDevices),
+            mScope: CMIOObjectPropertyScope(kCMIOObjectPropertyScopeGlobal),
+            mElement: CMIOObjectPropertyElement(kCMIOObjectPropertyElementMain)
+        )
         var dataSize: UInt32 = 0
         guard CMIOObjectGetPropertyDataSize(
             CMIOObjectID(kCMIOObjectSystemObject), &address, 0, nil, &dataSize
@@ -240,7 +332,11 @@ final class VirtualCameraSink: ObservableObject {
     }
 
     private func deviceUID(of deviceID: CMIODeviceID) -> String? {
-        var address = propertyAddress(CMIOObjectPropertySelector(kCMIODevicePropertyDeviceUID))
+        var address = CMIOObjectPropertyAddress(
+            mSelector: CMIOObjectPropertySelector(kCMIODevicePropertyDeviceUID),
+            mScope: CMIOObjectPropertyScope(kCMIOObjectPropertyScopeGlobal),
+            mElement: CMIOObjectPropertyElement(kCMIOObjectPropertyElementMain)
+        )
         var dataSize: UInt32 = 0
         guard CMIOObjectGetPropertyDataSize(deviceID, &address, 0, nil, &dataSize) == noErr else { return nil }
 
@@ -253,8 +349,13 @@ final class VirtualCameraSink: ObservableObject {
         return uid as String
     }
 
+    /// The sink stream is always the second stream (source first, sink second).
     private func findSinkStream(deviceID: CMIODeviceID) -> CMIOStreamID? {
-        var address = propertyAddress(CMIOObjectPropertySelector(kCMIODevicePropertyStreams))
+        var address = CMIOObjectPropertyAddress(
+            mSelector: CMIOObjectPropertySelector(kCMIODevicePropertyStreams),
+            mScope: CMIOObjectPropertyScope(kCMIOObjectPropertyScopeGlobal),
+            mElement: CMIOObjectPropertyElement(kCMIOObjectPropertyElementMain)
+        )
         var dataSize: UInt32 = 0
         guard CMIOObjectGetPropertyDataSize(deviceID, &address, 0, nil, &dataSize) == noErr,
               dataSize > 0 else { return nil }
@@ -266,18 +367,7 @@ final class VirtualCameraSink: ObservableObject {
             deviceID, &address, 0, nil, dataSize, &dataUsed, &streamIDs
         ) == noErr else { return nil }
 
-        // The sink stream has direction 1 (host -> device).
-        for streamID in streamIDs {
-            var directionAddress = propertyAddress(CMIOObjectPropertySelector(kCMIOStreamPropertyDirection))
-            var direction: UInt32 = 0
-            var used: UInt32 = 0
-            let size = UInt32(MemoryLayout<UInt32>.size)
-            if CMIOObjectGetPropertyData(streamID, &directionAddress, 0, nil, size, &used, &direction) == noErr,
-               direction == 1 {
-                return streamID
-            }
-        }
-        // Fallback: providers commonly expose [source, sink] in that order.
-        return streamIDs.count > 1 ? streamIDs[1] : nil
+        guard streamIDs.count >= 2 else { return nil }
+        return streamIDs[1]
     }
 }
