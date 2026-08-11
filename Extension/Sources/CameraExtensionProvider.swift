@@ -5,7 +5,7 @@ import Foundation
 import IOKit.audio
 import os.log
 
-let extensionLogger = Logger(subsystem: "com.ralphkok.CameraEffects.Extension", category: "provider")
+let extensionLogger = Logger(subsystem: "studio.polyglot.CameraEffects.Extension", category: "provider")
 
 // MARK: - Device source
 
@@ -437,7 +437,7 @@ final class CameraExtensionSinkStreamSource: NSObject, CMIOExtensionStreamSource
 
     func startStream() throws {
         guard let client = _client else {
-            throw NSError(domain: "com.ralphkok.CameraEffects.Extension", code: 1, userInfo: [
+            throw NSError(domain: "studio.polyglot.CameraEffects.Extension", code: 1, userInfo: [
                 NSLocalizedDescriptionKey: "No authorized sink client"
             ])
         }

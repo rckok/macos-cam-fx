@@ -23,5 +23,7 @@
 		<key>CMIOExtensionMachServiceName</key>
 		<string>$(TeamIdentifierPrefix)$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 	</dict>
+	<key>NSSystemExtensionUsageDescription</key>
+	<string>Provides the Camera Effects virtual camera that streams your effect-processed video feed to other apps.</string>
 </dict>
 </plist>

@@ -1,6 +1,6 @@
 name: CameraEffects
 options:
-  bundleIdPrefix: com.ralphkok
+  bundleIdPrefix: studio.polyglot
   deploymentTarget:
     macOS: "14.0"
   createIntermediateGroups: true
@@ -18,6 +18,16 @@ settings:
     MARKETING_VERSION: 0.1.0
     ENABLE_HARDENED_RUNTIME: YES
 
+schemes:
+  CameraEffects:
+    build:
+      targets:
+        CameraEffects: all
+    run:
+      config: Debug
+    archive:
+      config: Release
+
 targets:
   CameraEffects:
     type: application
@@ -29,7 +39,7 @@ targets:
         type: folder
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.ralphkok.CameraEffects
+        PRODUCT_BUNDLE_IDENTIFIER: studio.polyglot.CameraEffects
         INFOPLIST_FILE: App/Info.plist
         CODE_SIGN_ENTITLEMENTS: App/CameraEffects.entitlements
         SWIFT_OBJC_BRIDGING_HEADER: App/Sources/Bridging/BridgingHeader.h
@@ -53,7 +63,10 @@ targets:
       - path: Shared
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.ralphkok.CameraEffects.Extension
+        PRODUCT_BUNDLE_IDENTIFIER: studio.polyglot.CameraEffects.Extension
+        # sysextd requires the .systemextension bundle to be named after its
+        # bundle identifier, otherwise activation fails with "extension not found".
+        PRODUCT_NAME: $(PRODUCT_BUNDLE_IDENTIFIER)
         INFOPLIST_FILE: Extension/Info.plist
         CODE_SIGN_ENTITLEMENTS: Extension/CameraEffectsExtension.entitlements
         SWIFT_OBJC_INTERFACE_HEADER_NAME: ""

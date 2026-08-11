@@ -59,15 +59,15 @@ allow developer mode via `systemextensionsctl developer on`). So:
 4. "Camera Effects" now appears as a camera in any video-call app. Toggle
    **Virtual Camera** in the toolbar to stream your processed feed to it.
 
-To remove: `systemextensionsctl uninstall <team-id> com.ralphkok.CameraEffects.Extension`.
+To remove: `systemextensionsctl uninstall <team-id> studio.polyglot.CameraEffects.Extension`.
 
-> If you fork this project, change the `com.ralphkok` bundle-ID prefix in
+> If you fork this project, change the `studio.polyglot` bundle-ID prefix in
 > `project.yml` to your own.
 
 ## Writing effects
 
 Effects live in the app's sandbox container at
-`~/Library/Containers/com.ralphkok.CameraEffects/Data/Library/Application Support/CameraEffects/Effects/`,
+`~/Library/Containers/studio.polyglot.CameraEffects/Data/Library/Application Support/CameraEffects/Effects/`,
 one folder per effect containing `shader.frag` (GLSL) and `effect.json`
 (name + saved parameter values). You can edit them in the app's editor
 (recompiles as you type) or in an external editor (hot-reloads on save).

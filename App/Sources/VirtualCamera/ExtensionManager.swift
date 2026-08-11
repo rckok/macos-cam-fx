@@ -26,7 +26,7 @@ final class ExtensionManager: NSObject, ObservableObject {
     @Published private(set) var status: Status = .unknown
 
     static var extensionBundleIdentifier: String {
-        (Bundle.main.bundleIdentifier ?? "com.ralphkok.CameraEffects") + ".Extension"
+        (Bundle.main.bundleIdentifier ?? "studio.polyglot.CameraEffects") + ".Extension"
     }
 
     func install() {
