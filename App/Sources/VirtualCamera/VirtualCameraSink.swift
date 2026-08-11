@@ -15,7 +15,7 @@ private func sinkScheduledOutputProc(
 ) {
     guard let refcon else { return }
     let sink = Unmanaged<VirtualCameraSink>.fromOpaque(refcon).takeUnretainedValue()
-    sink.markReadyToEnqueue()
+    sink.scheduleDrain()
 }
 
 /// C callback invoked when the sink stream's CMSimpleQueue is altered (space available).
@@ -26,7 +26,7 @@ private func sinkQueueAlteredProc(
 ) {
     guard let refcon else { return }
     let sink = Unmanaged<VirtualCameraSink>.fromOpaque(refcon).takeUnretainedValue()
-    sink.markReadyToEnqueue()
+    sink.scheduleDrain()
 }
 
 /// Publishes rendered frames to the camera extension by locating the virtual
@@ -56,7 +56,7 @@ final class VirtualCameraSink: ObservableObject {
         }
     }
 
-    private let queue = DispatchQueue(label: "cameraEffects.sink")
+    private let queue = DispatchQueue(label: "cameraEffects.sink", qos: .userInteractive)
     private var deviceID: CMIODeviceID?
     private var sinkStreamID: CMIOStreamID?
     private var bufferQueue: CMSimpleQueue?
@@ -64,15 +64,18 @@ final class VirtualCameraSink: ObservableObject {
     private var formatDescription: CMFormatDescription?
     private var reconnectTimer: DispatchSourceTimer?
     private var nextSequenceNumber: UInt64 = 0
-    private var readyToEnqueue = false
+
+    /// Latest rendered frame waiting for a free sink-queue slot (always freshest).
+    private var pendingPixelBuffer: CVPixelBuffer?
+    private var pendingTimestamp: CMTime = .invalid
 
     init() {
         Self.enableVirtualCameraDevices()
     }
 
-    fileprivate func markReadyToEnqueue() {
+    fileprivate func scheduleDrain() {
         queue.async { [weak self] in
-            self?.readyToEnqueue = true
+            self?.drainPendingFrames()
         }
     }
 
@@ -95,7 +98,7 @@ final class VirtualCameraSink: ObservableObject {
             self.sinkStreamID = nil
             self.deviceID = nil
             self.formatDescription = nil
-            self.readyToEnqueue = false
+            self.pendingPixelBuffer = nil
             self.nextSequenceNumber = 0
             DispatchQueue.main.async {
                 self.isConnected = false
@@ -188,12 +191,12 @@ final class VirtualCameraSink: ObservableObject {
 
         streamStarted = true
         nextSequenceNumber = 0
-        readyToEnqueue = true
         sinkLogger.info("Connected to virtual camera sink stream")
         DispatchQueue.main.async {
             self.isConnected = true
             self.lastError = nil
         }
+        drainPendingFrames()
     }
 
     private func setError(_ message: String) {
@@ -214,61 +217,89 @@ final class VirtualCameraSink: ObservableObject {
                 self.connectLocked()
             }
             guard self.bufferQueue != nil else { return }
-            guard self.readyToEnqueue else { return }
 
-            let width = CVPixelBufferGetWidth(pixelBuffer)
-            let height = CVPixelBufferGetHeight(pixelBuffer)
-            guard width == VirtualCamera.width, height == VirtualCamera.height else {
-                sinkLogger.error("Dropping frame with unexpected size \(width)x\(height)")
-                return
-            }
+            // Always keep only the freshest frame; drain when slots are available.
+            self.pendingPixelBuffer = pixelBuffer
+            self.pendingTimestamp = timestamp
+            self.drainPendingFrames()
+        }
+    }
 
-            if self.formatDescription == nil {
-                var description: CMFormatDescription?
-                CMVideoFormatDescriptionCreateForImageBuffer(
-                    allocator: kCFAllocatorDefault,
-                    imageBuffer: pixelBuffer,
-                    formatDescriptionOut: &description
-                )
-                self.formatDescription = description
-            }
-            guard let formatDescription = self.formatDescription else { return }
+    /// Enqueues as many pending frames as the sink queue has room for.
+    private func drainPendingFrames() {
+        guard let bufferQueue else { return }
 
-            var timing = CMSampleTimingInfo(
-                duration: CMTime(value: 1, timescale: CMTimeScale(VirtualCamera.frameRate)),
-                presentationTimeStamp: CMClockGetTime(CMClockGetHostTimeClock()),
-                decodeTimeStamp: .invalid
-            )
-            var sampleBuffer: CMSampleBuffer?
-            let createStatus = CMSampleBufferCreateReadyWithImageBuffer(
-                allocator: kCFAllocatorDefault,
-                imageBuffer: pixelBuffer,
-                formatDescription: formatDescription,
-                sampleTiming: &timing,
-                sampleBufferOut: &sampleBuffer
-            )
-            guard createStatus == noErr, let sampleBuffer else { return }
+        while CMSimpleQueueGetCount(bufferQueue) < CMSimpleQueueGetCapacity(bufferQueue),
+              let pixelBuffer = pendingPixelBuffer {
+            let timestamp = pendingTimestamp
+            pendingPixelBuffer = nil
 
-            // CMIO sink streams require monotonically increasing sequence numbers.
-            CMIOSampleBufferSetSequenceNumber(
-                kCFAllocatorDefault,
-                sampleBuffer,
-                self.nextSequenceNumber
-            )
-            self.nextSequenceNumber &+= 1
-
-            guard let bufferQueue = self.bufferQueue else { return }
-            let enqueueStatus = CMSimpleQueueEnqueue(
-                bufferQueue,
-                element: Unmanaged.passRetained(sampleBuffer).toOpaque()
-            )
-            if enqueueStatus == noErr {
-                self.readyToEnqueue = false
+            if enqueueFrame(pixelBuffer, timestamp: timestamp) {
+                // A newer frame may have arrived while we were enqueueing; loop again.
+                continue
             } else {
-                Unmanaged<CMSampleBuffer>.passUnretained(sampleBuffer).release()
-                sinkLogger.error("CMSimpleQueueEnqueue failed: \(enqueueStatus)")
+                // Couldn't enqueue — put it back and try again when a slot opens.
+                pendingPixelBuffer = pixelBuffer
+                pendingTimestamp = timestamp
+                break
             }
         }
+    }
+
+    @discardableResult
+    private func enqueueFrame(_ pixelBuffer: CVPixelBuffer, timestamp: CMTime) -> Bool {
+        guard let bufferQueue else { return false }
+
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+        guard width == VirtualCamera.width, height == VirtualCamera.height else {
+            sinkLogger.error("Dropping frame with unexpected size \(width)x\(height)")
+            return false
+        }
+
+        if formatDescription == nil {
+            var description: CMFormatDescription?
+            CMVideoFormatDescriptionCreateForImageBuffer(
+                allocator: kCFAllocatorDefault,
+                imageBuffer: pixelBuffer,
+                formatDescriptionOut: &description
+            )
+            formatDescription = description
+        }
+        guard let formatDescription else { return false }
+
+        var timing = CMSampleTimingInfo(
+            duration: CMTime(value: 1, timescale: CMTimeScale(VirtualCamera.frameRate)),
+            presentationTimeStamp: timestamp.isValid ? timestamp : CMClockGetTime(CMClockGetHostTimeClock()),
+            decodeTimeStamp: .invalid
+        )
+        var sampleBuffer: CMSampleBuffer?
+        let createStatus = CMSampleBufferCreateReadyWithImageBuffer(
+            allocator: kCFAllocatorDefault,
+            imageBuffer: pixelBuffer,
+            formatDescription: formatDescription,
+            sampleTiming: &timing,
+            sampleBufferOut: &sampleBuffer
+        )
+        guard createStatus == noErr, let sampleBuffer else { return false }
+
+        CMIOSampleBufferSetSequenceNumber(
+            kCFAllocatorDefault,
+            sampleBuffer,
+            nextSequenceNumber
+        )
+        nextSequenceNumber &+= 1
+
+        let enqueueStatus = CMSimpleQueueEnqueue(
+            bufferQueue,
+            element: Unmanaged.passRetained(sampleBuffer).toOpaque()
+        )
+        if enqueueStatus != noErr {
+            Unmanaged<CMSampleBuffer>.passUnretained(sampleBuffer).release()
+            sinkLogger.error("CMSimpleQueueEnqueue failed: \(enqueueStatus)")
+            return false
+        }
+        return true
     }
 
     // MARK: CMIO object graph lookup
@@ -298,7 +329,6 @@ final class VirtualCameraSink: ObservableObject {
             position: .unspecified
         )
         guard let avDevice = discovery.devices.first(where: { $0.localizedName == VirtualCamera.deviceName }) else {
-            // Fall back to the fixed UUID from our extension manifest.
             return findDevice(uid: VirtualCamera.deviceUID.uuidString)
         }
         return findDevice(uid: avDevice.uniqueID)

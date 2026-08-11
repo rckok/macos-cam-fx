@@ -424,7 +424,7 @@ final class CameraExtensionSinkStreamSource: NSObject, CMIOExtensionStreamSource
             streamProperties.frameDuration = CMTime(value: 1, timescale: CMTimeScale(VirtualCamera.frameRate))
         }
         if properties.contains(.streamSinkBufferQueueSize) {
-            streamProperties.sinkBufferQueueSize = 3
+            streamProperties.sinkBufferQueueSize = 8
         }
         if properties.contains(.streamSinkBuffersRequiredForStartup) {
             streamProperties.sinkBuffersRequiredForStartup = 1

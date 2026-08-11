@@ -41,7 +41,7 @@ final class CaptureManager: NSObject, ObservableObject {
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
             kCVPixelBufferMetalCompatibilityKey as String: true,
         ]
-        videoOutput.alwaysDiscardsLateVideoFrames = true
+        videoOutput.alwaysDiscardsLateVideoFrames = false
         videoOutput.setSampleBufferDelegate(self, queue: captureQueue)
 
         discoveryObservation = discovery.observe(\.devices, options: [.initial]) { [weak self] _, _ in
@@ -110,8 +110,13 @@ final class CaptureManager: NSObject, ObservableObject {
                 if session.canAddInput(input) {
                     session.addInput(input)
                 }
+                try device.lockForConfiguration()
+                let frameDuration = CMTime(value: 1, timescale: CMTimeScale(VirtualCamera.frameRate))
+                device.activeVideoMinFrameDuration = frameDuration
+                device.activeVideoMaxFrameDuration = frameDuration
+                device.unlockForConfiguration()
             } catch {
-                NSLog("Failed to create capture input: \(error)")
+                NSLog("Failed to configure capture input: \(error)")
             }
             session.commitConfiguration()
             if !session.isRunning {
