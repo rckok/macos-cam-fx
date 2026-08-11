@@ -16,6 +16,7 @@ struct InspectorView: View {
                     ParameterControl(parameter: $parameter) {
                         state.parametersChanged(effect)
                     }
+                    .id("\(parameter.name)-\(parameter.type)-\(parameter.values.count)")
                 }
             }
         }
@@ -29,8 +30,8 @@ struct ParameterControl: View {
     let onChange: () -> Void
 
     var body: some View {
-        switch parameter.type {
-        case "float":
+        switch parameter.editorKind {
+        case .floatSlider:
             VStack(alignment: .leading, spacing: 4) {
                 LabeledContent(parameter.name) {
                     Text(String(format: "%.3f", parameter.values[0]))
@@ -45,7 +46,7 @@ struct ParameterControl: View {
                     in: parameter.minimum...max(parameter.maximum, parameter.minimum + 0.0001)
                 )
             }
-        case "int":
+        case .intSlider:
             VStack(alignment: .leading, spacing: 4) {
                 LabeledContent(parameter.name) {
                     Text("\(Int(parameter.values[0]))")
@@ -61,19 +62,30 @@ struct ParameterControl: View {
                     step: 1
                 )
             }
-        case "bool":
-            Toggle(parameter.name, isOn: Binding(
-                get: { parameter.values[0] != 0 },
-                set: { parameter.values[0] = $0 ? 1 : 0; onChange() }
-            ))
-        case "vec2":
+        case .toggle(let componentCount):
+            if componentCount == 1 {
+                Toggle(isOn: boolBinding(index: 0)) {
+                    Text(parameter.name)
+                }
+                .toggleStyle(.switch)
+            } else {
+                LabeledContent(parameter.name) {
+                    HStack(spacing: 12) {
+                        ForEach(0..<componentCount, id: \.self) { index in
+                            Toggle(componentLabel(index), isOn: boolBinding(index: index))
+                                .toggleStyle(.switch)
+                        }
+                    }
+                }
+            }
+        case .vec2Fields:
             LabeledContent(parameter.name) {
                 HStack {
                     componentField(index: 0, label: "x")
                     componentField(index: 1, label: "y")
                 }
             }
-        case "vec3", "vec4":
+        case .color(let supportsOpacity):
             ColorPicker(
                 parameter.name,
                 selection: Binding(
@@ -94,12 +106,29 @@ struct ParameterControl: View {
                         onChange()
                     }
                 ),
-                supportsOpacity: parameter.type == "vec4"
+                supportsOpacity: supportsOpacity
             )
-        default:
+        case .unsupported(let typeName):
             LabeledContent(parameter.name) {
-                Text(parameter.type).foregroundStyle(.secondary)
+                Text(typeName).foregroundStyle(.secondary)
             }
+        }
+    }
+
+    private func boolBinding(index: Int) -> Binding<Bool> {
+        Binding(
+            get: { parameter.values[index] != 0 },
+            set: { parameter.values[index] = $0 ? 1 : 0; onChange() }
+        )
+    }
+
+    private func componentLabel(_ index: Int) -> String {
+        switch index {
+        case 0: "x"
+        case 1: "y"
+        case 2: "z"
+        case 3: "w"
+        default: "\(index)"
         }
     }
 

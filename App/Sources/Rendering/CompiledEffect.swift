@@ -50,8 +50,10 @@ final class CompiledEffect {
             for (i, v) in values.enumerated() {
                 base.advanced(by: i * 4).storeBytes(of: Int32(v), as: Int32.self)
             }
-        case "uint", "bool":
-            base.storeBytes(of: UInt32(values.first ?? 0), as: UInt32.self)
+        case "uint", "bool", "uvec2", "uvec3", "uvec4", "bvec2", "bvec3", "bvec4":
+            for (i, v) in values.enumerated() {
+                base.advanced(by: i * 4).storeBytes(of: UInt32(v), as: UInt32.self)
+            }
         default:
             break
         }

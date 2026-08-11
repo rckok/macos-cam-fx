@@ -41,6 +41,10 @@ open CameraEffects.xcodeproj
 
 Build and run the `CameraEffects` scheme.
 
+The built app is at `build/Debug/CameraEffects.app` (project-relative Derived
+Data). **Do not** copy from `build/Build/Products/Debug/` — that path is stale
+from older builds and will not include recent changes.
+
 ## Installing the virtual camera (development)
 
 The `com.apple.developer.system-extension.install` entitlement requires a
@@ -102,9 +106,9 @@ void main() {
 ```
 
 Supported `Params` member types and their generated controls: `float`
-(slider), `int` (slider + stepper), `bool` (toggle), `vec2` (numeric fields),
-`vec3` / `vec4` (color picker). Parameter values and ranges are stored in the
-effect's `effect.json`.
+(slider), `int` (slider), `uint` (toggle switch — use this for boolean flags;
+std140 stores them as 0/1), `vec2` (numeric fields), `vec3` / `vec4` (color
+picker). Parameter values and ranges are stored in the effect's `effect.json`.
 
 ## Project layout
 

@@ -12,26 +12,75 @@ struct EffectParameter: Identifiable, Equatable {
 
     var id: String { name }
 
-    static func componentCount(for type: String) -> Int {
+    /// SPIR-V/std140 lowers GLSL `bool` to `uint`; normalize for UI and persistence.
+    static func normalizeReflectionType(_ type: String) -> String {
         switch type {
-        case "vec2", "ivec2": return 2
-        case "vec3", "ivec3": return 3
-        case "vec4", "ivec4": return 4
+        case "bool": return "uint"
+        case "bvec2": return "uvec2"
+        case "bvec3": return "uvec3"
+        case "bvec4": return "uvec4"
+        default: return type
+        }
+    }
+
+    /// Scalar/vector `uint` params are edited as on/off switches (use for boolean flags).
+    enum EditorKind: Equatable {
+        case floatSlider
+        case intSlider
+        case toggle(componentCount: Int)
+        case vec2Fields
+        case color(supportsOpacity: Bool)
+        case unsupported(String)
+    }
+
+    var editorKind: EditorKind {
+        switch Self.normalizeReflectionType(type) {
+        case "float":
+            return .floatSlider
+        case "int":
+            return .intSlider
+        case "ivec2", "ivec3", "ivec4":
+            return values.count == 1 ? .intSlider : .unsupported(type)
+        case "uint":
+            return .toggle(componentCount: 1)
+        case "uvec2":
+            return .toggle(componentCount: 2)
+        case "uvec3":
+            return .toggle(componentCount: 3)
+        case "uvec4":
+            return .toggle(componentCount: 4)
+        case "vec2":
+            return .vec2Fields
+        case "vec3":
+            return .color(supportsOpacity: false)
+        case "vec4":
+            return .color(supportsOpacity: true)
+        default:
+            return .unsupported(type)
+        }
+    }
+
+    static func componentCount(for type: String) -> Int {
+        switch normalizeReflectionType(type) {
+        case "vec2", "ivec2", "uvec2", "bvec2": return 2
+        case "vec3", "ivec3", "uvec3", "bvec3": return 3
+        case "vec4", "ivec4", "uvec4", "bvec4": return 4
         default: return 1
         }
     }
 
     static func makeDefault(name: String, type: String) -> EffectParameter {
-        let count = componentCount(for: type)
-        switch type {
-        case "bool":
-            return EffectParameter(name: name, type: type, values: [0], minimum: 0, maximum: 1)
-        case "int":
-            return EffectParameter(name: name, type: type, values: [0], minimum: 0, maximum: 10)
+        let normalized = normalizeReflectionType(type)
+        let count = componentCount(for: normalized)
+        switch normalized {
+        case "bool", "bvec2", "bvec3", "bvec4", "uint", "uvec2", "uvec3", "uvec4":
+            return EffectParameter(name: name, type: normalized, values: Array(repeating: 0, count: count), minimum: 0, maximum: 1)
+        case "int", "ivec2", "ivec3", "ivec4":
+            return EffectParameter(name: name, type: normalized, values: Array(repeating: 0, count: count), minimum: 0, maximum: 10)
         case "vec3", "vec4":
-            return EffectParameter(name: name, type: type, values: Array(repeating: 1, count: count), minimum: 0, maximum: 1)
+            return EffectParameter(name: name, type: normalized, values: Array(repeating: 1, count: count), minimum: 0, maximum: 1)
         default:
-            return EffectParameter(name: name, type: type, values: Array(repeating: 0.5, count: count), minimum: 0, maximum: 1)
+            return EffectParameter(name: name, type: normalized, values: Array(repeating: 0.5, count: count), minimum: 0, maximum: 1)
         }
     }
 }
@@ -39,6 +88,7 @@ struct EffectParameter: Identifiable, Equatable {
 /// On-disk manifest stored next to shader.frag in each effect folder.
 struct EffectManifest: Codable {
     struct Param: Codable {
+        var type: String?
         var value: [Double]
         var min: Double?
         var max: Double?
@@ -81,20 +131,22 @@ final class Effect: Identifiable, ObservableObject {
             return
         }
         parameters = block.members.map { member in
+            let type = EffectParameter.normalizeReflectionType(member.type)
+            let count = EffectParameter.componentCount(for: type)
             // Match persisted parameters by name; the type stored before the
             // first compile is provisional (inferred from component count),
             // so adopt the reflected type as long as the shape matches.
             if let existing = parameters.first(where: { $0.name == member.name }),
-               existing.values.count == EffectParameter.componentCount(for: member.type) {
+               existing.values.count == count {
                 return EffectParameter(
                     name: existing.name,
-                    type: member.type,
+                    type: type,
                     values: existing.values,
                     minimum: existing.minimum,
                     maximum: existing.maximum
                 )
             }
-            return EffectParameter.makeDefault(name: member.name, type: member.type)
+            return EffectParameter.makeDefault(name: member.name, type: type)
         }
     }
 
@@ -102,7 +154,8 @@ final class Effect: Identifiable, ObservableObject {
     func applyParameters() {
         guard let compiled else { return }
         for parameter in parameters {
-            compiled.writeParam(name: parameter.name, type: parameter.type, values: parameter.values)
+            let type = EffectParameter.normalizeReflectionType(parameter.type)
+            compiled.writeParam(name: parameter.name, type: type, values: parameter.values)
         }
     }
 
@@ -110,6 +163,7 @@ final class Effect: Identifiable, ObservableObject {
         var params: [String: EffectManifest.Param] = [:]
         for parameter in parameters {
             params[parameter.name] = EffectManifest.Param(
+                type: parameter.type,
                 value: parameter.values,
                 min: parameter.minimum,
                 max: parameter.maximum

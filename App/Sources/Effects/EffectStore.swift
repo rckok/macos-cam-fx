@@ -96,6 +96,15 @@ final class EffectStore: ObservableObject {
         effects = loaded
     }
 
+    private func inferredLegacyType(for param: EffectManifest.Param) -> String {
+        switch param.value.count {
+        case 2: return "vec2"
+        case 3: return "vec3"
+        case 4: return "vec4"
+        default: return "float"
+        }
+    }
+
     private func loadEffect(from folder: URL) -> Effect? {
         let shaderURL = folder.appendingPathComponent(Self.shaderFileName)
         guard let source = try? String(contentsOf: shaderURL, encoding: .utf8) else { return nil }
@@ -110,21 +119,15 @@ final class EffectStore: ObservableObject {
             name = manifest.name
             enabled = manifest.enabled ?? true
             for (paramName, param) in manifest.params ?? [:] {
-                // The concrete GLSL type is only known after compilation;
-                // infer a provisional type from the component count.
-                let type: String
-                switch param.value.count {
-                case 2: type = "vec2"
-                case 3: type = "vec3"
-                case 4: type = "vec4"
-                default: type = "float"
-                }
+                let type = EffectParameter.normalizeReflectionType(
+                    param.type ?? inferredLegacyType(for: param)
+                )
                 parameters.append(EffectParameter(
                     name: paramName,
                     type: type,
                     values: param.value,
-                    minimum: param.min ?? 0,
-                    maximum: param.max ?? 1
+                    minimum: param.min ?? EffectParameter.makeDefault(name: paramName, type: type).minimum,
+                    maximum: param.max ?? EffectParameter.makeDefault(name: paramName, type: type).maximum
                 ))
             }
         }
