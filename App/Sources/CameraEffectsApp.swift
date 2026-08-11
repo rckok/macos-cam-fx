@@ -8,7 +8,7 @@ struct CameraEffectsApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(state)
-                .frame(minWidth: 1100, minHeight: 640)
+                .frame(minWidth: 720, minHeight: 480)
         }
         .windowToolbarStyle(.unified)
     }

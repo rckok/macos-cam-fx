@@ -11,6 +11,22 @@ final class EffectStore: ObservableObject {
         var order: [String] = []
         var selectedDeviceID: String?
         var historyDepth: Int = 16
+        /// Mirror the incoming camera feed horizontally (default on, like FaceTime).
+        var flipHorizontal: Bool = true
+
+        enum CodingKeys: String, CodingKey {
+            case order, selectedDeviceID, historyDepth, flipHorizontal
+        }
+
+        init() {}
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            order = try container.decodeIfPresent([String].self, forKey: .order) ?? []
+            selectedDeviceID = try container.decodeIfPresent(String.self, forKey: .selectedDeviceID)
+            historyDepth = try container.decodeIfPresent(Int.self, forKey: .historyDepth) ?? 16
+            flipHorizontal = try container.decodeIfPresent(Bool.self, forKey: .flipHorizontal) ?? true
+        }
     }
 
     @Published private(set) var effects: [Effect] = []

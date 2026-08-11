@@ -156,13 +156,13 @@ final class CameraExtensionDeviceSource: NSObject, CMIOExtensionDeviceSource {
             if let sampleBuffer {
                 let hostTimeNs = UInt64(clock_gettime_nsec_np(CLOCK_UPTIME_RAW))
                 self._stateQueue.sync { self._lastSinkFrameHostTime = hostTimeNs }
-                if self._stateQueue.sync(execute: { self._streamingCounter > 0 }) {
-                    self._sourceStreamSource.stream.send(
-                        sampleBuffer,
-                        discontinuity: discontinuity,
-                        hostTimeInNanoseconds: hostTimeNs
-                    )
-                }
+                // Always republish to clients of the source stream. If nobody is
+                // watching yet, still consume so the app's queue does not stall.
+                self._sourceStreamSource.stream.send(
+                    sampleBuffer,
+                    discontinuity: discontinuity,
+                    hostTimeInNanoseconds: hostTimeNs
+                )
                 self._sinkStreamSource.notifyConsumed()
             }
             if let error {

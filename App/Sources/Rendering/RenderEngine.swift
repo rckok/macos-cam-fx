@@ -25,6 +25,7 @@ final class RenderEngine {
     private var textureCache: CVMetalTextureCache!
     let vertexFunction: MTLFunction
     private let blitPipeline: MTLRenderPipelineState
+    private let flipHPipeline: MTLRenderPipelineState
     private let sampler: MTLSamplerState
 
     private let lock = NSLock()
@@ -32,12 +33,17 @@ final class RenderEngine {
     // Protected by `lock`:
     private var effects: [CompiledEffect] = []
     private var historyDepth: Int = 16
+    private var flipHorizontal: Bool = true
+
+    // Working resolution is always the virtual-camera size so the sink stream
+    // receives buffers that match its declared format.
+    private let outputWidth = VirtualCamera.width
+    private let outputHeight = VirtualCamera.height
 
     // Only touched on the capture/render thread:
     private var historyTexture: MTLTexture?
+    private var workingTexture: MTLTexture?
     private var pingPong: [MTLTexture] = []
-    private var frameWidth = 0
-    private var frameHeight = 0
     private var allocatedDepth = 0
     private var head = -1
     private var filledSlices = 0
@@ -65,17 +71,22 @@ final class RenderEngine {
 
         let library = try device.makeLibrary(source: BuiltinShaders.source, options: nil)
         guard let vertex = library.makeFunction(name: "ce_fullscreen_vertex"),
-              let blitFragment = library.makeFunction(name: "ce_blit_fragment")
+              let blitFragment = library.makeFunction(name: "ce_blit_fragment"),
+              let flipFragment = library.makeFunction(name: "ce_blit_flip_h_fragment")
         else {
             throw NSError(domain: "CameraEffects", code: 2, userInfo: [NSLocalizedDescriptionKey: "Missing builtin shader functions"])
         }
         self.vertexFunction = vertex
 
-        let blitDescriptor = MTLRenderPipelineDescriptor()
-        blitDescriptor.vertexFunction = vertex
-        blitDescriptor.fragmentFunction = blitFragment
-        blitDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
-        self.blitPipeline = try device.makeRenderPipelineState(descriptor: blitDescriptor)
+        let makePipeline: (MTLFunction) throws -> MTLRenderPipelineState = { fragment in
+            let descriptor = MTLRenderPipelineDescriptor()
+            descriptor.vertexFunction = vertex
+            descriptor.fragmentFunction = fragment
+            descriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+            return try device.makeRenderPipelineState(descriptor: descriptor)
+        }
+        self.blitPipeline = try makePipeline(blitFragment)
+        self.flipHPipeline = try makePipeline(flipFragment)
 
         let samplerDescriptor = MTLSamplerDescriptor()
         samplerDescriptor.minFilter = .linear
@@ -103,42 +114,56 @@ final class RenderEngine {
         lock.unlock()
     }
 
+    func setFlipHorizontal(_ flip: Bool) {
+        lock.lock()
+        flipHorizontal = flip
+        lock.unlock()
+    }
+
     // MARK: Frame processing (called on the capture queue)
 
     func process(pixelBuffer: CVPixelBuffer, timestamp: CMTime) {
         lock.lock()
         let currentEffects = effects
         let depth = historyDepth
+        let flip = flipHorizontal
         lock.unlock()
 
         guard let frameTexture = makeTexture(from: pixelBuffer) else { return }
 
-        let width = CVPixelBufferGetWidth(pixelBuffer)
-        let height = CVPixelBufferGetHeight(pixelBuffer)
-        ensureResources(width: width, height: height, depth: depth)
-        guard let historyTexture, let outputPool else { return }
+        ensureResources(depth: depth)
+        guard let historyTexture, let workingTexture, let outputPool else { return }
 
         guard let commandBuffer = commandQueue.makeCommandBuffer() else { return }
 
-        // 1. Append the new frame to the history ring (slice `head`).
+        // 1. Scale (+ optional mirror) the capture frame into the fixed working
+        //    resolution that matches the virtual camera.
+        encodeBlit(
+            commandBuffer: commandBuffer,
+            pipeline: flip ? flipHPipeline : blitPipeline,
+            source: frameTexture,
+            destination: workingTexture
+        )
+
+        // 2. Append the processed frame to the history ring (slice `head`).
         head = (head + 1) % allocatedDepth
         filledSlices = min(filledSlices + 1, allocatedDepth)
         if let blit = commandBuffer.makeBlitCommandEncoder() {
             blit.copy(
-                from: frameTexture, sourceSlice: 0, sourceLevel: 0,
+                from: workingTexture, sourceSlice: 0, sourceLevel: 0,
                 sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
-                sourceSize: MTLSize(width: width, height: height, depth: 1),
+                sourceSize: MTLSize(width: outputWidth, height: outputHeight, depth: 1),
                 to: historyTexture, destinationSlice: 0, destinationLevel: 0,
                 destinationOrigin: MTLOrigin(x: 0, y: 0, z: head)
             )
             blit.endEncoding()
         }
 
-        // 2. Timing / context uniforms.
+        // 3. Timing / context uniforms.
         let now = CACurrentMediaTime()
         if startTime == nil { startTime = now }
         var context = ContextUniforms(
-            resolution: SIMD2<Float>(Float(width), Float(height)),
+            resolution: SIMD2<Float>(Float(outputWidth), Float(outputHeight)),
             time: Float(now - (startTime ?? now)),
             timeDelta: Float(now - (lastFrameTime ?? now)),
             frameCount: Int32(allocatedDepth),
@@ -148,8 +173,8 @@ final class RenderEngine {
         lastFrameTime = now
         frameNumber &+= 1
 
-        // 3. Run the effect chain, ping-ponging between offscreen textures.
-        var currentInput: MTLTexture = frameTexture
+        // 4. Run the effect chain, ping-ponging between offscreen textures.
+        var currentInput: MTLTexture = workingTexture
         var pingPongIndex = 0
         for effect in currentEffects {
             let target = pingPong[pingPongIndex]
@@ -196,8 +221,8 @@ final class RenderEngine {
             currentInput = target
         }
 
-        // 4. Copy the final image into a fresh IOSurface-backed pixel buffer
-        //    for the virtual camera sink.
+        // 5. Copy the final image into a fresh IOSurface-backed pixel buffer
+        //    for the virtual camera sink (always VirtualCamera dimensions).
         var outputBuffer: CVPixelBuffer?
         CVPixelBufferPoolCreatePixelBufferWithAuxAttributes(kCFAllocatorDefault, outputPool, nil, &outputBuffer)
         if let outputBuffer, let outputTexture = makeTexture(from: outputBuffer) {
@@ -205,7 +230,7 @@ final class RenderEngine {
                 blit.copy(
                     from: currentInput, sourceSlice: 0, sourceLevel: 0,
                     sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
-                    sourceSize: MTLSize(width: width, height: height, depth: 1),
+                    sourceSize: MTLSize(width: outputWidth, height: outputHeight, depth: 1),
                     to: outputTexture, destinationSlice: 0, destinationLevel: 0,
                     destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0)
                 )
@@ -228,10 +253,25 @@ final class RenderEngine {
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
     }
 
-    var blitPipelineState: MTLRenderPipelineState { blitPipeline }
-    var samplerState: MTLSamplerState { sampler }
-
     // MARK: Private helpers
+
+    private func encodeBlit(
+        commandBuffer: MTLCommandBuffer,
+        pipeline: MTLRenderPipelineState,
+        source: MTLTexture,
+        destination: MTLTexture
+    ) {
+        let pass = MTLRenderPassDescriptor()
+        pass.colorAttachments[0].texture = destination
+        pass.colorAttachments[0].loadAction = .dontCare
+        pass.colorAttachments[0].storeAction = .store
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return }
+        encoder.setRenderPipelineState(pipeline)
+        encoder.setFragmentTexture(source, index: 0)
+        encoder.setFragmentSamplerState(sampler, index: 0)
+        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+        encoder.endEncoding()
+    }
 
     private func makeTexture(from pixelBuffer: CVPixelBuffer) -> MTLTexture? {
         let width = CVPixelBufferGetWidth(pixelBuffer)
@@ -245,11 +285,11 @@ final class RenderEngine {
         return CVMetalTextureGetTexture(cvTexture)
     }
 
-    private func ensureResources(width: Int, height: Int, depth: Int) {
-        guard width != frameWidth || height != frameHeight || depth != allocatedDepth else { return }
+    private func ensureResources(depth: Int) {
+        guard depth != allocatedDepth || historyTexture == nil || workingTexture == nil || pingPong.count != 2 || outputPool == nil else {
+            return
+        }
 
-        frameWidth = width
-        frameHeight = height
         allocatedDepth = depth
         head = -1
         filledSlices = 0
@@ -257,15 +297,22 @@ final class RenderEngine {
         let historyDescriptor = MTLTextureDescriptor()
         historyDescriptor.textureType = .type3D
         historyDescriptor.pixelFormat = .bgra8Unorm
-        historyDescriptor.width = width
-        historyDescriptor.height = height
+        historyDescriptor.width = outputWidth
+        historyDescriptor.height = outputHeight
         historyDescriptor.depth = depth
         historyDescriptor.usage = [.shaderRead]
         historyDescriptor.storageMode = .private
         historyTexture = device.makeTexture(descriptor: historyDescriptor)
 
+        let workingDescriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .bgra8Unorm, width: outputWidth, height: outputHeight, mipmapped: false
+        )
+        workingDescriptor.usage = [.renderTarget, .shaderRead]
+        workingDescriptor.storageMode = .private
+        workingTexture = device.makeTexture(descriptor: workingDescriptor)
+
         let pingPongDescriptor = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false
+            pixelFormat: .bgra8Unorm, width: outputWidth, height: outputHeight, mipmapped: false
         )
         pingPongDescriptor.usage = [.renderTarget, .shaderRead]
         pingPongDescriptor.storageMode = .private
@@ -275,8 +322,8 @@ final class RenderEngine {
         ]
 
         let poolAttributes: [String: Any] = [
-            kCVPixelBufferWidthKey as String: width,
-            kCVPixelBufferHeightKey as String: height,
+            kCVPixelBufferWidthKey as String: outputWidth,
+            kCVPixelBufferHeightKey as String: outputHeight,
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
             kCVPixelBufferIOSurfacePropertiesKey as String: [:] as [String: Any],
             kCVPixelBufferMetalCompatibilityKey as String: true,

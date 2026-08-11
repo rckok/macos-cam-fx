@@ -2,6 +2,9 @@ import CoreMedia
 import CoreMediaIO
 import CoreVideo
 import Foundation
+import os.log
+
+private let sinkLogger = Logger(subsystem: "studio.polyglot.CameraEffects", category: "sink")
 
 /// Publishes rendered frames to the camera extension by locating the virtual
 /// camera's sink stream through the CoreMediaIO C API and enqueueing sample
@@ -9,6 +12,7 @@ import Foundation
 final class VirtualCameraSink: ObservableObject {
 
     @Published private(set) var isConnected = false
+    @Published private(set) var lastError: String?
 
     /// Thread-safe gate checked on the frame path; toggled from the UI.
     private let enabledLock = NSLock()
@@ -19,7 +23,13 @@ final class VirtualCameraSink: ObservableObject {
             enabledLock.lock()
             _enabled = newValue
             enabledLock.unlock()
-            if newValue { connect() } else { disconnect() }
+            if newValue {
+                connect()
+                startReconnectTimer()
+            } else {
+                stopReconnectTimer()
+                disconnect()
+            }
         }
     }
 
@@ -29,7 +39,8 @@ final class VirtualCameraSink: ObservableObject {
     private var bufferQueue: CMSimpleQueue?
     private var streamStarted = false
     private var formatDescription: CMFormatDescription?
-    private var formatDimensions: CMVideoDimensions?
+    private var reconnectTimer: DispatchSourceTimer?
+    private var framesEnqueued: UInt64 = 0
 
     // MARK: Connection
 
@@ -51,34 +62,86 @@ final class VirtualCameraSink: ObservableObject {
             self.bufferQueue = nil
             self.sinkStreamID = nil
             self.deviceID = nil
-            DispatchQueue.main.async { self.isConnected = false }
+            self.formatDescription = nil
+            DispatchQueue.main.async {
+                self.isConnected = false
+            }
+        }
+    }
+
+    private func startReconnectTimer() {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.reconnectTimer?.cancel()
+            let timer = DispatchSource.makeTimerSource(queue: self.queue)
+            timer.schedule(deadline: .now() + 1.0, repeating: 2.0)
+            timer.setEventHandler { [weak self] in
+                guard let self, self.enabled, self.bufferQueue == nil else { return }
+                self.connectLocked()
+            }
+            timer.resume()
+            self.reconnectTimer = timer
+        }
+    }
+
+    private func stopReconnectTimer() {
+        queue.async { [weak self] in
+            self?.reconnectTimer?.cancel()
+            self?.reconnectTimer = nil
         }
     }
 
     private func connectLocked() {
         guard bufferQueue == nil else { return }
 
-        guard let deviceID = findDevice(uid: VirtualCamera.deviceUID.uuidString) else { return }
-        guard let sinkStreamID = findSinkStream(deviceID: deviceID) else { return }
+        guard let deviceID = findDevice(uid: VirtualCamera.deviceUID.uuidString) else {
+            setError("Virtual camera device not found — is the extension installed and approved?")
+            return
+        }
+        guard let sinkStreamID = findSinkStream(deviceID: deviceID) else {
+            setError("Virtual camera sink stream not found")
+            return
+        }
 
         var queueOut: Unmanaged<CMSimpleQueue>?
-        let status = CMIOStreamCopyBufferQueue(
+        let queueStatus = CMIOStreamCopyBufferQueue(
             sinkStreamID,
-            { _, _, _ in
-                // Queue-altered callback; nothing to do, we push opportunistically.
-            },
+            { _, _, _ in },
             nil,
             &queueOut
         )
-        guard status == noErr, let queueOut else { return }
+        guard queueStatus == noErr, let queueOut else {
+            setError("Failed to open sink buffer queue (status \(queueStatus))")
+            return
+        }
 
         self.deviceID = deviceID
         self.sinkStreamID = sinkStreamID
         self.bufferQueue = queueOut.takeRetainedValue()
 
-        if CMIODeviceStartStream(deviceID, sinkStreamID) == noErr {
-            streamStarted = true
-            DispatchQueue.main.async { self.isConnected = true }
+        let startStatus = CMIODeviceStartStream(deviceID, sinkStreamID)
+        guard startStatus == noErr else {
+            self.bufferQueue = nil
+            self.sinkStreamID = nil
+            self.deviceID = nil
+            setError("Failed to start sink stream (status \(startStatus))")
+            return
+        }
+
+        streamStarted = true
+        framesEnqueued = 0
+        sinkLogger.info("Connected to virtual camera sink stream")
+        DispatchQueue.main.async {
+            self.isConnected = true
+            self.lastError = nil
+        }
+    }
+
+    private func setError(_ message: String) {
+        sinkLogger.error("\(message, privacy: .public)")
+        DispatchQueue.main.async {
+            self.lastError = message
+            self.isConnected = false
         }
     }
 
@@ -93,13 +156,20 @@ final class VirtualCameraSink: ObservableObject {
                 self.connectLocked()
             }
             guard let bufferQueue = self.bufferQueue else { return }
-            guard CMSimpleQueueGetCount(bufferQueue) < CMSimpleQueueGetCapacity(bufferQueue) else { return }
 
-            let width = Int32(CVPixelBufferGetWidth(pixelBuffer))
-            let height = Int32(CVPixelBufferGetHeight(pixelBuffer))
-            if self.formatDescription == nil
-                || self.formatDimensions?.width != width
-                || self.formatDimensions?.height != height {
+            let width = CVPixelBufferGetWidth(pixelBuffer)
+            let height = CVPixelBufferGetHeight(pixelBuffer)
+            guard width == VirtualCamera.width, height == VirtualCamera.height else {
+                // Drop mismatched frames rather than poison the sink stream.
+                sinkLogger.error("Dropping frame with unexpected size \(width)x\(height)")
+                return
+            }
+
+            let capacity = CMSimpleQueueGetCapacity(bufferQueue)
+            let count = CMSimpleQueueGetCount(bufferQueue)
+            guard count < capacity else { return }
+
+            if self.formatDescription == nil {
                 var description: CMFormatDescription?
                 CMVideoFormatDescriptionCreateForImageBuffer(
                     allocator: kCFAllocatorDefault,
@@ -107,12 +177,11 @@ final class VirtualCameraSink: ObservableObject {
                     formatDescriptionOut: &description
                 )
                 self.formatDescription = description
-                self.formatDimensions = CMVideoDimensions(width: width, height: height)
             }
             guard let formatDescription = self.formatDescription else { return }
 
             var timing = CMSampleTimingInfo(
-                duration: .invalid,
+                duration: CMTime(value: 1, timescale: CMTimeScale(VirtualCamera.frameRate)),
                 presentationTimeStamp: CMClockGetTime(CMClockGetHostTimeClock()),
                 decodeTimeStamp: .invalid
             )
@@ -126,7 +195,14 @@ final class VirtualCameraSink: ObservableObject {
             )
             guard status == noErr, let sampleBuffer else { return }
 
-            CMSimpleQueueEnqueue(bufferQueue, element: Unmanaged.passRetained(sampleBuffer).toOpaque())
+            let enqueueStatus = CMSimpleQueueEnqueue(bufferQueue, element: Unmanaged.passRetained(sampleBuffer).toOpaque())
+            if enqueueStatus == noErr {
+                self.framesEnqueued += 1
+            } else {
+                // Balance the retain from passRetained if enqueue failed.
+                Unmanaged<CMSampleBuffer>.passUnretained(sampleBuffer).release()
+                sinkLogger.error("CMSimpleQueueEnqueue failed: \(enqueueStatus)")
+            }
         }
     }
 
@@ -154,8 +230,9 @@ final class VirtualCameraSink: ObservableObject {
             CMIOObjectID(kCMIOObjectSystemObject), &address, 0, nil, dataSize, &dataUsed, &deviceIDs
         ) == noErr else { return nil }
 
+        let target = uid.uppercased()
         for deviceID in deviceIDs {
-            if deviceUID(of: deviceID) == uid {
+            if let found = deviceUID(of: deviceID), found.uppercased() == target {
                 return deviceID
             }
         }

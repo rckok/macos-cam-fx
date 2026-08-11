@@ -5,35 +5,47 @@ struct ContentView: View {
     @State private var showSettings = false
     @State private var showInspector = true
 
+    private let sidebarWidth: CGFloat = 240
+    private let inspectorWidth: CGFloat = 260
+
     var body: some View {
-        NavigationSplitView {
+        HSplitView {
             SidebarView(store: state.store, capture: state.capture)
-                .navigationSplitViewColumnWidth(min: 220, ideal: 260)
-        } detail: {
+                .frame(minWidth: 180, idealWidth: sidebarWidth, maxWidth: 320)
+                .layoutPriority(0)
+
             VSplitView {
                 PreviewView(engine: state.engine)
-                    .frame(minHeight: 220, idealHeight: 340)
+                    .frame(minWidth: 200, minHeight: 160)
                     .layoutPriority(1)
+
                 if let effect = state.selectedEffect {
                     EditorView(effect: effect)
-                        .frame(minHeight: 200)
+                        .frame(minWidth: 200, minHeight: 140)
                 } else {
                     ContentUnavailableView(
                         "No Effect Selected",
                         systemImage: "wand.and.stars",
                         description: Text("Select an effect in the sidebar or add a new one.")
                     )
-                    .frame(maxWidth: .infinity, minHeight: 200)
+                    .frame(maxWidth: .infinity, minHeight: 140)
                 }
             }
-        }
-        .inspector(isPresented: $showInspector) {
-            if let effect = state.selectedEffect {
-                InspectorView(effect: effect)
-                    .inspectorColumnWidth(min: 240, ideal: 280)
-            } else {
-                Text("No effect selected")
-                    .foregroundStyle(.secondary)
+            .frame(minWidth: 200)
+            .layoutPriority(1)
+
+            if showInspector {
+                Group {
+                    if let effect = state.selectedEffect {
+                        InspectorView(effect: effect)
+                    } else {
+                        Text("No effect selected")
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                }
+                .frame(minWidth: 180, idealWidth: inspectorWidth, maxWidth: 360)
+                .layoutPriority(0)
             }
         }
         .toolbar {
@@ -91,14 +103,29 @@ struct VirtualCameraToolbar: View {
                 )
             }
             .toggleStyle(.button)
-            .help(
-                state.virtualCameraEnabled
-                    ? (sink.isConnected
-                        ? "Streaming to the virtual camera"
-                        : "Waiting for the camera extension — is it installed?")
-                    : "Start streaming to the virtual camera"
-            )
+            .help(virtualCameraHelp)
+
+            if state.virtualCameraEnabled, let error = sink.lastError, !sink.isConnected {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .lineLimit(2)
+                    .frame(maxWidth: 280)
+            }
         }
+    }
+
+    private var virtualCameraHelp: String {
+        if !state.virtualCameraEnabled {
+            return "Start streaming to the virtual camera"
+        }
+        if sink.isConnected {
+            return "Streaming to the virtual camera"
+        }
+        if let error = sink.lastError {
+            return error
+        }
+        return "Waiting for the camera extension — is it installed?"
     }
 }
 
@@ -107,6 +134,12 @@ struct SettingsPopover: View {
 
     var body: some View {
         Form {
+            Section("Camera") {
+                Toggle("Flip horizontally", isOn: $state.flipHorizontal)
+                Text("Mirrors the incoming feed before effects run (like FaceTime).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Section("Frame History") {
                 LabeledContent("Frames (N)") {
                     HStack {

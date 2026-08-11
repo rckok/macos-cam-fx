@@ -29,5 +29,13 @@ enum BuiltinShaders {
                                      sampler smp [[sampler(0)]]) {
         return source.sample(smp, in.uv);
     }
+
+    /// Horizontal mirror used for the mirror-front-camera setting.
+    fragment float4 ce_blit_flip_h_fragment(CEVertexOut in [[stage_in]],
+                                           texture2d<float> source [[texture(0)]],
+                                           sampler smp [[sampler(0)]]) {
+        float2 uv = float2(1.0 - in.uv.x, in.uv.y);
+        return source.sample(smp, uv);
+    }
     """
 }

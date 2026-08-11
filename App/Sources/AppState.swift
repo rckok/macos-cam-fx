@@ -24,6 +24,13 @@ final class AppState: ObservableObject {
             store.saveConfigSoon()
         }
     }
+    @Published var flipHorizontal: Bool {
+        didSet {
+            engine.setFlipHorizontal(flipHorizontal)
+            store.config.flipHorizontal = flipHorizontal
+            store.saveConfigSoon()
+        }
+    }
 
     private var compileTasks: [String: Task<Void, Never>] = [:]
     private var cancellables = Set<AnyCancellable>()
@@ -41,8 +48,11 @@ final class AppState: ObservableObject {
         self.extensionManager = ExtensionManager()
         self.sink = VirtualCameraSink()
         self.historyDepth = 16
+        self.flipHorizontal = true
 
         historyDepth = store.config.historyDepth
+        flipHorizontal = store.config.flipHorizontal
+        engine.setFlipHorizontal(flipHorizontal)
         capture.selectedDeviceID = store.config.selectedDeviceID
 
         // Frame path: capture queue -> engine; Metal completion -> sink.
