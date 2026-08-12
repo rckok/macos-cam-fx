@@ -228,8 +228,8 @@ final class RenderEngine {
                 resolution: SIMD2<Float>(Float(outputWidth), Float(outputHeight))
             )
         }
-        var faceSlots = VisionUniformPacking.packFace(rects: vision.faceRects)
-        var handSlots = VisionUniformPacking.packHands(vision.hands)
+        let faceSlots = VisionUniformPacking.packFace(rects: vision.faceRects)
+        let handSlots = VisionUniformPacking.packHands(vision.hands)
 
         // 4. Timing / context uniforms.
         let now = CACurrentMediaTime()
@@ -269,11 +269,11 @@ final class RenderEngine {
                 case "uPrev": source = currentInput
                 case "uFrames": source = historyTexture
                 case VisionUniforms.personMatteSampler:
-                    source = personMatteValid ? personMatteTexture : fallbackMaskTexture
+                    source = (personMatteValid ? personMatteTexture : nil) ?? fallbackMaskTexture
                 case VisionUniforms.faceMaskSampler:
                     source = vision.faceMask ?? fallbackRGBATexture
                 case VisionUniforms.handMaskSampler:
-                    source = activeVision.contains(.handMask) ? handMaskTexture : fallbackMaskTexture
+                    source = (activeVision.contains(.handMask) ? handMaskTexture : nil) ?? fallbackMaskTexture
                 default: source = running.textureAssets.texture(named: texture.name)
                 }
                 if let source, texture.mslTexture >= 0 {
