@@ -145,7 +145,13 @@ final class Effect: Identifiable, ObservableObject {
     /// Set after a successful compile; consumed by the render engine.
     var compiled: CompiledEffect?
 
-    static let reservedTextureNames: Set<String> = ["uPrev", "uFrames"]
+    /// Prelude-provided samplers that must not appear as media-library pickers.
+    static let reservedTextureNames: Set<String> = [
+        "uPrev", "uFrames",
+        VisionUniforms.personMatteSampler,
+        VisionUniforms.faceMaskSampler,
+        VisionUniforms.handMaskSampler,
+    ]
 
     init(
         id: String,

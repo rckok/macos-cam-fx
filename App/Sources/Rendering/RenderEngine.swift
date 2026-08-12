@@ -26,7 +26,15 @@ final class RenderEngine {
     let vertexFunction: MTLFunction
     private let blitPipeline: MTLRenderPipelineState
     private let flipHPipeline: MTLRenderPipelineState
+    private let blitR8Pipeline: MTLRenderPipelineState
+    private let flipHR8Pipeline: MTLRenderPipelineState
     private let sampler: MTLSamplerState
+
+    private let visionProcessor: VisionProcessor
+    private let handMaskRenderer: HandMaskRenderer
+    /// 1x1 zero textures bound when a vision result is not available yet.
+    private let fallbackMaskTexture: MTLTexture
+    private let fallbackRGBATexture: MTLTexture
 
     private let lock = NSLock()
 
@@ -34,6 +42,7 @@ final class RenderEngine {
     private var effects: [RunningEffect] = []
     private var historyDepth: Int = 16
     private var flipHorizontal: Bool = true
+    private var visionFeatures: VisionFeatures = []
 
     // Working resolution is always the virtual-camera size so the sink stream
     // receives buffers that match its declared format.
@@ -43,6 +52,9 @@ final class RenderEngine {
     // Only touched on the capture/render thread:
     private var historyTexture: MTLTexture?
     private var workingTexture: MTLTexture?
+    private var personMatteTexture: MTLTexture?
+    private var personMatteValid = false
+    private var handMaskTexture: MTLTexture?
     private var pingPong: [MTLTexture] = []
     private var allocatedDepth = 0
     private var head = -1
@@ -72,21 +84,44 @@ final class RenderEngine {
         let library = try device.makeLibrary(source: BuiltinShaders.source, options: nil)
         guard let vertex = library.makeFunction(name: "ce_fullscreen_vertex"),
               let blitFragment = library.makeFunction(name: "ce_blit_fragment"),
-              let flipFragment = library.makeFunction(name: "ce_blit_flip_h_fragment")
+              let flipFragment = library.makeFunction(name: "ce_blit_flip_h_fragment"),
+              let handMaskFragment = library.makeFunction(name: "ce_hand_mask_fragment")
         else {
             throw NSError(domain: "CameraEffects", code: 2, userInfo: [NSLocalizedDescriptionKey: "Missing builtin shader functions"])
         }
         self.vertexFunction = vertex
 
-        let makePipeline: (MTLFunction) throws -> MTLRenderPipelineState = { fragment in
+        let makePipeline: (MTLFunction, MTLPixelFormat) throws -> MTLRenderPipelineState = { fragment, pixelFormat in
             let descriptor = MTLRenderPipelineDescriptor()
             descriptor.vertexFunction = vertex
             descriptor.fragmentFunction = fragment
-            descriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+            descriptor.colorAttachments[0].pixelFormat = pixelFormat
             return try device.makeRenderPipelineState(descriptor: descriptor)
         }
-        self.blitPipeline = try makePipeline(blitFragment)
-        self.flipHPipeline = try makePipeline(flipFragment)
+        self.blitPipeline = try makePipeline(blitFragment, .bgra8Unorm)
+        self.flipHPipeline = try makePipeline(flipFragment, .bgra8Unorm)
+        self.blitR8Pipeline = try makePipeline(blitFragment, .r8Unorm)
+        self.flipHR8Pipeline = try makePipeline(flipFragment, .r8Unorm)
+
+        self.visionProcessor = VisionProcessor(device: device)
+        self.handMaskRenderer = try HandMaskRenderer(
+            device: device, vertexFunction: vertex, fragmentFunction: handMaskFragment
+        )
+
+        let makeFallback: (MTLPixelFormat, Int) throws -> MTLTexture = { pixelFormat, bytesPerPixel in
+            let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: pixelFormat, width: 1, height: 1, mipmapped: false
+            )
+            descriptor.usage = [.shaderRead]
+            guard let texture = device.makeTexture(descriptor: descriptor) else {
+                throw NSError(domain: "CameraEffects", code: 4, userInfo: [NSLocalizedDescriptionKey: "Failed to create fallback texture"])
+            }
+            var zero = [UInt8](repeating: 0, count: bytesPerPixel)
+            texture.replace(region: MTLRegionMake2D(0, 0, 1, 1), mipmapLevel: 0, withBytes: &zero, bytesPerRow: bytesPerPixel)
+            return texture
+        }
+        self.fallbackMaskTexture = try makeFallback(.r8Unorm, 1)
+        self.fallbackRGBATexture = try makeFallback(.rgba8Unorm, 4)
 
         let samplerDescriptor = MTLSamplerDescriptor()
         samplerDescriptor.minFilter = .linear
@@ -103,9 +138,16 @@ final class RenderEngine {
     // MARK: Configuration (called from the main thread)
 
     func setEffects(_ newEffects: [RunningEffect]) {
+        // Vision algorithms only run while some enabled effect's compiled
+        // shader actually uses their uniforms (per shader reflection).
+        let features = newEffects.reduce(into: VisionFeatures()) { result, running in
+            result.formUnion(VisionFeatures.required(by: running.compiled.reflection))
+        }
         lock.lock()
         effects = newEffects
+        visionFeatures = features
         lock.unlock()
+        visionProcessor.setFeatures(features)
     }
 
     func setHistoryDepth(_ depth: Int) {
@@ -127,6 +169,7 @@ final class RenderEngine {
         let currentEffects = effects
         let depth = historyDepth
         let flip = flipHorizontal
+        let activeVision = visionFeatures
         lock.unlock()
 
         guard let frameTexture = makeTexture(from: pixelBuffer) else { return }
@@ -159,7 +202,36 @@ final class RenderEngine {
             blit.endEncoding()
         }
 
-        // 3. Timing / context uniforms.
+        // 3. Vision data: analyze asynchronously (latest-wins) and consume the
+        //    most recent snapshot. Detectors only run for uniforms in use.
+        var vision = VisionSnapshot()
+        if !activeVision.isEmpty {
+            visionProcessor.submit(pixelBuffer: pixelBuffer, mirrored: flip)
+            vision = visionProcessor.snapshot()
+        }
+        if activeVision.contains(.personMatte), let matte = vision.personMatte, let personMatteTexture {
+            // The matte is generated from the raw frame; blit it into vUV
+            // orientation (stretch to output size, mirror when flipped).
+            encodeBlit(
+                commandBuffer: commandBuffer,
+                pipeline: flip ? flipHR8Pipeline : blitR8Pipeline,
+                source: matte,
+                destination: personMatteTexture
+            )
+            personMatteValid = true
+        }
+        if activeVision.contains(.handMask), let handMaskTexture {
+            handMaskRenderer.encode(
+                commandBuffer: commandBuffer,
+                target: handMaskTexture,
+                hands: vision.hands,
+                resolution: SIMD2<Float>(Float(outputWidth), Float(outputHeight))
+            )
+        }
+        var faceSlots = VisionUniformPacking.packFace(rects: vision.faceRects)
+        var handSlots = VisionUniformPacking.packHands(vision.hands)
+
+        // 4. Timing / context uniforms.
         let now = CACurrentMediaTime()
         if startTime == nil { startTime = now }
         var context = ContextUniforms(
@@ -173,7 +245,7 @@ final class RenderEngine {
         lastFrameTime = now
         frameNumber &+= 1
 
-        // 4. Run the effect chain, ping-ponging between offscreen textures.
+        // 5. Run the effect chain, ping-ponging between offscreen textures.
         var currentInput: MTLTexture = workingTexture
         var pingPongIndex = 0
         for running in currentEffects {
@@ -196,6 +268,12 @@ final class RenderEngine {
                 switch texture.name {
                 case "uPrev": source = currentInput
                 case "uFrames": source = historyTexture
+                case VisionUniforms.personMatteSampler:
+                    source = personMatteValid ? personMatteTexture : fallbackMaskTexture
+                case VisionUniforms.faceMaskSampler:
+                    source = vision.faceMask ?? fallbackRGBATexture
+                case VisionUniforms.handMaskSampler:
+                    source = activeVision.contains(.handMask) ? handMaskTexture : fallbackMaskTexture
                 default: source = running.textureAssets.texture(named: texture.name)
                 }
                 if let source, texture.mslTexture >= 0 {
@@ -214,6 +292,14 @@ final class RenderEngine {
                     if let paramsBuffer = effect.paramsBuffer {
                         encoder.setFragmentBuffer(paramsBuffer, offset: 0, index: block.mslBuffer)
                     }
+                case VisionUniforms.faceBlock:
+                    faceSlots.withUnsafeBytes { bytes in
+                        encoder.setFragmentBytes(bytes.baseAddress!, length: bytes.count, index: block.mslBuffer)
+                    }
+                case VisionUniforms.handsBlock:
+                    handSlots.withUnsafeBytes { bytes in
+                        encoder.setFragmentBytes(bytes.baseAddress!, length: bytes.count, index: block.mslBuffer)
+                    }
                 default:
                     break
                 }
@@ -224,7 +310,7 @@ final class RenderEngine {
             currentInput = target
         }
 
-        // 5. Copy the final image into a fresh IOSurface-backed pixel buffer
+        // 6. Copy the final image into a fresh IOSurface-backed pixel buffer
         //    for the virtual camera sink (always VirtualCamera dimensions).
         var outputBuffer: CVPixelBuffer?
         CVPixelBufferPoolCreatePixelBufferWithAuxAttributes(kCFAllocatorDefault, outputPool, nil, &outputBuffer)
@@ -313,6 +399,17 @@ final class RenderEngine {
         workingDescriptor.usage = [.renderTarget, .shaderRead]
         workingDescriptor.storageMode = .private
         workingTexture = device.makeTexture(descriptor: workingDescriptor)
+
+        if personMatteTexture == nil || handMaskTexture == nil {
+            let maskDescriptor = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: .r8Unorm, width: outputWidth, height: outputHeight, mipmapped: false
+            )
+            maskDescriptor.usage = [.renderTarget, .shaderRead]
+            maskDescriptor.storageMode = .private
+            personMatteTexture = device.makeTexture(descriptor: maskDescriptor)
+            personMatteValid = false
+            handMaskTexture = device.makeTexture(descriptor: maskDescriptor)
+        }
 
         let pingPongDescriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .bgra8Unorm, width: outputWidth, height: outputHeight, mipmapped: false

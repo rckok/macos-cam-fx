@@ -58,7 +58,10 @@ struct ShaderCompileError: Error {
 enum ShaderCompiler {
 
     /// Interface every effect shader sees. Uniform bindings 0-2 are reserved;
-    /// user `Params` blocks conventionally use binding 3.
+    /// user `Params` blocks conventionally use binding 3, user samplers
+    /// bindings 4-15. Bindings 16-20 carry the vision data (segmentation
+    /// mattes, face/hand observations); the underlying detectors only run
+    /// while an enabled effect actually uses one of those uniforms.
     static let prelude = """
     #version 450
 
@@ -78,11 +81,59 @@ enum ShaderCompiler {
         float _cePad0;
     };
 
+    // Vision data. Textures and observation coordinates are in vUV space
+    // (top-left origin, mirroring already applied).
+    layout(binding = 16) uniform sampler2D uPersonMatte; // luma matte: 1 = person, 0 = background
+    layout(binding = 17) uniform sampler2D uFaceMask;    // R = left eye, G = right eye, B = mouth, A = union
+    layout(binding = 18) uniform sampler2D uHandMask;    // approximate hand silhouette (luma)
+
+    layout(std140, binding = 19) uniform CEFace {
+        int  uFaceCount;      // detected faces (0 ... CE_MAX_FACES)
+        vec4 uFaceRects[4];   // xy = top-left origin, zw = size, in vUV space
+    };
+
+    layout(std140, binding = 20) uniform CEHands {
+        int  uHandCount;      // detected hands (0 ... CE_MAX_HANDS)
+        vec4 uHandInfo[2];    // x = chirality (-1 left, +1 right, 0 unknown), y = confidence
+        vec4 uHandJoints[42]; // 21 joints per hand: xy = vUV position, z = confidence
+    };
+
+    #define CE_MAX_FACES 4
+    #define CE_MAX_HANDS 2
+    #define CE_HAND_JOINTS 21
+
+    // Joint indices into uHandJoints (per hand), wrist to fingertips:
+    #define CE_WRIST      0
+    #define CE_THUMB_CMC  1
+    #define CE_THUMB_MP   2
+    #define CE_THUMB_IP   3
+    #define CE_THUMB_TIP  4
+    #define CE_INDEX_MCP  5
+    #define CE_INDEX_PIP  6
+    #define CE_INDEX_DIP  7
+    #define CE_INDEX_TIP  8
+    #define CE_MIDDLE_MCP 9
+    #define CE_MIDDLE_PIP 10
+    #define CE_MIDDLE_DIP 11
+    #define CE_MIDDLE_TIP 12
+    #define CE_RING_MCP   13
+    #define CE_RING_PIP   14
+    #define CE_RING_DIP   15
+    #define CE_RING_TIP   16
+    #define CE_LITTLE_MCP 17
+    #define CE_LITTLE_PIP 18
+    #define CE_LITTLE_DIP 19
+    #define CE_LITTLE_TIP 20
+
     vec4 ceHistory(vec2 uv, int ago) {
         int idx = uHeadIndex - ago;
         idx = ((idx % uFrameCount) + uFrameCount) % uFrameCount;
         float z = (float(idx) + 0.5) / float(uFrameCount);
         return texture(uFrames, vec3(uv, z));
+    }
+
+    vec4 ceHandJoint(int hand, int joint) {
+        return uHandJoints[hand * CE_HAND_JOINTS + joint];
     }
 
     """

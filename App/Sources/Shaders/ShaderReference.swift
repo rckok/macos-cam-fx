@@ -32,6 +32,12 @@ enum ShaderReference {
             footer: "Members of the injected CEContext uniform block:",
             symbols: contextMembers
         ),
+        Category(
+            id: "vision",
+            title: "Vision data",
+            footer: "Face, hand, and segmentation data. The detectors only run while an enabled effect uses one of these uniforms. All coordinates and mask textures are in vUV space (top-left origin, mirroring applied).",
+            symbols: vision
+        ),
         Category(id: "functions", title: "Functions", symbols: functions),
         Category(id: "user", title: "You can also declare", symbols: userDefined),
     ]
@@ -102,6 +108,63 @@ enum ShaderReference {
             name: "uFrameNumber",
             type: "int",
             description: "Monotonically increasing frame counter since the stream started."
+        ),
+    ]
+
+    static let vision: [Symbol] = [
+        Symbol(
+            id: "uPersonMatte",
+            name: "uPersonMatte",
+            type: "uniform sampler2D",
+            description: "Person-segmentation luma matte for background subtraction: 1 = person, 0 = background. Sample .r."
+        ),
+        Symbol(
+            id: "uFaceMask",
+            name: "uFaceMask",
+            type: "uniform sampler2D",
+            description: "Face-part segmentation rasterized from facial landmarks. R = left eye, G = right eye, B = mouth, A = union of all parts."
+        ),
+        Symbol(
+            id: "uHandMask",
+            name: "uHandMask",
+            type: "uniform sampler2D",
+            description: "Approximate hand silhouette (luma) built from the detected hand skeleton. Sample .r."
+        ),
+        Symbol(
+            id: "uFaceCount",
+            name: "uFaceCount",
+            type: "int (CEFace, binding = 19)",
+            description: "Number of detected faces (0 … CE_MAX_FACES)."
+        ),
+        Symbol(
+            id: "uFaceRects",
+            name: "uFaceRects[4]",
+            type: "vec4 (CEFace, binding = 19)",
+            description: "Face bounding boxes in vUV space: xy = top-left corner, zw = size."
+        ),
+        Symbol(
+            id: "uHandCount",
+            name: "uHandCount",
+            type: "int (CEHands, binding = 20)",
+            description: "Number of detected hands (0 … CE_MAX_HANDS)."
+        ),
+        Symbol(
+            id: "uHandInfo",
+            name: "uHandInfo[2]",
+            type: "vec4 (CEHands, binding = 20)",
+            description: "Per hand: x = chirality (-1 left, +1 right, 0 unknown), y = detection confidence."
+        ),
+        Symbol(
+            id: "uHandJoints",
+            name: "uHandJoints[42]",
+            type: "vec4 (CEHands, binding = 20)",
+            description: "21 joints per hand: xy = vUV position, z = joint confidence. Prefer ceHandJoint() with the CE_* joint constants (CE_WRIST, CE_THUMB_TIP, CE_INDEX_TIP, …) over manual indexing."
+        ),
+        Symbol(
+            id: "ceHandJoint",
+            name: "ceHandJoint(hand, joint)",
+            type: "vec4",
+            description: "Joint of hand `hand` (0 … uHandCount − 1) at index `joint` — use the CE_* constants: wrist (CE_WRIST), then CMC/MP/IP/TIP for the thumb and MCP/PIP/DIP/TIP for each finger (CE_THUMB_*, CE_INDEX_*, CE_MIDDLE_*, CE_RING_*, CE_LITTLE_*)."
         ),
     ]
 

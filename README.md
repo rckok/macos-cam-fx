@@ -100,12 +100,57 @@ that declares the interface, so you only write `main()` plus an optional
 | `uHeadIndex` | `int` | z-slice index of the newest raw frame (0 … N − 1). |
 | `uFrameNumber` | `int` | Frame counter since the stream started. |
 
+### Vision data (bindings 16–20)
+
+Face detection, eye/mouth segmentation, hand pose, hand segmentation, and a
+person matte for background subtraction are available as standard uniforms.
+The underlying detectors (Apple's Vision framework — no extra dependencies)
+**only run while an enabled effect actually uses one of these uniforms**;
+unused uniforms are dead-code-eliminated at compile time, so referencing none
+of them costs nothing. All coordinates and masks are in vUV space (top-left
+origin, mirroring already applied).
+
+| Symbol | Type | Description |
+| --- | --- | --- |
+| `uPersonMatte` | `sampler2D` | Person-segmentation luma matte: 1 = person, 0 = background. Sample `.r`. |
+| `uFaceMask` | `sampler2D` | Face parts from facial landmarks: R = left eye, G = right eye, B = mouth, A = union. |
+| `uHandMask` | `sampler2D` | Approximate hand silhouette built from the hand skeleton. Sample `.r`. |
+| `uFaceCount` | `int` (`CEFace`, binding = 19) | Detected faces (0 … `CE_MAX_FACES`). |
+| `uFaceRects[4]` | `vec4` (`CEFace`) | Face bounding boxes: xy = top-left corner, zw = size, in vUV space. |
+| `uHandCount` | `int` (`CEHands`, binding = 20) | Detected hands (0 … `CE_MAX_HANDS`). |
+| `uHandInfo[2]` | `vec4` (`CEHands`) | Per hand: x = chirality (−1 left, +1 right), y = confidence. |
+| `uHandJoints[42]` | `vec4` (`CEHands`) | 21 joints per hand: xy = vUV position, z = confidence. |
+| `ceHandJoint(hand, joint)` | `vec4` | Convenience accessor; use with the `CE_*` joint constants (`CE_WRIST`, `CE_THUMB_TIP`, `CE_INDEX_TIP`, …). |
+
+Example — background subtraction with a luma matte:
+
+```glsl
+void main() {
+    float matte = texture(uPersonMatte, vUV).r;
+    outColor = mix(vec4(0.0, 1.0, 0.0, 1.0), texture(uPrev, vUV), matte);
+}
+```
+
+Example — circle following the right index fingertip:
+
+```glsl
+void main() {
+    outColor = texture(uPrev, vUV);
+    for (int i = 0; i < uHandCount; i++) {
+        vec4 tip = ceHandJoint(i, CE_INDEX_TIP);
+        if (tip.z < 0.3) { continue; }
+        float d = distance(vUV * uResolution, tip.xy * uResolution);
+        outColor = mix(vec4(1.0, 0.0, 0.0, 1.0), outColor, smoothstep(18.0, 22.0, d));
+    }
+}
+```
+
 ### User-declared uniforms
 
 | Symbol | Type | Description |
 | --- | --- | --- |
 | `Params` | `std140` block, binding = 3 | Optional effect parameters — become inspector controls. |
-| `yourSampler` | `sampler2D`, binding ≥ 4 | Optional 2D textures assigned from the media library. |
+| `yourSampler` | `sampler2D`, binding 4–15 | Optional 2D textures assigned from the media library. |
 
 Example effect:
 
