@@ -9,13 +9,14 @@ final class EffectStore: ObservableObject {
 
     struct AppConfig: Codable {
         var order: [String] = []
+        var groups: [EffectGroup] = []
         var selectedDeviceID: String?
         var historyDepth: Int = 16
         /// Mirror the incoming camera feed horizontally (default on, like FaceTime).
         var flipHorizontal: Bool = true
 
         enum CodingKeys: String, CodingKey {
-            case order, selectedDeviceID, historyDepth, flipHorizontal
+            case order, groups, selectedDeviceID, historyDepth, flipHorizontal
         }
 
         init() {}
@@ -23,13 +24,17 @@ final class EffectStore: ObservableObject {
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             order = try container.decodeIfPresent([String].self, forKey: .order) ?? []
+            groups = try container.decodeIfPresent([EffectGroup].self, forKey: .groups) ?? []
             selectedDeviceID = try container.decodeIfPresent(String.self, forKey: .selectedDeviceID)
             historyDepth = try container.decodeIfPresent(Int.self, forKey: .historyDepth) ?? 16
             flipHorizontal = try container.decodeIfPresent(Bool.self, forKey: .flipHorizontal) ?? true
         }
     }
 
+    static let generalGroupID = "general"
+
     @Published private(set) var effects: [Effect] = []
+    @Published private(set) var groups: [EffectGroup] = []
     @Published var config = AppConfig()
 
     /// Fired when an effect's shader changed on disk (external editor).
@@ -86,14 +91,77 @@ final class EffectStore: ObservableObject {
             at: effectsURL, includingPropertiesForKeys: [.isDirectoryKey]
         ))?.filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true } ?? []
 
-        var loaded: [Effect] = folders.compactMap(loadEffect(from:))
-
-        // Respect saved chain order; unknown effects go to the end.
-        let orderIndex = Dictionary(uniqueKeysWithValues: config.order.enumerated().map { ($1, $0) })
-        loaded.sort {
-            (orderIndex[$0.id] ?? Int.max, $0.name) < (orderIndex[$1.id] ?? Int.max, $1.name)
-        }
+        let loaded: [Effect] = folders.compactMap(loadEffect(from:))
         effects = loaded
+
+        if config.groups.isEmpty {
+            groups = Self.migrateGroups(from: config.order, effectIDs: loaded.map(\.id))
+        } else {
+            groups = normalizeGroups(config.groups, effectIDs: loaded.map(\.id))
+        }
+        reorderEffectsFromGroups()
+    }
+
+    private static func migrateGroups(from order: [String], effectIDs: [String]) -> [EffectGroup] {
+        let orderedIDs: [String]
+        if order.isEmpty {
+            orderedIDs = effectIDs
+        } else {
+            let known = Set(order)
+            orderedIDs = order + effectIDs.filter { !known.contains($0) }
+        }
+        return [EffectGroup(id: generalGroupID, name: "General", enabled: true, effectIDs: orderedIDs)]
+    }
+
+    /// Reconciles saved groups with effects on disk (drops missing IDs, appends orphans).
+    private func normalizeGroups(_ saved: [EffectGroup], effectIDs: [String]) -> [EffectGroup] {
+        let validIDs = Set(effectIDs)
+        var assigned = Set<String>()
+        var normalized = saved.map { group -> EffectGroup in
+            var group = group
+            group.effectIDs = group.effectIDs.filter { validIDs.contains($0) }
+            assigned.formUnion(group.effectIDs)
+            return group
+        }
+
+        let orphans = effectIDs.filter { !assigned.contains($0) }
+        if !orphans.isEmpty {
+            if let generalIndex = normalized.firstIndex(where: { $0.id == Self.generalGroupID }) {
+                normalized[generalIndex].effectIDs.append(contentsOf: orphans)
+            } else if let firstIndex = normalized.indices.first {
+                normalized[firstIndex].effectIDs.append(contentsOf: orphans)
+            } else {
+                normalized.append(EffectGroup(id: Self.generalGroupID, name: "General", effectIDs: orphans))
+            }
+        }
+
+        if normalized.isEmpty {
+            normalized = [EffectGroup(id: Self.generalGroupID, name: "General", effectIDs: effectIDs)]
+        }
+        return normalized
+    }
+
+    private func reorderEffectsFromGroups() {
+        let byID = Dictionary(uniqueKeysWithValues: effects.map { ($0.id, $0) })
+        effects = groups.flatMap(\.effectIDs).compactMap { byID[$0] }
+    }
+
+    private func updateGroup(at index: Int, _ body: (inout EffectGroup) -> Void) {
+        var group = groups[index]
+        body(&group)
+        groups[index] = group
+    }
+
+    func effect(id: String) -> Effect? {
+        effects.first { $0.id == id }
+    }
+
+    func effects(in group: EffectGroup) -> [Effect] {
+        group.effectIDs.compactMap { effect(id: $0) }
+    }
+
+    func group(containing effectID: String) -> EffectGroup? {
+        groups.first { $0.effectIDs.contains(effectID) }
     }
 
     private func inferredLegacyType(for param: EffectManifest.Param) -> String {
@@ -112,6 +180,7 @@ final class EffectStore: ObservableObject {
         var name = folder.lastPathComponent
         var enabled = true
         var parameters: [EffectParameter] = []
+        var textureBindings: [EffectTextureBinding] = []
 
         let manifestURL = folder.appendingPathComponent(Self.manifestFileName)
         if let data = try? Data(contentsOf: manifestURL),
@@ -130,6 +199,12 @@ final class EffectStore: ObservableObject {
                     maximum: param.max ?? EffectParameter.makeDefault(name: paramName, type: type).maximum
                 ))
             }
+            for (samplerName, binding) in manifest.textures ?? [:] {
+                textureBindings.append(EffectTextureBinding(
+                    name: samplerName,
+                    mediaID: binding.media
+                ))
+            }
         }
 
         return Effect(
@@ -138,13 +213,14 @@ final class EffectStore: ObservableObject {
             name: name,
             enabled: enabled,
             source: source,
-            parameters: parameters
+            parameters: parameters,
+            textureBindings: textureBindings
         )
     }
 
-    // MARK: Mutations
+    // MARK: Mutations — effects
 
-    func addEffect(named requestedName: String) -> Effect? {
+    func addEffect(named requestedName: String, toGroup groupID: String? = nil) -> Effect? {
         let baseName = requestedName.isEmpty ? "New Effect" : requestedName
         var folderName = baseName.replacingOccurrences(of: "/", with: "-")
         var counter = 2
@@ -172,6 +248,17 @@ final class EffectStore: ObservableObject {
             parameters: []
         )
         effects.append(effect)
+
+        let targetGroupID = groupID ?? groups.first?.id ?? Self.generalGroupID
+        if let index = groups.firstIndex(where: { $0.id == targetGroupID }) {
+            updateGroup(at: index) { $0.effectIDs.append(effect.id) }
+        } else if let index = groups.indices.first {
+            updateGroup(at: index) { $0.effectIDs.append(effect.id) }
+        } else {
+            groups = [EffectGroup(id: Self.generalGroupID, name: "General", effectIDs: [effect.id])]
+        }
+
+        reorderEffectsFromGroups()
         persist(effect: effect)
         saveConfigSoon()
         return effect
@@ -179,12 +266,96 @@ final class EffectStore: ObservableObject {
 
     func removeEffect(_ effect: Effect) {
         effects.removeAll { $0.id == effect.id }
+        for index in groups.indices {
+            updateGroup(at: index) { group in
+                group.effectIDs.removeAll { $0 == effect.id }
+            }
+        }
         try? FileManager.default.removeItem(at: effect.folderURL)
         saveConfigSoon()
     }
 
-    func moveEffects(fromOffsets source: IndexSet, toOffset destination: Int) {
-        effects.move(fromOffsets: source, toOffset: destination)
+    func moveEffects(inGroup groupID: String, fromOffsets source: IndexSet, toOffset destination: Int) {
+        guard let index = groups.firstIndex(where: { $0.id == groupID }) else { return }
+        updateGroup(at: index) { $0.effectIDs.move(fromOffsets: source, toOffset: destination) }
+        reorderEffectsFromGroups()
+        saveConfigSoon()
+    }
+
+    /// Moves an effect into `targetGroupID`, optionally inserting before `beforeEffectID`.
+    /// When `beforeEffectID` is nil, appends to the end of the target group.
+    func moveEffect(_ effectID: String, toGroup targetGroupID: String, beforeEffectID: String? = nil) {
+        for index in groups.indices {
+            updateGroup(at: index) { $0.effectIDs.removeAll { $0 == effectID } }
+        }
+        guard let targetIndex = groups.firstIndex(where: { $0.id == targetGroupID }) else { return }
+        updateGroup(at: targetIndex) { group in
+            if let beforeEffectID, let insertIndex = group.effectIDs.firstIndex(of: beforeEffectID) {
+                group.effectIDs.insert(effectID, at: insertIndex)
+            } else {
+                group.effectIDs.append(effectID)
+            }
+        }
+        reorderEffectsFromGroups()
+        saveConfigSoon()
+    }
+
+    // MARK: Mutations — groups
+
+    @discardableResult
+    func addGroup(named requestedName: String = "New Group") -> EffectGroup {
+        var name = requestedName
+        var counter = 2
+        while groups.contains(where: { $0.name == name }) {
+            name = "\(requestedName) \(counter)"
+            counter += 1
+        }
+        let group = EffectGroup(id: UUID().uuidString, name: name, enabled: true, effectIDs: [])
+        groups.append(group)
+        saveConfigSoon()
+        return group
+    }
+
+    func renameGroup(id: String, to name: String) {
+        guard let index = groups.firstIndex(where: { $0.id == id }) else { return }
+        updateGroup(at: index) { $0.name = name }
+        saveConfigSoon()
+    }
+
+    func setGroupEnabled(id: String, enabled: Bool) {
+        guard let index = groups.firstIndex(where: { $0.id == id }) else { return }
+        updateGroup(at: index) { $0.enabled = enabled }
+        saveConfigSoon()
+    }
+
+    func moveGroups(fromOffsets source: IndexSet, toOffset destination: Int) {
+        groups.move(fromOffsets: source, toOffset: destination)
+        reorderEffectsFromGroups()
+        saveConfigSoon()
+    }
+
+    func removeGroup(id: String, deleteEffects: Bool, moveEffectsTo targetGroupID: String?) {
+        guard let index = groups.firstIndex(where: { $0.id == id }) else { return }
+        let effectIDs = groups[index].effectIDs
+        groups.remove(at: index)
+
+        if deleteEffects {
+            for effectID in effectIDs {
+                guard let effect = effect(id: effectID) else { continue }
+                effects.removeAll { $0.id == effect.id }
+                try? FileManager.default.removeItem(at: effect.folderURL)
+            }
+        } else if let targetGroupID,
+                  let targetIndex = groups.firstIndex(where: { $0.id == targetGroupID }) {
+            updateGroup(at: targetIndex) { $0.effectIDs.append(contentsOf: effectIDs) }
+        }
+
+        if groups.isEmpty {
+            let remainingIDs = deleteEffects ? [] : effectIDs
+            groups = [EffectGroup(id: Self.generalGroupID, name: "General", effectIDs: remainingIDs)]
+        }
+
+        reorderEffectsFromGroups()
         saveConfigSoon()
     }
 
@@ -203,6 +374,7 @@ final class EffectStore: ObservableObject {
 
     func saveConfigSoon() {
         config.order = effects.map(\.id)
+        config.groups = groups
         saveWorkItem?.cancel()
         let workItem = DispatchWorkItem { [weak self] in
             guard let self else { return }
@@ -247,9 +419,7 @@ final class EffectStore: ObservableObject {
     }
 
     static let newEffectTemplate = """
-    // New effect. Available inputs (see README for the full contract):
-    //   vUV, uPrev, uFrames, uResolution, uTime, uFrameCount, uHeadIndex,
-    //   ceHistory(uv, framesAgo)
+    // Built-in uniforms are listed in the inspector. See README for details.
 
     layout(std140, binding = 3) uniform Params {
         float amount;

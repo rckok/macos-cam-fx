@@ -8,6 +8,7 @@ import SwiftUI
 final class AppState: ObservableObject {
 
     let store: EffectStore
+    let mediaLibrary: MediaLibrary
     let capture: CaptureManager
     let extensionManager: ExtensionManager
     let sink: VirtualCameraSink
@@ -40,22 +41,25 @@ final class AppState: ObservableObject {
     }
 
     init() {
-        // Metal is available on all supported hardware; fail hard if not.
         let engine = try! RenderEngine()
         self.engine = engine
         self.store = EffectStore()
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("CameraEffects", isDirectory: true)
+        self.mediaLibrary = MediaLibrary(appSupportRoot: appSupport)
         self.capture = CaptureManager()
         self.extensionManager = ExtensionManager()
         self.sink = VirtualCameraSink()
         self.historyDepth = 16
         self.flipHorizontal = true
 
+        mediaLibrary.reloadGPUCache(device: engine.device)
+
         historyDepth = store.config.historyDepth
         flipHorizontal = store.config.flipHorizontal
         engine.setFlipHorizontal(flipHorizontal)
         capture.selectedDeviceID = store.config.selectedDeviceID
 
-        // Frame path: capture queue -> engine; Metal completion -> sink.
         capture.frameHandler = { [engine] pixelBuffer, timestamp in
             engine.process(pixelBuffer: pixelBuffer, timestamp: timestamp)
         }
@@ -63,7 +67,6 @@ final class AppState: ObservableObject {
             sink.send(pixelBuffer: pixelBuffer, timestamp: timestamp)
         }
 
-        // Persist source selection.
         capture.$selectedDeviceID
             .dropFirst()
             .removeDuplicates()
@@ -74,7 +77,6 @@ final class AppState: ObservableObject {
             }
             .store(in: &cancellables)
 
-        // Hot reload from external editors.
         store.externalChange
             .sink { [weak self] effect in
                 self?.scheduleCompile(effect, debounce: false)
@@ -91,18 +93,36 @@ final class AppState: ObservableObject {
 
     // MARK: Effect chain
 
-    /// Pushes the current enabled+compiled chain into the render engine.
     func rebuildChain() {
-        let chain = store.effects
+        guard let cache = mediaLibrary.textureCache else { return }
+        let chain = store.groups
             .filter(\.enabled)
-            .compactMap(\.compiled)
+            .flatMap { group in
+                group.effectIDs.compactMap { id -> RunningEffect? in
+                    guard let effect = store.effect(id: id),
+                          effect.enabled,
+                          let compiled = effect.compiled
+                    else { return nil }
+                    return RunningEffect(
+                        compiled: compiled,
+                        textureAssets: EffectTextureAssets(bindings: effect.textureBindings, cache: cache)
+                    )
+                }
+            }
         engine.setEffects(chain)
     }
 
-    func addEffect() {
-        guard let effect = store.addEffect(named: "New Effect") else { return }
+    func addEffect(toGroup groupID: String? = nil) {
+        let resolvedGroupID = groupID
+            ?? store.group(containing: selectedEffectID ?? "")?.id
+            ?? store.groups.first?.id
+        guard let effect = store.addEffect(named: "New Effect", toGroup: resolvedGroupID) else { return }
         selectedEffectID = effect.id
         scheduleCompile(effect, debounce: false)
+    }
+
+    func addGroup() {
+        _ = store.addGroup()
     }
 
     func removeEffect(_ effect: Effect) {
@@ -115,8 +135,44 @@ final class AppState: ObservableObject {
         rebuildChain()
     }
 
-    func moveEffects(fromOffsets source: IndexSet, toOffset destination: Int) {
-        store.moveEffects(fromOffsets: source, toOffset: destination)
+    func moveEffects(inGroup groupID: String, fromOffsets source: IndexSet, toOffset destination: Int) {
+        store.moveEffects(inGroup: groupID, fromOffsets: source, toOffset: destination)
+        rebuildChain()
+    }
+
+    func moveEffect(_ effectID: String, toGroup targetGroupID: String, beforeEffectID: String? = nil) {
+        store.moveEffect(effectID, toGroup: targetGroupID, beforeEffectID: beforeEffectID)
+        rebuildChain()
+    }
+
+    func moveGroups(fromOffsets source: IndexSet, toOffset destination: Int) {
+        store.moveGroups(fromOffsets: source, toOffset: destination)
+        rebuildChain()
+    }
+
+    func setGroupEnabled(_ groupID: String, enabled: Bool) {
+        store.setGroupEnabled(id: groupID, enabled: enabled)
+        rebuildChain()
+    }
+
+    func renameGroup(_ groupID: String, to name: String) {
+        store.renameGroup(id: groupID, to: name)
+    }
+
+    func removeGroup(_ group: EffectGroup, deleteEffects: Bool, moveEffectsTo targetGroupID: String? = nil) {
+        let removedEffectIDs = Set(group.effectIDs)
+        store.removeGroup(id: group.id, deleteEffects: deleteEffects, moveEffectsTo: targetGroupID)
+
+        if deleteEffects {
+            for effectID in removedEffectIDs {
+                compileTasks[effectID]?.cancel()
+                compileTasks[effectID] = nil
+            }
+            if let selected = selectedEffectID, removedEffectIDs.contains(selected) {
+                selectedEffectID = store.effects.first?.id
+            }
+        }
+
         rebuildChain()
     }
 
@@ -130,9 +186,43 @@ final class AppState: ObservableObject {
         store.persist(effect: effect)
     }
 
+    // MARK: Media library
+
+    func addMediaAsset(from url: URL) {
+        do {
+            _ = try mediaLibrary.addAsset(from: url)
+            mediaLibrary.reloadGPUCache(device: engine.device)
+            rebuildChain()
+        } catch {
+            NSLog("Failed to add media asset: \(error)")
+        }
+    }
+
+    func removeMediaAsset(id: String) {
+        for effect in store.effects {
+            var changed = false
+            for index in effect.textureBindings.indices where effect.textureBindings[index].mediaID == id {
+                effect.textureBindings[index].mediaID = nil
+                changed = true
+            }
+            if changed {
+                store.persist(effect: effect)
+            }
+        }
+        mediaLibrary.removeAsset(id: id)
+        mediaLibrary.reloadGPUCache(device: engine.device)
+        rebuildChain()
+    }
+
+    func assignMedia(_ mediaID: String?, toSampler samplerName: String, in effect: Effect) {
+        guard let index = effect.textureBindings.firstIndex(where: { $0.name == samplerName }) else { return }
+        effect.textureBindings[index].mediaID = mediaID
+        store.persist(effect: effect)
+        rebuildChain()
+    }
+
     // MARK: Compilation
 
-    /// Recompiles an effect, optionally debounced (used while typing).
     func scheduleCompile(_ effect: Effect, debounce: Bool) {
         compileTasks[effect.id]?.cancel()
         compileTasks[effect.id] = Task { [weak self] in
@@ -165,6 +255,7 @@ final class AppState: ObservableObject {
         case .success(let compiled):
             effect.compiled = compiled
             effect.syncParameters(with: compiled.reflection)
+            effect.syncTextureBindings(with: compiled.reflection)
             effect.applyParameters()
             effect.diagnostics = []
             rebuildChain()
@@ -175,7 +266,6 @@ final class AppState: ObservableObject {
             } else {
                 effect.diagnostics = [ShaderDiagnostic(line: nil, message: error.localizedDescription)]
             }
-            // Keep the last working pipeline running; only the editor shows errors.
         }
     }
 }

@@ -85,6 +85,31 @@ struct EffectParameter: Identifiable, Equatable {
     }
 }
 
+/// A named pipeline group that can be enabled/disabled as a whole.
+struct EffectGroup: Identifiable, Codable, Equatable {
+    var id: String
+    var name: String
+    var enabled: Bool
+    var effectIDs: [String]
+
+    init(id: String, name: String, enabled: Bool = true, effectIDs: [String] = []) {
+        self.id = id
+        self.name = name
+        self.enabled = enabled
+        self.effectIDs = effectIDs
+    }
+}
+
+/// Assigns a media-library asset to a `sampler2D` uniform in the effect shader.
+struct EffectTextureBinding: Identifiable, Equatable {
+    /// GLSL sampler name, e.g. `uOverlay`.
+    let name: String
+    /// ID of the asset in the shared media library, if assigned.
+    var mediaID: String?
+
+    var id: String { name }
+}
+
 /// On-disk manifest stored next to shader.frag in each effect folder.
 struct EffectManifest: Codable {
     struct Param: Codable {
@@ -94,9 +119,14 @@ struct EffectManifest: Codable {
         var max: Double?
     }
 
+    struct TextureBinding: Codable {
+        var media: String?
+    }
+
     var name: String
     var enabled: Bool?
     var params: [String: Param]?
+    var textures: [String: TextureBinding]?
 }
 
 /// One effect: a GLSL shader on disk plus runtime compile state.
@@ -109,18 +139,30 @@ final class Effect: Identifiable, ObservableObject {
     @Published var enabled: Bool
     @Published var source: String
     @Published var parameters: [EffectParameter]
+    @Published var textureBindings: [EffectTextureBinding]
     @Published var diagnostics: [ShaderDiagnostic] = []
 
     /// Set after a successful compile; consumed by the render engine.
     var compiled: CompiledEffect?
 
-    init(id: String, folderURL: URL, name: String, enabled: Bool, source: String, parameters: [EffectParameter]) {
+    static let reservedTextureNames: Set<String> = ["uPrev", "uFrames"]
+
+    init(
+        id: String,
+        folderURL: URL,
+        name: String,
+        enabled: Bool,
+        source: String,
+        parameters: [EffectParameter],
+        textureBindings: [EffectTextureBinding] = []
+    ) {
         self.id = id
         self.folderURL = folderURL
         self.name = name
         self.enabled = enabled
         self.source = source
         self.parameters = parameters
+        self.textureBindings = textureBindings
     }
 
     /// Merges reflected `Params` members with existing parameter state,
@@ -150,6 +192,19 @@ final class Effect: Identifiable, ObservableObject {
         }
     }
 
+    /// Merges reflected user `sampler2D` uniforms with persisted library assignments.
+    func syncTextureBindings(with reflection: ShaderReflection) {
+        let bindings = reflection.textures.filter {
+            $0.dim == "2d" && !Self.reservedTextureNames.contains($0.name)
+        }
+        textureBindings = bindings.map { binding in
+            if let existing = textureBindings.first(where: { $0.name == binding.name }) {
+                return existing
+            }
+            return EffectTextureBinding(name: binding.name, mediaID: nil)
+        }
+    }
+
     /// Pushes all current parameter values into the compiled effect's buffer.
     func applyParameters() {
         guard let compiled else { return }
@@ -169,6 +224,15 @@ final class Effect: Identifiable, ObservableObject {
                 max: parameter.maximum
             )
         }
-        return EffectManifest(name: name, enabled: enabled, params: params)
+        var textureManifest: [String: EffectManifest.TextureBinding] = [:]
+        for binding in textureBindings {
+            textureManifest[binding.name] = EffectManifest.TextureBinding(media: binding.mediaID)
+        }
+        return EffectManifest(
+            name: name,
+            enabled: enabled,
+            params: params,
+            textures: textureManifest.isEmpty ? nil : textureManifest
+        )
     }
 }

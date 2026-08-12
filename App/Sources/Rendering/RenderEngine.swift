@@ -31,7 +31,7 @@ final class RenderEngine {
     private let lock = NSLock()
 
     // Protected by `lock`:
-    private var effects: [CompiledEffect] = []
+    private var effects: [RunningEffect] = []
     private var historyDepth: Int = 16
     private var flipHorizontal: Bool = true
 
@@ -102,7 +102,7 @@ final class RenderEngine {
 
     // MARK: Configuration (called from the main thread)
 
-    func setEffects(_ newEffects: [CompiledEffect]) {
+    func setEffects(_ newEffects: [RunningEffect]) {
         lock.lock()
         effects = newEffects
         lock.unlock()
@@ -176,7 +176,10 @@ final class RenderEngine {
         // 4. Run the effect chain, ping-ponging between offscreen textures.
         var currentInput: MTLTexture = workingTexture
         var pingPongIndex = 0
-        for effect in currentEffects {
+        for running in currentEffects {
+            running.textureAssets.advanceVideoFrames()
+
+            let effect = running.compiled
             let target = pingPong[pingPongIndex]
             pingPongIndex = 1 - pingPongIndex
 
@@ -193,7 +196,7 @@ final class RenderEngine {
                 switch texture.name {
                 case "uPrev": source = currentInput
                 case "uFrames": source = historyTexture
-                default: source = nil
+                default: source = running.textureAssets.texture(named: texture.name)
                 }
                 if let source, texture.mslTexture >= 0 {
                     encoder.setFragmentTexture(source, index: texture.mslTexture)

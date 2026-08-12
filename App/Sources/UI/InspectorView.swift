@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Auto-generated parameter controls reflected from the effect's Params block.
@@ -6,22 +7,91 @@ struct InspectorView: View {
     @ObservedObject var effect: Effect
 
     var body: some View {
-        Form {
-            if effect.parameters.isEmpty {
-                Text("This effect has no parameters.\nDeclare a `Params` uniform block in the shader to add some.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach($effect.parameters) { $parameter in
-                    ParameterControl(parameter: $parameter) {
-                        state.parametersChanged(effect)
+        VStack(alignment: .leading, spacing: 0) {
+            ShaderGlobalsSection()
+
+            Form {
+                if !effect.textureBindings.isEmpty {
+                    Section("Textures") {
+                        ForEach($effect.textureBindings) { $binding in
+                            TextureBindingRow(effect: effect, binding: $binding)
+                        }
                     }
-                    .id("\(parameter.name)-\(parameter.type)-\(parameter.values.count)")
+                }
+
+                Section("Parameters") {
+                    if effect.parameters.isEmpty {
+                        Text("No scalar parameters.\nDeclare a `Params` uniform block to add sliders and toggles.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach($effect.parameters) { $parameter in
+                            ParameterControl(parameter: $parameter) {
+                                state.parametersChanged(effect)
+                            }
+                            .id("\(parameter.name)-\(parameter.type)-\(parameter.values.count)")
+                        }
+                    }
+                }
+
+                if effect.textureBindings.isEmpty && effect.parameters.isEmpty {
+                    Text("Declare a `Params` block and/or `sampler2D` uniforms (binding ≥ 4) in your shader.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
+            .formStyle(.grouped)
         }
-        .formStyle(.grouped)
-        .navigationTitle("Parameters")
+        .navigationTitle("Inspector")
+    }
+}
+
+private struct TextureBindingRow: View {
+    @EnvironmentObject private var state: AppState
+    @ObservedObject var effect: Effect
+    @Binding var binding: EffectTextureBinding
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(binding.name)
+                .font(.headline)
+
+            Picker("Media", selection: mediaSelection) {
+                Text("None").tag(Optional<String>.none)
+                ForEach(state.mediaLibrary.assets) { asset in
+                    Text(asset.displayName).tag(Optional(asset.id))
+                }
+            }
+            .labelsHidden()
+
+            if let asset = assignedAsset, asset.kind == .image,
+               let image = NSImage(contentsOf: state.mediaLibrary.fileURL(for: asset)) {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxHeight: 64)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+            } else if assignedAsset != nil {
+                Label(assignedAsset!.kind == .video ? "Video" : "Image", systemImage: assignedAsset!.kind == .video ? "film" : "photo")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var assignedAsset: MediaAsset? {
+        guard let mediaID = binding.mediaID else { return nil }
+        return state.mediaLibrary.asset(id: mediaID)
+    }
+
+    private var mediaSelection: Binding<String?> {
+        Binding(
+            get: { binding.mediaID },
+            set: { newValue in
+                state.assignMedia(newValue, toSampler: binding.name, in: effect)
+            }
+        )
     }
 }
 

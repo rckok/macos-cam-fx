@@ -4,6 +4,7 @@ struct ContentView: View {
     @EnvironmentObject private var state: AppState
     @State private var showSettings = false
     @State private var showInspector = true
+    @State private var showMediaLibrary = false
 
     private let sidebarWidth: CGFloat = 240
     private let inspectorWidth: CGFloat = 260
@@ -35,22 +36,30 @@ struct ContentView: View {
             .layoutPriority(1)
 
             if showInspector {
-                Group {
+                InspectorPanel {
                     if let effect = state.selectedEffect {
                         InspectorView(effect: effect)
                     } else {
-                        Text("No effect selected")
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        ShaderGlobalsSection()
                     }
                 }
-                .frame(minWidth: 180, idealWidth: inspectorWidth, maxWidth: 360)
+                .frame(minWidth: 220, idealWidth: inspectorWidth, maxWidth: 400)
                 .layoutPriority(0)
             }
         }
         .toolbar {
-            ToolbarItemGroup {
-                VirtualCameraToolbar(extensionManager: state.extensionManager, sink: state.sink)
+            ToolbarItemGroup(placement: .navigation) {
+                Button {
+                    showMediaLibrary.toggle()
+                } label: {
+                    Label("Media", systemImage: "photo.on.rectangle.angled")
+                }
+                .help("Open the shared media library")
+                .popover(isPresented: $showMediaLibrary) {
+                    MediaLibraryView()
+                        .environmentObject(state)
+                }
+
                 Button {
                     showSettings.toggle()
                 } label: {
@@ -59,11 +68,17 @@ struct ContentView: View {
                 .popover(isPresented: $showSettings) {
                     SettingsPopover()
                 }
+
                 Button {
                     showInspector.toggle()
                 } label: {
-                    Label("Parameters", systemImage: "slider.horizontal.3")
+                    Label("Inspector", systemImage: "slider.horizontal.3")
                 }
+                .help("Show or hide the inspector (built-in shader uniforms and effect parameters)")
+            }
+
+            ToolbarItem(placement: .primaryAction) {
+                VirtualCameraToolbar(extensionManager: state.extensionManager, sink: state.sink)
             }
         }
     }

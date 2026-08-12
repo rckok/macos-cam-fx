@@ -39,11 +39,10 @@ xcodegen
 open CameraEffects.xcodeproj
 ```
 
-Build and run the `CameraEffects` scheme.
-
-The built app is at `build/Debug/CameraEffects.app` (project-relative Derived
-Data). **Do not** copy from `build/Build/Products/Debug/` — that path is stale
-from older builds and will not include recent changes.
+Build and run the `CameraEffects` scheme. The built app is written to
+`build/Debug/CameraEffects.app` (project-relative). If you build from Xcode
+without changing the scheme, Xcode may still use DerivedData — prefer
+`xcodebuild` or set the scheme's build location to match.
 
 ## Installing the virtual camera (development)
 
@@ -78,22 +77,39 @@ one folder per effect containing `shader.frag` (GLSL) and `effect.json`
 
 Your shader is a GLSL 450 **fragment shader body**. The app injects a prelude
 that declares the interface, so you only write `main()` plus an optional
-`Params` block:
+`Params` block. The inspector lists every built-in symbol when editing an effect.
+
+### Built-in interface
+
+| Symbol | Type | Description |
+| --- | --- | --- |
+| `vUV` | `in vec2` | Fullscreen UV coordinates. (0, 0) is top-left; (1, 1) is bottom-right. |
+| `outColor` | `out vec4` | Write the effect output here. |
+| `uPrev` | `sampler2D` | Previous pass output (or the scaled/mirrored camera frame for pass 0). |
+| `uFrames` | `sampler3D` | Last **N** raw camera frames. The z axis is history — prefer `ceHistory()` over manual z indexing. |
+| `ceHistory(uv, ago)` | `vec4` | Sample the raw frame from `ago` frames ago (0 = newest). Handles ring-buffer wrapping. |
+
+### CEContext uniform block (binding = 2)
+
+| Member | Type | Description |
+| --- | --- | --- |
+| `uResolution` | `vec2` | Output size in pixels (1280 × 720). |
+| `uTime` | `float` | Seconds since the capture stream started. |
+| `uTimeDelta` | `float` | Seconds since the previous rendered frame. |
+| `uFrameCount` | `int` | Depth **N** of `uFrames` (Settings → Frame History). |
+| `uHeadIndex` | `int` | z-slice index of the newest raw frame (0 … N − 1). |
+| `uFrameNumber` | `int` | Frame counter since the stream started. |
+
+### User-declared uniforms
+
+| Symbol | Type | Description |
+| --- | --- | --- |
+| `Params` | `std140` block, binding = 3 | Optional effect parameters — become inspector controls. |
+| `yourSampler` | `sampler2D`, binding ≥ 4 | Optional 2D textures assigned from the media library. |
+
+Example effect:
 
 ```glsl
-// Everything below is provided by the app -- do not redeclare it:
-//
-//   in  vec2 vUV;                    // 0,0 = top-left
-//   out vec4 outColor;
-//   uniform sampler2D uPrev;         // previous pass output (or raw frame for pass 0)
-//   uniform sampler3D uFrames;       // last N raw frames, z = history axis
-//   vec2  uResolution;               // output size in pixels
-//   float uTime, uTimeDelta;         // seconds
-//   int   uFrameCount;               // depth N of uFrames
-//   int   uHeadIndex;                // z-slice of the newest frame
-//   int   uFrameNumber;              // frames since stream start
-//   vec4  ceHistory(vec2 uv, int ago) // sample the frame `ago` frames back
-
 layout(std140, binding = 3) uniform Params {
     float amount;   // becomes a slider in the inspector
 };
