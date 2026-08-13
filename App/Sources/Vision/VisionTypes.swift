@@ -67,9 +67,10 @@ struct VisionHand {
     var joints: [SIMD4<Float>]
 }
 
-/// Latest vision results, published by `VisionProcessor` and consumed by the
-/// render thread. All coordinates and mask textures are in vUV space, except
-/// `personMatte`, which is unmirrored (the engine blits it into orientation).
+/// Vision results for one camera frame, produced by `VisionProcessor` and
+/// consumed by the render thread together with that same frame. All coordinates
+/// and mask textures are in vUV space, except `personMatte`, which is
+/// unmirrored (the engine blits it into orientation).
 struct VisionSnapshot {
     /// xy = top-left origin, zw = size, in vUV space. At most `maxFaces`.
     var faceRects: [SIMD4<Float>] = []

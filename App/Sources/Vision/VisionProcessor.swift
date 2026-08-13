@@ -1,18 +1,25 @@
 import CoreGraphics
+import CoreMedia
 import CoreVideo
 import Foundation
 import Metal
 import Vision
 
 /// Runs the Vision requests implied by the active feature set on a background
-/// queue, converts results into vUV space, and publishes snapshots for the
-/// render thread.
+/// queue, converts results into vUV space, and delivers a snapshot paired with
+/// the camera frame it was computed from.
 ///
-/// - Only the requests required by the current feature set are created; with
-///   an empty set the processor is fully idle.
-/// - Frames are dropped while a previous frame is still being analyzed
-///   (latest-wins), so the render loop never blocks on Vision.
+/// Frames that arrive while analysis is in flight replace a single pending
+/// slot (latest-wins). The caller composites a frame only after that frame's
+/// snapshot is ready, so mattes stay aligned with the image.
 final class VisionProcessor {
+
+    private struct SubmittedFrame {
+        let pixelBuffer: CVPixelBuffer
+        let timestamp: CMTime
+        let mirrored: Bool
+        let completion: (CVPixelBuffer, CMTime, Bool, VisionSnapshot) -> Void
+    }
 
     private let device: MTLDevice
     private let queue = DispatchQueue(label: "cameraEffects.vision", qos: .userInitiated)
@@ -20,8 +27,8 @@ final class VisionProcessor {
 
     // Protected by `lock`:
     private var features: VisionFeatures = []
-    private var latest = VisionSnapshot()
     private var busy = false
+    private var pending: SubmittedFrame?
 
     // Only touched on `queue`:
     private var requestFeatures: VisionFeatures = []
@@ -43,28 +50,37 @@ final class VisionProcessor {
     func setFeatures(_ newFeatures: VisionFeatures) {
         lock.lock()
         defer { lock.unlock() }
-        guard newFeatures != features else { return }
         features = newFeatures
-        if !newFeatures.contains(.personMatte) { latest.personMatte = nil }
-        if !newFeatures.contains(.faceMask) { latest.faceMask = nil }
-        if !newFeatures.needsFaceDetection { latest.faceRects = [] }
-        if !newFeatures.needsHandDetection { latest.hands = [] }
     }
 
-    /// Latest published results (≤ one camera frame behind).
-    func snapshot() -> VisionSnapshot {
-        lock.lock()
-        defer { lock.unlock() }
-        return latest
-    }
-
-    /// Queues a frame for analysis unless one is already in flight.
+    /// Queues `pixelBuffer` for analysis. If a frame is already in flight, this
+    /// replaces the pending slot so only the latest camera frame is processed
+    /// next. `completion` is invoked on the vision queue with the snapshot
+    /// computed from this buffer (or the later pending buffer that replaced it).
     /// `mirrored` mirrors observation coordinates to match the flipped
     /// working texture the effects sample.
-    func submit(pixelBuffer: CVPixelBuffer, mirrored: Bool) {
+    func submit(
+        pixelBuffer: CVPixelBuffer,
+        timestamp: CMTime,
+        mirrored: Bool,
+        completion: @escaping (CVPixelBuffer, CMTime, Bool, VisionSnapshot) -> Void
+    ) {
+        let frame = SubmittedFrame(
+            pixelBuffer: pixelBuffer,
+            timestamp: timestamp,
+            mirrored: mirrored,
+            completion: completion
+        )
+
         lock.lock()
         let activeFeatures = features
-        guard !activeFeatures.isEmpty, !busy else {
+        if activeFeatures.isEmpty {
+            lock.unlock()
+            completion(pixelBuffer, timestamp, mirrored, VisionSnapshot())
+            return
+        }
+        if busy {
+            pending = frame
             lock.unlock()
             return
         }
@@ -72,33 +88,48 @@ final class VisionProcessor {
         lock.unlock()
 
         queue.async { [weak self] in
-            self?.analyze(pixelBuffer: pixelBuffer, mirrored: mirrored, features: activeFeatures)
+            self?.analyze(frame, features: activeFeatures)
         }
     }
 
     // MARK: Analysis (vision queue)
 
-    private func analyze(pixelBuffer: CVPixelBuffer, mirrored: Bool, features: VisionFeatures) {
+    private func analyze(_ frame: SubmittedFrame, features: VisionFeatures) {
         updateRequests(for: features)
         let requests: [VNRequest] = [faceRequest, handRequest, matteRequest].compactMap { $0 }
 
-        var snapshot: VisionSnapshot?
+        var snapshot = VisionSnapshot()
         if !requests.isEmpty {
-            let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, options: [:])
+            let handler = VNImageRequestHandler(cvPixelBuffer: frame.pixelBuffer, options: [:])
             do {
                 try handler.perform(requests)
-                snapshot = buildSnapshot(pixelBuffer: pixelBuffer, mirrored: mirrored, features: features)
+                snapshot = buildSnapshot(pixelBuffer: frame.pixelBuffer, mirrored: frame.mirrored, features: features)
             } catch {
                 NSLog("Vision analysis failed: \(error)")
             }
         }
 
         lock.lock()
-        if let snapshot, self.features == features {
-            latest = snapshot
+        let next = pending
+        pending = nil
+        let nextFeatures = self.features
+        if next == nil {
+            busy = false
         }
-        busy = false
         lock.unlock()
+
+        frame.completion(frame.pixelBuffer, frame.timestamp, frame.mirrored, snapshot)
+
+        if let next {
+            if nextFeatures.isEmpty {
+                lock.lock()
+                busy = false
+                lock.unlock()
+                next.completion(next.pixelBuffer, next.timestamp, next.mirrored, VisionSnapshot())
+            } else {
+                analyze(next, features: nextFeatures)
+            }
+        }
     }
 
     /// Requests are cached and reused across frames (person segmentation is

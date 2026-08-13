@@ -37,6 +37,7 @@ final class RenderEngine {
     private let fallbackRGBATexture: MTLTexture
 
     private let lock = NSLock()
+    private let renderQueue = DispatchQueue(label: "cameraEffects.render", qos: .userInteractive)
 
     // Protected by `lock`:
     private var effects: [RunningEffect] = []
@@ -162,13 +163,58 @@ final class RenderEngine {
         lock.unlock()
     }
 
-    // MARK: Frame processing (called on the capture queue)
+    // MARK: Frame processing
 
     func process(pixelBuffer: CVPixelBuffer, timestamp: CMTime) {
+        renderQueue.async { [self] in
+            processOnRenderQueue(pixelBuffer: pixelBuffer, timestamp: timestamp)
+        }
+    }
+
+    private func processOnRenderQueue(pixelBuffer: CVPixelBuffer, timestamp: CMTime) {
+        lock.lock()
+        let flip = flipHorizontal
+        let activeVision = visionFeatures
+        lock.unlock()
+
+        // Vision-backed effects wait for the snapshot computed from this buffer
+        // so mattes line up with the image. Intermediate camera frames replace
+        // a single pending slot inside VisionProcessor (latest-wins).
+        if !activeVision.isEmpty {
+            visionProcessor.submit(
+                pixelBuffer: pixelBuffer,
+                timestamp: timestamp,
+                mirrored: flip
+            ) { [weak self] buffer, time, mirrored, snapshot in
+                self?.renderQueue.async {
+                    self?.encodeFrame(
+                        pixelBuffer: buffer,
+                        timestamp: time,
+                        mirrored: mirrored,
+                        vision: snapshot
+                    )
+                }
+            }
+            return
+        }
+
+        encodeFrame(
+            pixelBuffer: pixelBuffer,
+            timestamp: timestamp,
+            mirrored: flip,
+            vision: VisionSnapshot()
+        )
+    }
+
+    private func encodeFrame(
+        pixelBuffer: CVPixelBuffer,
+        timestamp: CMTime,
+        mirrored: Bool,
+        vision: VisionSnapshot
+    ) {
         lock.lock()
         let currentEffects = effects
         let depth = historyDepth
-        let flip = flipHorizontal
         let activeVision = visionFeatures
         lock.unlock()
 
@@ -183,7 +229,7 @@ final class RenderEngine {
         //    resolution that matches the virtual camera.
         encodeBlit(
             commandBuffer: commandBuffer,
-            pipeline: flip ? flipHPipeline : blitPipeline,
+            pipeline: mirrored ? flipHPipeline : blitPipeline,
             source: frameTexture,
             destination: workingTexture
         )
@@ -202,19 +248,13 @@ final class RenderEngine {
             blit.endEncoding()
         }
 
-        // 3. Vision data: analyze asynchronously (latest-wins) and consume the
-        //    most recent snapshot. Detectors only run for uniforms in use.
-        var vision = VisionSnapshot()
-        if !activeVision.isEmpty {
-            visionProcessor.submit(pixelBuffer: pixelBuffer, mirrored: flip)
-            vision = visionProcessor.snapshot()
-        }
+        // 3. Bind vision data computed from this same camera frame.
         if activeVision.contains(.personMatte), let matte = vision.personMatte, let personMatteTexture {
             // The matte is generated from the raw frame; blit it into vUV
             // orientation (stretch to output size, mirror when flipped).
             encodeBlit(
                 commandBuffer: commandBuffer,
-                pipeline: flip ? flipHR8Pipeline : blitR8Pipeline,
+                pipeline: mirrored ? flipHR8Pipeline : blitR8Pipeline,
                 source: matte,
                 destination: personMatteTexture
             )
