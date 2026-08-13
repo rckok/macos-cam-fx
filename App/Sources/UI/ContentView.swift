@@ -5,6 +5,7 @@ struct ContentView: View {
     @State private var showSettings = false
     @State private var showInspector = true
     @State private var showMediaLibrary = false
+    @State private var showUniforms = false
 
     private let sidebarWidth: CGFloat = 240
     private let inspectorWidth: CGFloat = 260
@@ -40,7 +41,10 @@ struct ContentView: View {
                     if let effect = state.selectedEffect {
                         InspectorView(effect: effect)
                     } else {
-                        ShaderGlobalsSection()
+                        Text("Select an effect to edit its parameters.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .padding(12)
                     }
                 }
                 .frame(minWidth: 220, idealWidth: inspectorWidth, maxWidth: 400)
@@ -49,6 +53,16 @@ struct ContentView: View {
         }
         .toolbar {
             ToolbarItemGroup(placement: .navigation) {
+                Button {
+                    showUniforms.toggle()
+                } label: {
+                    Label("Uniforms", systemImage: "curlybraces")
+                }
+                .help("Built-in shader uniforms")
+                .popover(isPresented: $showUniforms) {
+                    ShaderGlobalsView()
+                }
+
                 Button {
                     showMediaLibrary.toggle()
                 } label: {
@@ -74,7 +88,7 @@ struct ContentView: View {
                 } label: {
                     Label("Inspector", systemImage: "slider.horizontal.3")
                 }
-                .help("Show or hide the inspector (built-in shader uniforms and effect parameters)")
+                .help("Show or hide the inspector")
             }
 
             ToolbarItem(placement: .primaryAction) {
@@ -93,7 +107,7 @@ struct VirtualCameraToolbar: View {
     var body: some View {
         HStack(spacing: 12) {
             switch extensionManager.status {
-            case .installed:
+            case .installed, .checking:
                 EmptyView()
             case .unknown:
                 Button("Install Extension") {

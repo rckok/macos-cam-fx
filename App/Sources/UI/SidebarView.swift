@@ -4,7 +4,6 @@ struct SidebarView: View {
     @EnvironmentObject private var state: AppState
     @ObservedObject var store: EffectStore
     @ObservedObject var capture: CaptureManager
-    @State private var showMediaLibrary = false
     @State private var groupToDelete: EffectGroup?
     @State private var collapsedGroupIDs: Set<String> = []
     @State private var editingGroupID: String?
@@ -97,19 +96,6 @@ struct SidebarView: View {
             .onMove { source, destination in
                 state.moveGroups(fromOffsets: source, toOffset: destination)
             }
-
-            Section("Library") {
-                Button {
-                    showMediaLibrary = true
-                } label: {
-                    Label("Media Library", systemImage: "photo.on.rectangle.angled")
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .popover(isPresented: $showMediaLibrary) {
-            MediaLibraryView()
-                .environmentObject(state)
         }
         .safeAreaInset(edge: .bottom) {
             HStack {

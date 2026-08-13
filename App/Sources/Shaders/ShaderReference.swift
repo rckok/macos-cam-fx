@@ -193,44 +193,27 @@ enum ShaderReference {
     ]
 }
 
-/// Collapsible built-in uniform reference for the inspector panel.
-struct ShaderGlobalsSection: View {
-    @State private var isExpanded = false
-
+/// Popover listing the uniforms injected by `ShaderCompiler.prelude`.
+struct ShaderGlobalsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.15)) {
-                    isExpanded.toggle()
-                }
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "chevron.right")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                    Text("Built-in uniforms")
-                        .font(.subheadline.weight(.semibold))
-                    Spacer()
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
+            Text("Built-in uniforms")
+                .font(.headline)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
 
-            if isExpanded {
+            Divider()
+
+            ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     ForEach(ShaderReference.categories) { category in
                         ShaderGlobalsCategory(category: category)
                     }
                 }
-                .padding(.horizontal, 12)
-                .padding(.bottom, 12)
+                .padding(12)
             }
-
-            Divider()
         }
+        .frame(width: 380, height: 480)
     }
 }
 

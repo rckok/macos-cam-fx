@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Right-hand column: parameter inspector and built-in shader reference.
+/// Right-hand column: effect parameter inspector.
 struct InspectorPanel<Content: View>: View {
     @ViewBuilder let content: () -> Content
 
