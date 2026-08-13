@@ -39,10 +39,19 @@ targets:
       - path: Shared
       - path: App/Resources/BuiltInEffects
         type: folder
+      - path: App/Resources/Assets.xcassets
+      - path: App/Resources/AppIcon.icns
+      # Icon Composer package for the macOS 26 Dock (Liquid Glass).
+      # XcodeGen 2.44 treats this as a folder; the pbxproj file type must be
+      # folder.iconcomposer.icon so actool compiles it instead of copying it.
+      - path: App/Resources/AppIcon.icon
+        type: file
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: studio.polyglot.CameraEffects
         INFOPLIST_FILE: App/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS: YES
         CODE_SIGN_ENTITLEMENTS: App/CameraEffects.entitlements
         SWIFT_OBJC_BRIDGING_HEADER: App/Sources/Bridging/BridgingHeader.h
         HEADER_SEARCH_PATHS:

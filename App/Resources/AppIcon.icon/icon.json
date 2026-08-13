@@ -1,0 +1,28 @@
+{
+  "fill" : {
+    "solid" : "extended-srgb:0.07059,0.07451,0.09020,1.00000"
+  },
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "glass" : false,
+          "image-name" : "AppIcon.png",
+          "name" : "Lens"
+        }
+      ],
+      "shadow" : {
+        "kind" : "none",
+        "opacity" : 0
+      },
+      "specular" : false,
+      "translucency" : {
+        "enabled" : false,
+        "value" : 0.5
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "squares" : ["macOS"]
+  }
+}
