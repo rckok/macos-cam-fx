@@ -94,41 +94,51 @@ final class VisionProcessor {
 
     // MARK: Analysis (vision queue)
 
-    private func analyze(_ frame: SubmittedFrame, features: VisionFeatures) {
-        updateRequests(for: features)
-        let requests: [VNRequest] = [faceRequest, handRequest, matteRequest].compactMap { $0 }
+    /// Processes `initial` and then any later pending replacement without
+    /// recursing, so the stack stays bounded for a long-running session.
+    private func analyze(_ initial: SubmittedFrame, features initialFeatures: VisionFeatures) {
+        var frame = initial
+        var features = initialFeatures
+        while true {
+            updateRequests(for: features)
+            let requests: [VNRequest] = [faceRequest, handRequest, matteRequest].compactMap { $0 }
 
-        var snapshot = VisionSnapshot()
-        if !requests.isEmpty {
-            let handler = VNImageRequestHandler(cvPixelBuffer: frame.pixelBuffer, options: [:])
-            do {
-                try handler.perform(requests)
-                snapshot = buildSnapshot(pixelBuffer: frame.pixelBuffer, mirrored: frame.mirrored, features: features)
-            } catch {
-                NSLog("Vision analysis failed: \(error)")
+            var snapshot = VisionSnapshot()
+            if !requests.isEmpty {
+                let handler = VNImageRequestHandler(cvPixelBuffer: frame.pixelBuffer, options: [:])
+                do {
+                    try handler.perform(requests)
+                    snapshot = buildSnapshot(
+                        pixelBuffer: frame.pixelBuffer,
+                        mirrored: frame.mirrored,
+                        features: features
+                    )
+                } catch {
+                    NSLog("Vision analysis failed: \(error)")
+                }
             }
-        }
 
-        lock.lock()
-        let next = pending
-        pending = nil
-        let nextFeatures = self.features
-        if next == nil {
-            busy = false
-        }
-        lock.unlock()
+            lock.lock()
+            let next = pending
+            pending = nil
+            let nextFeatures = self.features
+            if next == nil {
+                busy = false
+            }
+            lock.unlock()
 
-        frame.completion(frame.pixelBuffer, frame.timestamp, frame.mirrored, snapshot)
+            frame.completion(frame.pixelBuffer, frame.timestamp, frame.mirrored, snapshot)
 
-        if let next {
+            guard let next else { return }
             if nextFeatures.isEmpty {
                 lock.lock()
                 busy = false
                 lock.unlock()
                 next.completion(next.pixelBuffer, next.timestamp, next.mirrored, VisionSnapshot())
-            } else {
-                analyze(next, features: nextFeatures)
+                return
             }
+            frame = next
+            features = nextFeatures
         }
     }
 
