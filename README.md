@@ -8,9 +8,10 @@ system-wide **virtual camera** you can pick in Zoom, Meet, FaceTime, etc.
   (glslang → SPIR-V → SPIRV-Cross → MSL).
 - Every effect gets the last **N frames** of the raw feed as a **3D texture**
   (`sampler3D uFrames`), with N configurable in the app.
-- Built-in editor with live recompile, inline compile errors, and
-  auto-generated parameter controls reflected from your shader's `Params`
-  uniform block.
+- Built-in editor with GLSL syntax highlighting, code completion (keywords,
+  built-ins, and the injected prelude symbols), live recompile, inline compile
+  errors, and auto-generated parameter controls reflected from your shader's
+  `Params` uniform block.
 - The virtual camera is a modern **CoreMediaIO Camera Extension** (the same
   mechanism OBS uses); the app renders frames and pushes them into the
   extension through a sink stream.
