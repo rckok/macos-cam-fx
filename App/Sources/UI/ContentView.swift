@@ -23,7 +23,7 @@ struct ContentView: View {
 
                 if let effect = state.selectedEffect {
                     EditorView(effect: effect)
-                        .frame(minWidth: 200, minHeight: 140)
+                        .frame(minWidth: 200, minHeight: 140, maxHeight: .infinity)
                 } else {
                     ContentUnavailableView(
                         "No Effect Selected",

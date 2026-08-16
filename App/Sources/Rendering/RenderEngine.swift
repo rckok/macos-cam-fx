@@ -325,20 +325,23 @@ final class RenderEngine {
             }
 
             for block in effect.reflection.uniformBlocks where block.mslBuffer >= 0 {
+                let requiredLength = effect.constantBufferLength(for: block)
                 switch block.name {
                 case "CEContext":
-                    encoder.setFragmentBytes(&context, length: MemoryLayout<ContextUniforms>.stride, index: block.mslBuffer)
+                    withUnsafeBytes(of: &context) { bytes in
+                        Self.setFragmentBytes(encoder, bytes: bytes, index: block.mslBuffer, requiredLength: requiredLength)
+                    }
                 case "Params":
                     if let paramsBuffer = effect.paramsBuffer {
                         encoder.setFragmentBuffer(paramsBuffer, offset: 0, index: block.mslBuffer)
                     }
                 case VisionUniforms.faceBlock:
                     faceSlots.withUnsafeBytes { bytes in
-                        encoder.setFragmentBytes(bytes.baseAddress!, length: bytes.count, index: block.mslBuffer)
+                        Self.setFragmentBytes(encoder, bytes: bytes, index: block.mslBuffer, requiredLength: requiredLength)
                     }
                 case VisionUniforms.handsBlock:
                     handSlots.withUnsafeBytes { bytes in
-                        encoder.setFragmentBytes(bytes.baseAddress!, length: bytes.count, index: block.mslBuffer)
+                        Self.setFragmentBytes(encoder, bytes: bytes, index: block.mslBuffer, requiredLength: requiredLength)
                     }
                 default:
                     break
@@ -400,6 +403,28 @@ final class RenderEngine {
         encoder.setFragmentSamplerState(sampler, index: 0)
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         encoder.endEncoding()
+    }
+
+    /// Metal constant structs are 16-byte aligned; SPIR-V sizes often are not.
+    private static func setFragmentBytes(
+        _ encoder: MTLRenderCommandEncoder,
+        bytes: UnsafeRawBufferPointer,
+        index: Int,
+        requiredLength: Int
+    ) {
+        guard let baseAddress = bytes.baseAddress else { return }
+        let length = max(bytes.count, requiredLength)
+        if length == bytes.count {
+            encoder.setFragmentBytes(baseAddress, length: bytes.count, index: index)
+            return
+        }
+        var padded = [UInt8](repeating: 0, count: length)
+        padded.withUnsafeMutableBytes { dest in
+            dest.copyMemory(from: UnsafeRawBufferPointer(start: baseAddress, count: min(bytes.count, length)))
+        }
+        padded.withUnsafeBytes { ptr in
+            encoder.setFragmentBytes(ptr.baseAddress!, length: length, index: index)
+        }
     }
 
     private func makeTexture(from pixelBuffer: CVPixelBuffer) -> MTLTexture? {

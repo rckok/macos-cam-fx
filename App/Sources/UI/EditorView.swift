@@ -30,13 +30,15 @@ struct EditorView: View {
 
             Divider()
 
-            TextEditor(text: $effect.source)
-                .font(.system(size: 13, design: .monospaced))
-                .scrollContentBackground(.hidden)
-                .background(Color(nsColor: .textBackgroundColor))
-                .autocorrectionDisabled()
-                .onChange(of: effect.source) {
-                    state.scheduleCompile(effect, debounce: true)
+            // Color expands in the split view; NSViewRepresentable overlay then
+            // fills that frame. Without this, the AppKit view often lays out at 0×0.
+            Color(nsColor: .textBackgroundColor)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .overlay {
+                    ShaderSourceEditor(
+                        text: effect.source,
+                        onChange: handleEditorChange
+                    )
                 }
 
             if !effect.diagnostics.isEmpty {
@@ -64,6 +66,15 @@ struct EditorView: View {
                 .frame(maxHeight: 100)
                 .background(Color.red.opacity(0.06))
             }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func handleEditorChange(_ newText: String) {
+        DispatchQueue.main.async {
+            guard effect.source != newText else { return }
+            effect.source = newText
+            state.scheduleCompile(effect, debounce: true)
         }
     }
 }

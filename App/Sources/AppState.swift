@@ -249,22 +249,27 @@ final class AppState: ObservableObject {
             }
         }.value
 
-        guard !Task.isCancelled, effect.source == source else { return }
+        // Hop off the current SwiftUI turn. `Task { @MainActor in }` can run
+        // inline while a view is still updating and then trip the publish warning.
+        DispatchQueue.main.async { [weak self, weak effect] in
+            guard let self, let effect else { return }
+            guard effect.source == source else { return }
 
-        switch result {
-        case .success(let compiled):
-            effect.compiled = compiled
-            effect.syncParameters(with: compiled.reflection)
-            effect.syncTextureBindings(with: compiled.reflection)
-            effect.applyParameters()
-            effect.diagnostics = []
-            rebuildChain()
-            store.persist(effect: effect)
-        case .failure(let error):
-            if let compileError = error as? ShaderCompileError {
-                effect.diagnostics = compileError.diagnostics
-            } else {
-                effect.diagnostics = [ShaderDiagnostic(line: nil, message: error.localizedDescription)]
+            switch result {
+            case .success(let compiled):
+                effect.compiled = compiled
+                effect.syncParameters(with: compiled.reflection)
+                effect.syncTextureBindings(with: compiled.reflection)
+                effect.applyParameters()
+                effect.diagnostics = []
+                rebuildChain()
+                store.persist(effect: effect)
+            case .failure(let error):
+                if let compileError = error as? ShaderCompileError {
+                    effect.diagnostics = compileError.diagnostics
+                } else {
+                    effect.diagnostics = [ShaderDiagnostic(line: nil, message: error.localizedDescription)]
+                }
             }
         }
     }
