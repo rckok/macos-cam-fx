@@ -93,25 +93,29 @@ int st_compile_fragment(const char* glsl_source,
     shader.setAutoMapBindings(true);
     shader.setAutoMapLocations(true);
 
-    const EShMessages messages = static_cast<EShMessages>(EShMsgSpvRules | EShMsgVulkanRules);
+        const EShMessages messages = static_cast<EShMessages>(
+            EShMsgSpvRules | EShMsgVulkanRules | EShMsgCascadingErrors);
 
-    if (!shader.parse(GetDefaultResources(), 450, ECoreProfile, false, false, messages)) {
-        if (out_log) {
-            std::string log = shader.getInfoLog();
-            *out_log = copy_string(log);
+        if (!shader.parse(GetDefaultResources(), 450, ECoreProfile, false, false, messages)) {
+            if (out_log) {
+                std::string log = shader.getInfoLog();
+                log += shader.getInfoDebugLog();
+                *out_log = copy_string(log);
+            }
+            return 1;
         }
-        return 1;
-    }
 
-    glslang::TProgram program;
-    program.addShader(&shader);
-    if (!program.link(messages) || !program.mapIO()) {
-        if (out_log) {
-            std::string log = program.getInfoLog();
-            *out_log = copy_string(log);
+        glslang::TProgram program;
+        program.addShader(&shader);
+        if (!program.link(messages) || !program.mapIO()) {
+            if (out_log) {
+                std::string log = shader.getInfoLog();
+                log += program.getInfoLog();
+                log += program.getInfoDebugLog();
+                *out_log = copy_string(log);
+            }
+            return 1;
         }
-        return 1;
-    }
 
     std::vector<uint32_t> spirv;
     glslang::SpvOptions spvOptions;
@@ -129,6 +133,12 @@ int st_compile_fragment(const char* glsl_source,
         msl.set_msl_options(mslOptions);
 
         const std::string mslSource = msl.compile();
+
+        std::string warningLog = shader.getInfoLog();
+        warningLog += program.getInfoLog();
+        if (!warningLog.empty() && out_log) {
+            *out_log = copy_string(warningLog);
+        }
 
         // --- Reflection ---
         spirv_cross::ShaderResources resources = msl.get_shader_resources();

@@ -36,16 +36,24 @@ struct ShaderReflection: Codable {
 struct ShaderCompileOutput {
     let msl: String
     let reflection: ShaderReflection
+    /// Warnings that did not fail the compile.
+    let diagnostics: [ShaderDiagnostic]
 }
 
 struct ShaderDiagnostic: Identifiable, Equatable {
+    enum Severity: Equatable {
+        case error
+        case warning
+    }
+
     let id = UUID()
     /// 1-based line in the *user's* source, if the error maps to one.
     let line: Int?
     let message: String
+    var severity: Severity = .error
 
     static func == (lhs: ShaderDiagnostic, rhs: ShaderDiagnostic) -> Bool {
-        lhs.line == rhs.line && lhs.message == rhs.message
+        lhs.line == rhs.line && lhs.message == rhs.message && lhs.severity == rhs.severity
     }
 }
 
@@ -179,45 +187,80 @@ enum ShaderCompiler {
             st_string_free(logOut)
         }
 
+        let log = logOut.map { String(cString: $0) } ?? ""
+        let diagnostics = parseDiagnostics(log: log)
+
         guard status == 0, let mslOut, let reflectionOut else {
-            let log = logOut.map { String(cString: $0) } ?? "Unknown shader compile error"
-            throw ShaderCompileError(diagnostics: parseDiagnostics(log: log))
+            throw ShaderCompileError(diagnostics: diagnostics.isEmpty
+                ? [ShaderDiagnostic(line: nil, message: log.isEmpty ? "Unknown shader compile error" : log)]
+                : diagnostics)
         }
 
         let msl = String(cString: mslOut)
         let reflectionJSON = Data(String(cString: reflectionOut).utf8)
         let reflection = try JSONDecoder().decode(ShaderReflection.self, from: reflectionJSON)
-        return ShaderCompileOutput(msl: msl, reflection: reflection)
+        return ShaderCompileOutput(
+            msl: msl,
+            reflection: reflection,
+            diagnostics: diagnostics.filter { $0.severity == .warning }
+        )
     }
 
-    /// Parses glslang logs ("ERROR: 0:12: message") and maps line numbers past
+    /// Parses glslang and Metal compiler logs and maps line numbers past
     /// the injected prelude back to the user's source.
-    private static func parseDiagnostics(log: String) -> [ShaderDiagnostic] {
+    static func parseDiagnostics(log: String) -> [ShaderDiagnostic] {
         var diagnostics: [ShaderDiagnostic] = []
-        let pattern = /ERROR:\s+\d+:(\d+):\s*(.*)/
+        let glslangPattern = /(ERROR|WARNING):\s+\d+:(\d+):\s*(.*)/
+        let metalPattern = /(?:^|\n)[^:\n]+:(\d+):\d+:\s*(error|warning):\s*([^\n]+)/
 
         for rawLine in log.components(separatedBy: "\n") {
             let line = rawLine.trimmingCharacters(in: .whitespaces)
             if line.isEmpty { continue }
-            if let match = line.firstMatch(of: pattern) {
-                let compilerLine = Int(match.1) ?? 0
+            if let match = line.firstMatch(of: glslangPattern) {
+                let severity: ShaderDiagnostic.Severity = String(match.1) == "WARNING" ? .warning : .error
+                let compilerLine = Int(match.2) ?? 0
                 let userLine = compilerLine - preludeLineCount
+                let message = String(match.3)
+                if isSummaryMessage(message) { continue }
                 diagnostics.append(ShaderDiagnostic(
                     line: userLine >= 1 ? userLine : nil,
-                    message: String(match.2)
+                    message: message,
+                    severity: severity
                 ))
-            } else if line.hasPrefix("ERROR:") {
-                let message = String(line.dropFirst("ERROR:".count)).trimmingCharacters(in: .whitespaces)
-                if message.hasPrefix("1 compilation errors") || message.contains("compilation errors.") {
-                    continue
-                }
-                diagnostics.append(ShaderDiagnostic(line: nil, message: message))
+            } else if line.uppercased().hasPrefix("ERROR:") {
+                let message = String(line.drop { $0 != ":" }.dropFirst()).trimmingCharacters(in: .whitespaces)
+                if isSummaryMessage(message) { continue }
+                diagnostics.append(ShaderDiagnostic(line: nil, message: message, severity: .error))
+            } else if line.uppercased().hasPrefix("WARNING:") {
+                let message = String(line.drop { $0 != ":" }.dropFirst()).trimmingCharacters(in: .whitespaces)
+                if isSummaryMessage(message) { continue }
+                diagnostics.append(ShaderDiagnostic(line: nil, message: message, severity: .warning))
             }
         }
 
         if diagnostics.isEmpty {
+            for match in log.matches(of: metalPattern) {
+                let severity: ShaderDiagnostic.Severity = String(match.2).lowercased() == "warning" ? .warning : .error
+                diagnostics.append(ShaderDiagnostic(
+                    line: nil,
+                    message: String(match.3),
+                    severity: severity
+                ))
+            }
+        }
+
+        if diagnostics.isEmpty, !log.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             diagnostics.append(ShaderDiagnostic(line: nil, message: log))
         }
-        return diagnostics
+
+        var seen = Set<String>()
+        return diagnostics.filter { diagnostic in
+            let key = "\(diagnostic.severity)-\(diagnostic.line ?? 0)-\(diagnostic.message)"
+            return seen.insert(key).inserted
+        }
+    }
+
+    private static func isSummaryMessage(_ message: String) -> Bool {
+        message.contains("compilation errors") || message.contains("No code generated")
     }
 }

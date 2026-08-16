@@ -261,7 +261,7 @@ final class AppState: ObservableObject {
                 effect.syncParameters(with: compiled.reflection)
                 effect.syncTextureBindings(with: compiled.reflection)
                 effect.applyParameters()
-                effect.diagnostics = []
+                effect.diagnostics = compiled.warnings
                 rebuildChain()
                 store.persist(effect: effect)
             case .failure(let error):

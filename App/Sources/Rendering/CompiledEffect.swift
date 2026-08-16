@@ -6,6 +6,8 @@ import Metal
 final class CompiledEffect {
     let pipeline: MTLRenderPipelineState
     let reflection: ShaderReflection
+    /// Warnings from GLSL compile that did not fail the build.
+    let warnings: [ShaderDiagnostic]
     /// Buffer backing the user's `Params` block; nil when the shader has none.
     let paramsBuffer: MTLBuffer?
     /// Metal constant-buffer lengths keyed by MSL buffer index. SPIR-V
@@ -15,8 +17,14 @@ final class CompiledEffect {
 
     init(device: MTLDevice, vertexFunction: MTLFunction, output: ShaderCompileOutput) throws {
         self.reflection = output.reflection
+        self.warnings = output.diagnostics
 
-        let library = try device.makeLibrary(source: output.msl, options: nil)
+        let library: MTLLibrary
+        do {
+            library = try device.makeLibrary(source: output.msl, options: nil)
+        } catch {
+            throw ShaderCompileError(diagnostics: ShaderCompiler.parseDiagnostics(log: error.localizedDescription))
+        }
         guard let fragmentFunction = library.makeFunction(name: output.reflection.entryPoint) else {
             throw ShaderCompileError(diagnostics: [
                 ShaderDiagnostic(line: nil, message: "Missing entry point \(output.reflection.entryPoint) in compiled MSL")

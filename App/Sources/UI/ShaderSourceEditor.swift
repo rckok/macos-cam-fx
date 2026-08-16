@@ -4,6 +4,9 @@ import SwiftUI
 /// Monospaced GLSL editor: line numbers, 4-space tabs, rectangular editing, auto-indent.
 struct ShaderSourceEditor: NSViewRepresentable {
     var text: String
+    var diagnostics: [ShaderDiagnostic]
+    var revealLine: Int?
+    var revealNonce: Int
     var onChange: (String) -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -15,6 +18,7 @@ struct ShaderSourceEditor: NSViewRepresentable {
         context.coordinator.host = host
         context.coordinator.onChange = onChange
         host.setSource(text)
+        host.setDiagnostics(diagnostics)
         host.textView.delegate = context.coordinator
         return host
     }
@@ -23,12 +27,15 @@ struct ShaderSourceEditor: NSViewRepresentable {
         context.coordinator.onChange = onChange
         context.coordinator.host = host
         context.coordinator.applyExternalTextIfNeeded(text)
+        host.setDiagnostics(diagnostics)
+        context.coordinator.revealLineIfNeeded(revealLine, nonce: revealNonce)
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var onChange: (String) -> Void
         weak var host: ShaderEditorHostView?
         private var applyingExternalText = false
+        private var lastRevealNonce = 0
 
         init(onChange: @escaping (String) -> Void) {
             self.onChange = onChange
@@ -39,6 +46,12 @@ struct ShaderSourceEditor: NSViewRepresentable {
             applyingExternalText = true
             host.setSource(newText)
             applyingExternalText = false
+        }
+
+        func revealLineIfNeeded(_ line: Int?, nonce: Int) {
+            guard nonce != lastRevealNonce, let line else { return }
+            lastRevealNonce = nonce
+            host?.revealLine(line)
         }
 
         func textDidChange(_ notification: Notification) {
@@ -92,6 +105,40 @@ final class ShaderEditorHostView: NSView {
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    func setDiagnostics(_ diagnostics: [ShaderDiagnostic]) {
+        var markers: [Int: ShaderDiagnostic.Severity] = [:]
+        for diagnostic in diagnostics {
+            guard let line = diagnostic.line else { continue }
+            if markers[line] != .error {
+                markers[line] = diagnostic.severity
+            }
+        }
+        ruler.lineMarkers = markers
+        ruler.needsDisplay = true
+    }
+
+    func revealLine(_ line: Int) {
+        guard line >= 1 else { return }
+        let nsString = textView.string as NSString
+        var location = 0
+        var current = 1
+        while current < line, location < nsString.length {
+            var lineEnd = 0
+            nsString.getLineStart(nil, end: &lineEnd, contentsEnd: nil, for: NSRange(location: location, length: 0))
+            if lineEnd <= location { break }
+            location = lineEnd
+            current += 1
+        }
+        let index = min(location, max(nsString.length, 1) - (nsString.length == 0 ? 0 : 1))
+        var lineStart = 0
+        var contentsEnd = 0
+        nsString.getLineStart(&lineStart, end: nil, contentsEnd: &contentsEnd, for: NSRange(location: index, length: 0))
+        let range = NSRange(location: lineStart, length: max(contentsEnd - lineStart, 0))
+        window?.makeFirstResponder(textView)
+        textView.setSelectedRange(range)
+        textView.scrollRangeToVisible(range)
     }
 
     func setSource(_ text: String) {
@@ -478,6 +525,7 @@ final class ShaderTextView: NSTextView {
 
 final class LineNumberRulerView: NSRulerView {
     private weak var textView: NSTextView?
+    var lineMarkers: [Int: ShaderDiagnostic.Severity] = [:]
 
     init(textView: NSTextView) {
         self.textView = textView
@@ -514,8 +562,10 @@ final class LineNumberRulerView: NSRulerView {
     private static func thickness(forLineCount count: Int) -> CGFloat {
         let digits = max(String(count).count, 2)
         let digitWidth = ("8" as NSString).size(withAttributes: [.font: labelFont]).width
-        return ceil(CGFloat(digits) * digitWidth) + 10
+        return ceil(CGFloat(digits) * digitWidth) + 8 + markerSlot
     }
+
+    private static let markerSlot: CGFloat = 12
 
     override func drawHashMarksAndLabels(in rect: NSRect) {
         guard let textView,
@@ -560,6 +610,7 @@ final class LineNumberRulerView: NSRulerView {
             let isLineStart = charIndex == 0 || nsString.substring(with: NSRange(location: charIndex - 1, length: 1)) == "\n"
             if isLineStart {
                 drawLineNumber(lineNumber, in: lineRect, relativePoint: relativePoint, inset: inset)
+                drawMarker(for: lineNumber, in: lineRect, relativePoint: relativePoint, inset: inset)
                 lineNumber += 1
             }
             glyphIndex = NSMaxRange(lineGlyphRange)
@@ -572,14 +623,26 @@ final class LineNumberRulerView: NSRulerView {
                 relativePoint: relativePoint,
                 inset: inset
             )
+            drawMarker(
+                for: lineNumber,
+                in: layoutManager.extraLineFragmentRect,
+                relativePoint: relativePoint,
+                inset: inset
+            )
         }
     }
 
     private func drawLineNumber(_ number: Int, in lineRect: NSRect, relativePoint: NSPoint, inset: NSSize) {
         let label = "\(number)" as NSString
+        let color: NSColor
+        switch lineMarkers[number] {
+        case .error: color = .systemRed
+        case .warning: color = .systemYellow
+        case nil: color = .secondaryLabelColor
+        }
         let attributes: [NSAttributedString.Key: Any] = [
             .font: Self.labelFont,
-            .foregroundColor: NSColor.secondaryLabelColor,
+            .foregroundColor: color,
         ]
         let size = label.size(withAttributes: attributes)
         let point = NSPoint(
@@ -587,6 +650,15 @@ final class LineNumberRulerView: NSRulerView {
             y: lineRect.minY + relativePoint.y + inset.height + (lineRect.height - size.height) / 2
         )
         label.draw(at: point, withAttributes: attributes)
+    }
+
+    private func drawMarker(for number: Int, in lineRect: NSRect, relativePoint: NSPoint, inset: NSSize) {
+        guard let severity = lineMarkers[number] else { return }
+        let diameter: CGFloat = 7
+        let y = lineRect.minY + relativePoint.y + inset.height + (lineRect.height - diameter) / 2
+        let rect = NSRect(x: 4, y: y, width: diameter, height: diameter)
+        (severity == .error ? NSColor.systemRed : NSColor.systemYellow).setFill()
+        NSBezierPath(ovalIn: rect).fill()
     }
 
     private static let labelFont = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
