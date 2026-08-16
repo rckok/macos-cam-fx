@@ -1,7 +1,8 @@
 import AppKit
 import SwiftUI
 
-/// Monospaced GLSL editor: line numbers, 4-space tabs, rectangular editing, auto-indent.
+/// Monospaced GLSL editor: line numbers, 4-space tabs, rectangular editing,
+/// auto-indent, syntax highlighting, and identifier completion.
 struct ShaderSourceEditor: NSViewRepresentable {
     var text: String
     var diagnostics: [ShaderDiagnostic]
@@ -235,6 +236,7 @@ final class ShaderTextView: NSTextView {
         textContainerInset = NSSize(width: 6, height: 8)
         textContainer?.widthTracksTextView = true
         textContainer?.heightTracksTextView = false
+        textStorage?.delegate = self
         applyCodeAppearance()
     }
 
@@ -261,7 +263,13 @@ final class ShaderTextView: NSTextView {
         ]
 
         if let textStorage, textStorage.length > 0 {
-            textStorage.addAttributes(attributes, range: NSRange(location: 0, length: textStorage.length))
+            textStorage.beginEditing()
+            textStorage.addAttributes(
+                [.font: codeFont, .paragraphStyle: paragraphStyle],
+                range: NSRange(location: 0, length: textStorage.length)
+            )
+            textStorage.endEditing()
+            GLSLSyntaxHighlighter.highlight(textStorage)
         }
     }
 
@@ -298,6 +306,9 @@ final class ShaderTextView: NSTextView {
             if replacementRange.location != NSNotFound {
                 setSelectedRange(replacementRange)
             }
+            pendingAutoComplete = !isInsertingCompletion
+                && string.utf16.count == 1
+                && GLSLSyntaxHighlighter.isIdentifierChar(string.utf16.first!)
             super.insertText(string, replacementRange: NSRange(location: NSNotFound, length: 0))
             blockCarets = []
             return
@@ -520,6 +531,109 @@ final class ShaderTextView: NSTextView {
             scrollRangeToVisible(first)
         }
         invalidateBlockCaretDisplay()
+    }
+
+    // MARK: - Syntax highlighting
+
+    private var highlightScheduled = false
+
+    /// Coalesces highlight passes onto the next run-loop tick. Attribute
+    /// changes must not happen while the storage is still processing an edit,
+    /// and one pass per batch of edits is enough.
+    fileprivate func scheduleHighlight() {
+        guard !highlightScheduled else { return }
+        highlightScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.highlightScheduled = false
+            if let textStorage = self.textStorage {
+                GLSLSyntaxHighlighter.highlight(textStorage)
+            }
+        }
+    }
+
+    // MARK: - Completion
+
+    /// True while the completion session inserts (provisionally or finally)
+    /// a completion, so those insertions don't re-trigger the popup.
+    private var isInsertingCompletion = false
+    /// Set when the user types an identifier character; consumed in
+    /// `didChangeText()` to auto-open the completion popup.
+    private var pendingAutoComplete = false
+
+    override var rangeForUserCompletion: NSRange {
+        let nsString = string as NSString
+        let caret = min(selectedRange().location, nsString.length)
+        var start = caret
+        while start > 0, GLSLSyntaxHighlighter.isIdentifierChar(nsString.character(at: start - 1)) {
+            start -= 1
+        }
+        return NSRange(location: start, length: caret - start)
+    }
+
+    override func completions(
+        forPartialWordRange charRange: NSRange,
+        indexOfSelectedItem index: UnsafeMutablePointer<Int>
+    ) -> [String]? {
+        let nsString = string as NSString
+        guard charRange.location != NSNotFound, NSMaxRange(charRange) <= nsString.length else { return nil }
+        let prefix = nsString.substring(with: charRange)
+        let matches = GLSLCompletion.completions(forPrefix: prefix, in: string)
+        // No preselection: the default (0) provisionally inserts the first
+        // match, which is too intrusive for a popup that opens while typing.
+        index.pointee = -1
+        return matches.isEmpty ? nil : matches
+    }
+
+    override func insertCompletion(
+        _ word: String,
+        forPartialWordRange charRange: NSRange,
+        movement: Int,
+        isFinal flag: Bool
+    ) {
+        isInsertingCompletion = true
+        super.insertCompletion(word, forPartialWordRange: charRange, movement: movement, isFinal: flag)
+        isInsertingCompletion = false
+    }
+
+    override func didChangeText() {
+        super.didChangeText()
+        guard pendingAutoComplete else { return }
+        pendingAutoComplete = false
+        // Next tick: lets the pending highlight pass run first and keeps the
+        // popup out of the middle of the `insertText` call stack.
+        DispatchQueue.main.async { [weak self] in
+            self?.autoCompleteIfAppropriate()
+        }
+    }
+
+    private func autoCompleteIfAppropriate() {
+        guard !isInsertingCompletion, activeBlockRanges().count <= 1 else { return }
+        guard window?.firstResponder === self else { return }
+        let selection = selectedRange()
+        guard selection.length == 0 else { return }
+        let completionRange = rangeForUserCompletion
+        guard completionRange.length >= 2 else { return }
+        let nsString = string as NSString
+        // No popup for bare numeric literals or prose inside comments.
+        guard !GLSLSyntaxHighlighter.isDigit(nsString.character(at: completionRange.location)) else { return }
+        guard !GLSLSyntaxHighlighter.isInsideComment(nsString, at: selection.location) else { return }
+        // `complete(_:)` beeps when the list is empty; check before invoking.
+        let prefix = nsString.substring(with: completionRange)
+        guard !GLSLCompletion.completions(forPrefix: prefix, in: string).isEmpty else { return }
+        complete(nil)
+    }
+}
+
+extension ShaderTextView: NSTextStorageDelegate {
+    func textStorage(
+        _ textStorage: NSTextStorage,
+        didProcessEditing editedMask: NSTextStorage.EditActions,
+        range editedRange: NSRange,
+        changeInLength delta: Int
+    ) {
+        guard editedMask.contains(.editedCharacters) else { return }
+        scheduleHighlight()
     }
 }
 
