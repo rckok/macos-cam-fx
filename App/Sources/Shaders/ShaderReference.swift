@@ -182,7 +182,7 @@ enum ShaderReference {
             id: "Params",
             name: "Params",
             type: "uniform block, binding = 3",
-            description: "Optional std140 block for effect parameters. Members become sliders, toggles, or color pickers in the inspector."
+            description: "Optional std140 block for effect parameters. Members become sliders, toggles, or color pickers in the inspector. Put `// @metadata(min=0 max=1 default=0.5)` on the line above a member to set its slider range."
         ),
         Symbol(
             id: "sampler2D",

@@ -422,6 +422,7 @@ final class EffectStore: ObservableObject {
     // Built-in uniforms are listed in the inspector. See README for details.
 
     layout(std140, binding = 3) uniform Params {
+        // @metadata(min=0.0 max=1.0 default=0.5)
         float amount;
     };
 

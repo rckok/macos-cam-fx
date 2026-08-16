@@ -166,6 +166,20 @@ void main() {
 }
 ```
 
+Slider ranges default to 0…1 for floats and 0…10 for ints. Override them with a
+decorator on the preceding line:
+
+```glsl
+layout(std140, binding = 3) uniform Params {
+    // @metadata(min=0.0 max=2.0 default=0.35)
+    float amount;
+};
+```
+
+`min` / `max` update the inspector on every compile. `default` is used only
+when the parameter is first created. Current slider values stay in
+`effect.json` and are clamped into the new range.
+
 Supported `Params` member types and their generated controls: `float`
 (slider), `int` (slider), `uint` (toggle switch — use this for boolean flags;
 std140 stores them as 0/1), `vec2` (numeric fields), `vec3` / `vec4` (color

@@ -14,6 +14,14 @@ struct ShaderReflection: Codable {
         let name: String
         let type: String
         let offset: Int
+        /// Inspector range from a preceding `// @metadata(...)` line, if any.
+        var minimum: Double? = nil
+        var maximum: Double? = nil
+        var defaultValue: Double? = nil
+
+        enum CodingKeys: String, CodingKey {
+            case name, type, offset
+        }
     }
 
     struct UniformBlock: Codable {
@@ -198,11 +206,42 @@ enum ShaderCompiler {
 
         let msl = String(cString: mslOut)
         let reflectionJSON = Data(String(cString: reflectionOut).utf8)
-        let reflection = try JSONDecoder().decode(ShaderReflection.self, from: reflectionJSON)
+        let reflection = applyingParamMetadata(
+            try JSONDecoder().decode(ShaderReflection.self, from: reflectionJSON),
+            source: userSource
+        )
         return ShaderCompileOutput(
             msl: msl,
             reflection: reflection,
             diagnostics: diagnostics.filter { $0.severity == .warning }
+        )
+    }
+
+    private static func applyingParamMetadata(_ reflection: ShaderReflection, source: String) -> ShaderReflection {
+        let metadata = ParamMetadataParser.parse(from: source)
+        guard !metadata.isEmpty else { return reflection }
+        let blocks = reflection.uniformBlocks.map { block -> ShaderReflection.UniformBlock in
+            guard block.name == "Params" else { return block }
+            let members = block.members.map { member -> ShaderReflection.BlockMember in
+                guard let meta = metadata[member.name] else { return member }
+                var updated = member
+                updated.minimum = meta.minimum
+                updated.maximum = meta.maximum
+                updated.defaultValue = meta.defaultValue
+                return updated
+            }
+            return ShaderReflection.UniformBlock(
+                name: block.name,
+                binding: block.binding,
+                mslBuffer: block.mslBuffer,
+                size: block.size,
+                members: members
+            )
+        }
+        return ShaderReflection(
+            entryPoint: reflection.entryPoint,
+            textures: reflection.textures,
+            uniformBlocks: blocks
         )
     }
 
