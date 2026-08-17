@@ -177,6 +177,16 @@ enum ShaderReference {
         ),
     ]
 
+    /// Bare identifier names for editor completion, derived from the symbol
+    /// docs above. Skips the "user" category, whose names are placeholders.
+    static let completionIdentifiers: [String] = categories
+        .filter { $0.id != "user" }
+        .flatMap(\.symbols)
+        .compactMap { symbol in
+            let bare = symbol.name.prefix { $0.isLetter || $0.isNumber || $0 == "_" }
+            return bare.isEmpty ? nil : String(bare)
+        }
+
     static let userDefined: [Symbol] = [
         Symbol(
             id: "Params",
