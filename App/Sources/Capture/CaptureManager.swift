@@ -110,11 +110,7 @@ final class CaptureManager: NSObject, ObservableObject {
                 if session.canAddInput(input) {
                     session.addInput(input)
                 }
-                try device.lockForConfiguration()
-                let frameDuration = CMTime(value: 1, timescale: CMTimeScale(VirtualCamera.frameRate))
-                device.activeVideoMinFrameDuration = frameDuration
-                device.activeVideoMaxFrameDuration = frameDuration
-                device.unlockForConfiguration()
+                try configureFrameRate(of: device)
             } catch {
                 NSLog("Failed to configure capture input: \(error)")
             }
@@ -122,6 +118,37 @@ final class CaptureManager: NSObject, ObservableObject {
             if !session.isRunning {
                 session.startRunning()
             }
+        }
+    }
+
+    /// Locks the capture device to the virtual camera frame rate when the active
+    /// format supports it. DAL devices (USB, Continuity Camera, Desk View) throw
+    /// an NSException for unsupported durations, which Swift cannot catch.
+    private func configureFrameRate(of device: AVCaptureDevice) throws {
+        try device.lockForConfiguration()
+        defer { device.unlockForConfiguration() }
+
+        let desiredFPS = Double(VirtualCamera.frameRate)
+        guard let range = device.activeFormat.videoSupportedFrameRateRanges.first(where: {
+            $0.minFrameRate <= desiredFPS && desiredFPS <= $0.maxFrameRate
+        }) else {
+            return
+        }
+
+        var frameDuration = CMTime(value: 1, timescale: CMTimeScale(VirtualCamera.frameRate))
+        if frameDuration < range.minFrameDuration {
+            frameDuration = range.minFrameDuration
+        } else if frameDuration > range.maxFrameDuration {
+            frameDuration = range.maxFrameDuration
+        }
+
+        var objcError: NSError?
+        let applied = CECatchException({
+            device.activeVideoMinFrameDuration = frameDuration
+            device.activeVideoMaxFrameDuration = frameDuration
+        }, &objcError)
+        if !applied {
+            NSLog("Skipping unsupported capture frame rate: \(objcError?.localizedDescription ?? "unknown")")
         }
     }
 }

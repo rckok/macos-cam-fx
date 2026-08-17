@@ -2,6 +2,7 @@
 #define CAMERA_EFFECTS_BRIDGING_HEADER_H
 
 #include "ShaderTranspiler.h"
+#include "ExceptionCatcher.h"
 #include <CoreMediaIO/CMIOSampleBuffer.h>
 
 #endif

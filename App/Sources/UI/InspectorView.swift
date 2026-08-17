@@ -7,41 +7,37 @@ struct InspectorView: View {
     @ObservedObject var effect: Effect
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ShaderGlobalsSection()
-
-            Form {
-                if !effect.textureBindings.isEmpty {
-                    Section("Textures") {
-                        ForEach($effect.textureBindings) { $binding in
-                            TextureBindingRow(effect: effect, binding: $binding)
-                        }
+        Form {
+            if !effect.textureBindings.isEmpty {
+                Section("Textures") {
+                    ForEach($effect.textureBindings) { $binding in
+                        TextureBindingRow(effect: effect, binding: $binding)
                     }
-                }
-
-                Section("Parameters") {
-                    if effect.parameters.isEmpty {
-                        Text("No scalar parameters.\nDeclare a `Params` uniform block to add sliders and toggles.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        ForEach($effect.parameters) { $parameter in
-                            ParameterControl(parameter: $parameter) {
-                                state.parametersChanged(effect)
-                            }
-                            .id("\(parameter.name)-\(parameter.type)-\(parameter.values.count)")
-                        }
-                    }
-                }
-
-                if effect.textureBindings.isEmpty && effect.parameters.isEmpty {
-                    Text("Declare a `Params` block and/or `sampler2D` uniforms (binding ≥ 4) in your shader.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
             }
-            .formStyle(.grouped)
+
+            Section("Parameters") {
+                if effect.parameters.isEmpty {
+                    Text("No scalar parameters.\nDeclare a `Params` uniform block to add sliders and toggles.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach($effect.parameters) { $parameter in
+                        ParameterControl(parameter: $parameter) {
+                            state.parametersChanged(effect)
+                        }
+                        .id("\(parameter.name)-\(parameter.type)-\(parameter.values.count)")
+                    }
+                }
+            }
+
+            if effect.textureBindings.isEmpty && effect.parameters.isEmpty {
+                Text("Declare a `Params` block and/or `sampler2D` uniforms (binding ≥ 4) in your shader.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
+        .formStyle(.grouped)
         .navigationTitle("Inspector")
     }
 }

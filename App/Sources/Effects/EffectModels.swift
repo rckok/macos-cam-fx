@@ -83,6 +83,43 @@ struct EffectParameter: Identifiable, Equatable {
             return EffectParameter(name: name, type: normalized, values: Array(repeating: 0.5, count: count), minimum: 0, maximum: 1)
         }
     }
+
+    /// Builds a parameter from reflection, optional shader `@metadata`, and
+    /// any value already stored in the effect. Shader min/max win when present;
+    /// the current value is kept and clamped into the resulting range.
+    static func resolved(
+        name: String,
+        type: String,
+        existing: EffectParameter?,
+        minimum: Double?,
+        maximum: Double?,
+        defaultValue: Double?
+    ) -> EffectParameter {
+        let normalized = normalizeReflectionType(type)
+        let typeDefaults = makeDefault(name: name, type: normalized)
+        var minValue = minimum ?? existing?.minimum ?? typeDefaults.minimum
+        var maxValue = maximum ?? existing?.maximum ?? typeDefaults.maximum
+        if minValue > maxValue { swap(&minValue, &maxValue) }
+
+        let count = componentCount(for: normalized)
+        var values: [Double]
+        if let existing, existing.values.count == count {
+            values = existing.values
+        } else if let defaultValue {
+            values = Array(repeating: defaultValue, count: count)
+        } else {
+            values = typeDefaults.values
+        }
+        values = values.map { min(max($0, minValue), maxValue) }
+
+        return EffectParameter(
+            name: name,
+            type: normalized,
+            values: values,
+            minimum: minValue,
+            maximum: maxValue
+        )
+    }
 }
 
 /// A named pipeline group that can be enabled/disabled as a whole.
@@ -145,7 +182,13 @@ final class Effect: Identifiable, ObservableObject {
     /// Set after a successful compile; consumed by the render engine.
     var compiled: CompiledEffect?
 
-    static let reservedTextureNames: Set<String> = ["uPrev", "uFrames"]
+    /// Prelude-provided samplers that must not appear as media-library pickers.
+    static let reservedTextureNames: Set<String> = [
+        "uPrev", "uFrames",
+        VisionUniforms.personMatteSampler,
+        VisionUniforms.faceMaskSampler,
+        VisionUniforms.handMaskSampler,
+    ]
 
     init(
         id: String,
@@ -175,20 +218,15 @@ final class Effect: Identifiable, ObservableObject {
         parameters = block.members.map { member in
             let type = EffectParameter.normalizeReflectionType(member.type)
             let count = EffectParameter.componentCount(for: type)
-            // Match persisted parameters by name; the type stored before the
-            // first compile is provisional (inferred from component count),
-            // so adopt the reflected type as long as the shape matches.
-            if let existing = parameters.first(where: { $0.name == member.name }),
-               existing.values.count == count {
-                return EffectParameter(
-                    name: existing.name,
-                    type: type,
-                    values: existing.values,
-                    minimum: existing.minimum,
-                    maximum: existing.maximum
-                )
-            }
-            return EffectParameter.makeDefault(name: member.name, type: type)
+            let existing = parameters.first(where: { $0.name == member.name && $0.values.count == count })
+            return EffectParameter.resolved(
+                name: member.name,
+                type: type,
+                existing: existing,
+                minimum: member.minimum,
+                maximum: member.maximum,
+                defaultValue: member.defaultValue
+            )
         }
     }
 

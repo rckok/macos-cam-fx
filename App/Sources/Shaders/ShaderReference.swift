@@ -32,6 +32,12 @@ enum ShaderReference {
             footer: "Members of the injected CEContext uniform block:",
             symbols: contextMembers
         ),
+        Category(
+            id: "vision",
+            title: "Vision data",
+            footer: "Face, hand, and segmentation data. The detectors only run while an enabled effect uses one of these uniforms. All coordinates and mask textures are in vUV space (top-left origin, mirroring applied).",
+            symbols: vision
+        ),
         Category(id: "functions", title: "Functions", symbols: functions),
         Category(id: "user", title: "You can also declare", symbols: userDefined),
     ]
@@ -105,6 +111,63 @@ enum ShaderReference {
         ),
     ]
 
+    static let vision: [Symbol] = [
+        Symbol(
+            id: "uPersonMatte",
+            name: "uPersonMatte",
+            type: "uniform sampler2D",
+            description: "Person-segmentation luma matte for background subtraction: 1 = person, 0 = background. Sample .r."
+        ),
+        Symbol(
+            id: "uFaceMask",
+            name: "uFaceMask",
+            type: "uniform sampler2D",
+            description: "Face-part segmentation rasterized from facial landmarks. R = left eye, G = right eye, B = mouth, A = union of all parts."
+        ),
+        Symbol(
+            id: "uHandMask",
+            name: "uHandMask",
+            type: "uniform sampler2D",
+            description: "Approximate hand silhouette (luma) built from the detected hand skeleton. Sample .r."
+        ),
+        Symbol(
+            id: "uFaceCount",
+            name: "uFaceCount",
+            type: "int (CEFace, binding = 19)",
+            description: "Number of detected faces (0 … CE_MAX_FACES)."
+        ),
+        Symbol(
+            id: "uFaceRects",
+            name: "uFaceRects[4]",
+            type: "vec4 (CEFace, binding = 19)",
+            description: "Face bounding boxes in vUV space: xy = top-left corner, zw = size."
+        ),
+        Symbol(
+            id: "uHandCount",
+            name: "uHandCount",
+            type: "int (CEHands, binding = 20)",
+            description: "Number of detected hands (0 … CE_MAX_HANDS)."
+        ),
+        Symbol(
+            id: "uHandInfo",
+            name: "uHandInfo[2]",
+            type: "vec4 (CEHands, binding = 20)",
+            description: "Per hand: x = chirality (-1 left, +1 right, 0 unknown), y = detection confidence."
+        ),
+        Symbol(
+            id: "uHandJoints",
+            name: "uHandJoints[42]",
+            type: "vec4 (CEHands, binding = 20)",
+            description: "21 joints per hand: xy = vUV position, z = joint confidence. Prefer ceHandJoint() with the CE_* joint constants (CE_WRIST, CE_THUMB_TIP, CE_INDEX_TIP, …) over manual indexing."
+        ),
+        Symbol(
+            id: "ceHandJoint",
+            name: "ceHandJoint(hand, joint)",
+            type: "vec4",
+            description: "Joint of hand `hand` (0 … uHandCount − 1) at index `joint` — use the CE_* constants: wrist (CE_WRIST), then CMC/MP/IP/TIP for the thumb and MCP/PIP/DIP/TIP for each finger (CE_THUMB_*, CE_INDEX_*, CE_MIDDLE_*, CE_RING_*, CE_LITTLE_*)."
+        ),
+    ]
+
     static let functions: [Symbol] = [
         Symbol(
             id: "ceHistory",
@@ -119,7 +182,7 @@ enum ShaderReference {
             id: "Params",
             name: "Params",
             type: "uniform block, binding = 3",
-            description: "Optional std140 block for effect parameters. Members become sliders, toggles, or color pickers in the inspector."
+            description: "Optional std140 block for effect parameters. Members become sliders, toggles, or color pickers in the inspector. Put `// @metadata(min=0 max=1 default=0.5)` on the line above a member to set its slider range."
         ),
         Symbol(
             id: "sampler2D",
@@ -130,44 +193,27 @@ enum ShaderReference {
     ]
 }
 
-/// Collapsible built-in uniform reference for the inspector panel.
-struct ShaderGlobalsSection: View {
-    @State private var isExpanded = false
-
+/// Popover listing the uniforms injected by `ShaderCompiler.prelude`.
+struct ShaderGlobalsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.15)) {
-                    isExpanded.toggle()
-                }
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "chevron.right")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                    Text("Built-in uniforms")
-                        .font(.subheadline.weight(.semibold))
-                    Spacer()
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
+            Text("Built-in uniforms")
+                .font(.headline)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
 
-            if isExpanded {
+            Divider()
+
+            ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     ForEach(ShaderReference.categories) { category in
                         ShaderGlobalsCategory(category: category)
                     }
                 }
-                .padding(.horizontal, 12)
-                .padding(.bottom, 12)
+                .padding(12)
             }
-
-            Divider()
         }
+        .frame(width: 380, height: 480)
     }
 }
 
