@@ -436,7 +436,7 @@ final class ShaderTextView: NSTextView {
     }
 
     private func caretRect(atCharacterIndex rawIndex: Int) -> NSRect {
-        guard let layoutManager, let textContainer else { return .zero }
+        guard let layoutManager, textContainer != nil else { return .zero }
         let nsString = string as NSString
         let index = min(max(rawIndex, 0), nsString.length)
         let origin = textContainerOrigin
@@ -628,7 +628,7 @@ final class ShaderTextView: NSTextView {
 extension ShaderTextView: NSTextStorageDelegate {
     func textStorage(
         _ textStorage: NSTextStorage,
-        didProcessEditing editedMask: NSTextStorage.EditActions,
+        didProcessEditing editedMask: NSTextStorageEditActions,
         range editedRange: NSRange,
         changeInLength delta: Int
     ) {
