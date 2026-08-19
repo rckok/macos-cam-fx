@@ -9,6 +9,8 @@ struct EffectParameter: Identifiable, Equatable {
     var values: [Double]
     var minimum: Double
     var maximum: Double
+    /// vec3/vec4 use per-component sliders unless `@metadata(color=true)`.
+    var isColor: Bool = false
 
     var id: String { name }
 
@@ -25,10 +27,9 @@ struct EffectParameter: Identifiable, Equatable {
 
     /// Scalar/vector `uint` params are edited as on/off switches (use for boolean flags).
     enum EditorKind: Equatable {
-        case floatSlider
+        case floatSliders(componentCount: Int)
         case intSlider
         case toggle(componentCount: Int)
-        case vec2Fields
         case color(supportsOpacity: Bool)
         case unsupported(String)
     }
@@ -36,7 +37,7 @@ struct EffectParameter: Identifiable, Equatable {
     var editorKind: EditorKind {
         switch Self.normalizeReflectionType(type) {
         case "float":
-            return .floatSlider
+            return .floatSliders(componentCount: 1)
         case "int":
             return .intSlider
         case "ivec2", "ivec3", "ivec4":
@@ -50,11 +51,11 @@ struct EffectParameter: Identifiable, Equatable {
         case "uvec4":
             return .toggle(componentCount: 4)
         case "vec2":
-            return .vec2Fields
+            return .floatSliders(componentCount: 2)
         case "vec3":
-            return .color(supportsOpacity: false)
+            return isColor ? .color(supportsOpacity: false) : .floatSliders(componentCount: 3)
         case "vec4":
-            return .color(supportsOpacity: true)
+            return isColor ? .color(supportsOpacity: true) : .floatSliders(componentCount: 4)
         default:
             return .unsupported(type)
         }
@@ -85,15 +86,16 @@ struct EffectParameter: Identifiable, Equatable {
     }
 
     /// Builds a parameter from reflection, optional shader `@metadata`, and
-    /// any value already stored in the effect. Shader min/max win when present;
-    /// the current value is kept and clamped into the resulting range.
+    /// any value already stored in the effect. Shader min/max/`color` win when
+    /// present; the current value is kept and clamped into the resulting range.
     static func resolved(
         name: String,
         type: String,
         existing: EffectParameter?,
         minimum: Double?,
         maximum: Double?,
-        defaultValue: Double?
+        defaultValue: Double?,
+        isColor: Bool?
     ) -> EffectParameter {
         let normalized = normalizeReflectionType(type)
         let typeDefaults = makeDefault(name: name, type: normalized)
@@ -117,7 +119,8 @@ struct EffectParameter: Identifiable, Equatable {
             type: normalized,
             values: values,
             minimum: minValue,
-            maximum: maxValue
+            maximum: maxValue,
+            isColor: isColor ?? typeDefaults.isColor
         )
     }
 }
@@ -225,7 +228,8 @@ final class Effect: Identifiable, ObservableObject {
                 existing: existing,
                 minimum: member.minimum,
                 maximum: member.maximum,
-                defaultValue: member.defaultValue
+                defaultValue: member.defaultValue,
+                isColor: member.isColor
             )
         }
     }

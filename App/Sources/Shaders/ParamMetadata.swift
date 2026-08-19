@@ -1,11 +1,14 @@
 import Foundation
 
 /// Inspector hints declared in the shader as a preceding-line decorator:
-/// `// @metadata(min=0.0 max=1000.0 default=1.0)`
+/// `// @metadata(min=0.0 max=1000.0 default=1.0 color=true)`
 struct ParamMetadata: Equatable {
     var minimum: Double?
     var maximum: Double?
     var defaultValue: Double?
+    /// When set, `true` shows a color picker for vec3/vec4; omitted or false
+    /// keeps per-component sliders.
+    var isColor: Bool?
 }
 
 enum ParamMetadataParser {
@@ -13,7 +16,7 @@ enum ParamMetadataParser {
         pattern: #"^\s*//\s*@metadata\s*\((.*)\)\s*$"#
     )
     private static let keyValue = try! NSRegularExpression(
-        pattern: #"([A-Za-z]+)\s*=\s*([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)"#
+        pattern: #"([A-Za-z]+)(?:\s*=\s*([A-Za-z0-9.+-]+))?"#
     )
     private static let uniformParams = try! NSRegularExpression(
         pattern: #"\buniform\s+Params\b"#
@@ -104,24 +107,46 @@ enum ParamMetadataParser {
         var found = false
         let nsBody = body as NSString
         keyValue.enumerateMatches(in: body, range: NSRange(location: 0, length: nsBody.length)) { match, _, _ in
-            guard let match, match.numberOfRanges >= 3 else { return }
+            guard let match, match.numberOfRanges >= 2 else { return }
             let key = nsBody.substring(with: match.range(at: 1)).lowercased()
-            let value = Double(nsBody.substring(with: match.range(at: 2)))
+            let rawValue: String? = {
+                guard match.numberOfRanges >= 3, match.range(at: 2).location != NSNotFound else {
+                    return nil
+                }
+                return nsBody.substring(with: match.range(at: 2))
+            }()
             switch key {
             case "min":
+                guard let value = rawValue.flatMap(Double.init) else { return }
                 metadata.minimum = value
                 found = true
             case "max":
+                guard let value = rawValue.flatMap(Double.init) else { return }
                 metadata.maximum = value
                 found = true
             case "default":
+                guard let value = rawValue.flatMap(Double.init) else { return }
                 metadata.defaultValue = value
+                found = true
+            case "color":
+                guard let isColor = parseBool(rawValue) else { return }
+                metadata.isColor = isColor
                 found = true
             default:
                 break
             }
         }
         return found ? metadata : nil
+    }
+
+    /// Bare `color` means true. Accepts true/false, yes/no, on/off, 1/0.
+    private static func parseBool(_ raw: String?) -> Bool? {
+        guard let raw else { return true }
+        switch raw.lowercased() {
+        case "true", "yes", "on", "1": return true
+        case "false", "no", "off", "0": return false
+        default: return nil
+        }
     }
 
     private static func memberName(in code: String) -> String? {

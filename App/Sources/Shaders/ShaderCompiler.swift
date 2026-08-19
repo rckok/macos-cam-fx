@@ -18,6 +18,7 @@ struct ShaderReflection: Codable {
         var minimum: Double? = nil
         var maximum: Double? = nil
         var defaultValue: Double? = nil
+        var isColor: Bool? = nil
 
         enum CodingKeys: String, CodingKey {
             case name, type, offset
@@ -228,6 +229,7 @@ enum ShaderCompiler {
                 updated.minimum = meta.minimum
                 updated.maximum = meta.maximum
                 updated.defaultValue = meta.defaultValue
+                updated.isColor = meta.isColor
                 return updated
             }
             return ShaderReflection.UniformBlock(

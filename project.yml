@@ -13,6 +13,9 @@ settings:
   base:
     SWIFT_VERSION: "5.10"
     CLANG_CXX_LANGUAGE_STANDARD: c++17
+    # Xcode 16+ writes Foundation.pcm into the in-repo build/ folder. After a
+    # merge/clean those files vanish, and SourceKit fails on the bridging header.
+    CLANG_ENABLE_EXPLICIT_MODULES: NO
     CODE_SIGN_STYLE: Automatic
     CURRENT_PROJECT_VERSION: 1
     MARKETING_VERSION: 0.1.0

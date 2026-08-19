@@ -174,17 +174,28 @@ decorator on the preceding line:
 layout(std140, binding = 3) uniform Params {
     // @metadata(min=0.0 max=2.0 default=0.35)
     float amount;
+    // @metadata(min=-1.0 max=1.0)
+    vec2 offset;
+    // @metadata(min=-1.0 max=1.0)
+    vec3 direction;
+    // @metadata(color=true)
+    vec3 tint;
 };
 ```
 
 `min` / `max` update the inspector on every compile. `default` is used only
 when the parameter is first created. Current slider values stay in
-`effect.json` and are clamped into the new range.
+`effect.json` and are clamped into the new range. Float sliders include an
+editable value field for precise input.
+
+`vec3` / `vec4` use a slider per component. Add `color=true` (or a bare
+`color`) to show a color picker instead.
 
 Supported `Params` member types and their generated controls: `float`
 (slider), `int` (slider), `uint` (toggle switch — use this for boolean flags;
-std140 stores them as 0/1), `vec2` (numeric fields), `vec3` / `vec4` (color
-picker). Parameter values and ranges are stored in the effect's `effect.json`.
+std140 stores them as 0/1), `vec2` / `vec3` / `vec4` (a slider per component;
+`vec3` / `vec4` become a color picker when `color=true`). Parameter values
+and ranges are stored in the effect's `effect.json`.
 
 ## Project layout
 

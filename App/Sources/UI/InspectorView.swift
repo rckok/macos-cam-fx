@@ -26,7 +26,7 @@ struct InspectorView: View {
                         ParameterControl(parameter: $parameter) {
                             state.parametersChanged(effect)
                         }
-                        .id("\(parameter.name)-\(parameter.type)-\(parameter.values.count)")
+                        .id("\(parameter.name)-\(parameter.type)-\(parameter.values.count)-\(parameter.isColor)")
                     }
                 }
             }
@@ -97,20 +97,24 @@ struct ParameterControl: View {
 
     var body: some View {
         switch parameter.editorKind {
-        case .floatSlider:
-            VStack(alignment: .leading, spacing: 4) {
-                LabeledContent(parameter.name) {
-                    Text(String(format: "%.3f", parameter.values[0]))
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                }
-                Slider(
-                    value: Binding(
-                        get: { parameter.values[0] },
-                        set: { parameter.values[0] = $0; onChange() }
-                    ),
-                    in: parameter.minimum...max(parameter.maximum, parameter.minimum + 0.0001)
+        case .floatSliders(let componentCount):
+            if componentCount == 1 {
+                EditableFloatSlider(
+                    title: parameter.name,
+                    value: componentBinding(0),
+                    range: floatSliderRange
                 )
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(parameter.name)
+                    ForEach(0..<componentCount, id: \.self) { index in
+                        EditableFloatSlider(
+                            title: componentLabel(index),
+                            value: componentBinding(index),
+                            range: floatSliderRange
+                        )
+                    }
+                }
             }
         case .intSlider:
             VStack(alignment: .leading, spacing: 4) {
@@ -144,13 +148,6 @@ struct ParameterControl: View {
                     }
                 }
             }
-        case .vec2Fields:
-            LabeledContent(parameter.name) {
-                HStack {
-                    componentField(index: 0, label: "x")
-                    componentField(index: 1, label: "y")
-                }
-            }
         case .color(let supportsOpacity):
             ColorPicker(
                 parameter.name,
@@ -181,10 +178,21 @@ struct ParameterControl: View {
         }
     }
 
+    private var floatSliderRange: ClosedRange<Double> {
+        parameter.minimum...max(parameter.maximum, parameter.minimum + 0.0001)
+    }
+
     private func boolBinding(index: Int) -> Binding<Bool> {
         Binding(
             get: { parameter.values[index] != 0 },
             set: { parameter.values[index] = $0 ? 1 : 0; onChange() }
+        )
+    }
+
+    private func componentBinding(_ index: Int) -> Binding<Double> {
+        Binding(
+            get: { parameter.values[index] },
+            set: { parameter.values[index] = $0; onChange() }
         )
     }
 
@@ -197,13 +205,61 @@ struct ParameterControl: View {
         default: "\(index)"
         }
     }
+}
 
-    private func componentField(index: Int, label: String) -> some View {
-        TextField(label, value: Binding(
-            get: { parameter.values[index] },
-            set: { parameter.values[index] = $0; onChange() }
-        ), format: .number)
-        .textFieldStyle(.roundedBorder)
-        .frame(width: 64)
+/// Slider plus a text field so values can be typed precisely.
+private struct EditableFloatSlider: View {
+    let title: String
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+
+    @State private var draft: String = ""
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(title)
+                Spacer(minLength: 8)
+                TextField("Value", text: $draft)
+                    .textFieldStyle(.roundedBorder)
+                    .multilineTextAlignment(.trailing)
+                    .monospacedDigit()
+                    .frame(width: 80)
+                    .focused($isFocused)
+                    .onSubmit(commitDraft)
+            }
+            Slider(value: $value, in: range) { editing in
+                if editing { isFocused = false }
+            }
+        }
+        .onAppear { draft = Self.format(value) }
+        .onChange(of: value) { _, newValue in
+            if !isFocused { draft = Self.format(newValue) }
+        }
+        .onChange(of: isFocused) { _, focused in
+            if !focused { commitDraft() }
+        }
+    }
+
+    private func commitDraft() {
+        let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parsed = Double(trimmed) ?? Double(trimmed.replacingOccurrences(of: ",", with: "."))
+        if let parsed {
+            let clamped = min(max(parsed, range.lowerBound), range.upperBound)
+            if clamped != value { value = clamped }
+            draft = Self.format(clamped)
+        } else {
+            draft = Self.format(value)
+        }
+    }
+
+    private static func format(_ value: Double) -> String {
+        var text = String(format: "%.6f", value)
+        while text.contains("."), text.last == "0" {
+            text.removeLast()
+        }
+        if text.last == "." { text.removeLast() }
+        return text
     }
 }
