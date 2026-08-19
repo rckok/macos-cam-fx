@@ -218,6 +218,7 @@ final class ShaderTextView: NSTextView {
         importsGraphics = false
         allowsUndo = true
         drawsBackground = true
+        usesFontPanel = false
         isAutomaticQuoteSubstitutionEnabled = false
         isAutomaticDashSubstitutionEnabled = false
         isAutomaticTextReplacementEnabled = false
@@ -239,6 +240,11 @@ final class ShaderTextView: NSTextView {
         textStorage?.delegate = self
         applyCodeAppearance()
     }
+
+    /// NSColorPanel (used by inspector ColorPickers) sends `changeColor:` to
+    /// the first responder. For a plain-text view that recolors the entire
+    /// document; ignore it so picking a uniform does not restyle the shader.
+    override func changeColor(_ sender: Any?) {}
 
     func applyCodeAppearance() {
         let codeFont = NSFont.monospacedSystemFont(ofSize: Self.fontSize, weight: .regular)

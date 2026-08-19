@@ -6,6 +6,7 @@ struct ContentView: View {
     @State private var showInspector = true
     @State private var showMediaLibrary = false
     @State private var showUniforms = false
+    @State private var editorDefaultHeight: CGFloat?
 
     private let sidebarWidth: CGFloat = 240
     private let inspectorWidth: CGFloat = 260
@@ -16,21 +17,27 @@ struct ContentView: View {
                 .frame(minWidth: 180, idealWidth: sidebarWidth, maxWidth: 320)
                 .layoutPriority(0)
 
-            VSplitView {
-                PreviewView(engine: state.engine)
-                    .frame(minWidth: 200, minHeight: 160)
-                    .layoutPriority(1)
+            GeometryReader { geo in
+                let halfHeight = editorDefaultHeight ?? max(geo.size.height * 0.5, 140)
+                VSplitView {
+                    PreviewView(engine: state.engine)
+                        .frame(minWidth: 200, minHeight: 160, idealHeight: halfHeight)
 
-                if let effect = state.selectedEffect {
-                    EditorView(effect: effect)
-                        .frame(minWidth: 200, minHeight: 140, maxHeight: .infinity)
-                } else {
-                    ContentUnavailableView(
-                        "No Effect Selected",
-                        systemImage: "wand.and.stars",
-                        description: Text("Select an effect in the sidebar or add a new one.")
-                    )
-                    .frame(maxWidth: .infinity, minHeight: 140)
+                    if let effect = state.selectedEffect {
+                        EditorView(effect: effect)
+                            .frame(minWidth: 200, minHeight: 140, idealHeight: halfHeight, maxHeight: .infinity)
+                    } else {
+                        ContentUnavailableView(
+                            "No Effect Selected",
+                            systemImage: "wand.and.stars",
+                            description: Text("Select an effect in the sidebar or add a new one.")
+                        )
+                        .frame(maxWidth: .infinity, minHeight: 140, idealHeight: halfHeight)
+                    }
+                }
+                .onAppear { captureEditorDefaultHeight(geo.size.height) }
+                .onChange(of: geo.size.height) { _, height in
+                    captureEditorDefaultHeight(height)
                 }
             }
             .frame(minWidth: 200)
@@ -95,6 +102,11 @@ struct ContentView: View {
                 VirtualCameraToolbar(extensionManager: state.extensionManager, sink: state.sink)
             }
         }
+    }
+
+    private func captureEditorDefaultHeight(_ totalHeight: CGFloat) {
+        guard editorDefaultHeight == nil, totalHeight > 0 else { return }
+        editorDefaultHeight = totalHeight * 0.5
     }
 }
 
