@@ -174,9 +174,9 @@ decorator on the preceding line:
 layout(std140, binding = 3) uniform Params {
     // @metadata(min=0.0 max=2.0 default=0.35)
     float amount;
-    // @metadata(min=-1.0 max=1.0)
+    // @metadata(min=vec2(-1.0) max=vec2(1.0) default=vec2(0.0))
     vec2 offset;
-    // @metadata(min=-1.0 max=1.0)
+    // @metadata(min=vec3(-1) max=vec3(1, 2, 1) default=vec3(0, 1, 0))
     vec3 direction;
     // @metadata(color=true)
     vec3 tint;
@@ -187,6 +187,13 @@ layout(std140, binding = 3) uniform Params {
 when the parameter is first created. Current slider values stay in
 `effect.json` and are clamped into the new range. Float sliders include an
 editable value field for precise input.
+
+A scalar `min`/`max`/`default` broadcasts to every component. Vector
+constructors follow GLSL rules: `vec3(1)` fills all three components;
+`vec3(1, 2, 3)` sets them individually; nested constructors such as
+`vec3(vec2(1, 2), 3)` are allowed. A constructor with the wrong arity, a
+component count that does not match the uniform, or a non-finite value is
+reported as a shader error on that `@metadata` line.
 
 `vec3` / `vec4` use a slider per component. Add `color=true` (or a bare
 `color`) to show a color picker instead.

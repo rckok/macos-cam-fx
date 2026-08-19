@@ -7,8 +7,8 @@ struct EffectParameter: Identifiable, Equatable {
     /// GLSL type name: float, int, bool, vec2, vec3, vec4.
     let type: String
     var values: [Double]
-    var minimum: Double
-    var maximum: Double
+    var minimum: [Double]
+    var maximum: [Double]
     /// vec3/vec4 use per-component sliders unless `@metadata(color=true)`.
     var isColor: Bool = false
 
@@ -75,13 +75,37 @@ struct EffectParameter: Identifiable, Equatable {
         let count = componentCount(for: normalized)
         switch normalized {
         case "bool", "bvec2", "bvec3", "bvec4", "uint", "uvec2", "uvec3", "uvec4":
-            return EffectParameter(name: name, type: normalized, values: Array(repeating: 0, count: count), minimum: 0, maximum: 1)
+            return EffectParameter(
+                name: name,
+                type: normalized,
+                values: Array(repeating: 0, count: count),
+                minimum: Array(repeating: 0, count: count),
+                maximum: Array(repeating: 1, count: count)
+            )
         case "int", "ivec2", "ivec3", "ivec4":
-            return EffectParameter(name: name, type: normalized, values: Array(repeating: 0, count: count), minimum: 0, maximum: 10)
+            return EffectParameter(
+                name: name,
+                type: normalized,
+                values: Array(repeating: 0, count: count),
+                minimum: Array(repeating: 0, count: count),
+                maximum: Array(repeating: 10, count: count)
+            )
         case "vec3", "vec4":
-            return EffectParameter(name: name, type: normalized, values: Array(repeating: 1, count: count), minimum: 0, maximum: 1)
+            return EffectParameter(
+                name: name,
+                type: normalized,
+                values: Array(repeating: 1, count: count),
+                minimum: Array(repeating: 0, count: count),
+                maximum: Array(repeating: 1, count: count)
+            )
         default:
-            return EffectParameter(name: name, type: normalized, values: Array(repeating: 0.5, count: count), minimum: 0, maximum: 1)
+            return EffectParameter(
+                name: name,
+                type: normalized,
+                values: Array(repeating: 0.5, count: count),
+                minimum: Array(repeating: 0, count: count),
+                maximum: Array(repeating: 1, count: count)
+            )
         }
     }
 
@@ -92,36 +116,56 @@ struct EffectParameter: Identifiable, Equatable {
         name: String,
         type: String,
         existing: EffectParameter?,
-        minimum: Double?,
-        maximum: Double?,
-        defaultValue: Double?,
+        minimum: [Double]?,
+        maximum: [Double]?,
+        defaultValue: [Double]?,
         isColor: Bool?
     ) -> EffectParameter {
         let normalized = normalizeReflectionType(type)
         let typeDefaults = makeDefault(name: name, type: normalized)
-        var minValue = minimum ?? existing?.minimum ?? typeDefaults.minimum
-        var maxValue = maximum ?? existing?.maximum ?? typeDefaults.maximum
-        if minValue > maxValue { swap(&minValue, &maxValue) }
-
         let count = componentCount(for: normalized)
+
+        var minima = aligned(minimum, count: count) ?? existing?.minimum ?? typeDefaults.minimum
+        var maxima = aligned(maximum, count: count) ?? existing?.maximum ?? typeDefaults.maximum
+        if minima.count != count { minima = typeDefaults.minimum }
+        if maxima.count != count { maxima = typeDefaults.maximum }
+        for index in 0..<count where minima[index] > maxima[index] {
+            swap(&minima[index], &maxima[index])
+        }
+
         var values: [Double]
         if let existing, existing.values.count == count {
             values = existing.values
-        } else if let defaultValue {
-            values = Array(repeating: defaultValue, count: count)
+        } else if let defaultValue, let alignedDefault = aligned(defaultValue, count: count) {
+            values = alignedDefault
         } else {
             values = typeDefaults.values
         }
-        values = values.map { min(max($0, minValue), maxValue) }
+        values = zip(values, zip(minima, maxima)).map { value, bounds in
+            min(max(value, bounds.0), bounds.1)
+        }
 
         return EffectParameter(
             name: name,
             type: normalized,
             values: values,
-            minimum: minValue,
-            maximum: maxValue,
+            minimum: minima,
+            maximum: maxima,
             isColor: isColor ?? typeDefaults.isColor
         )
+    }
+
+    static func aligned(_ values: [Double]?, count: Int) -> [Double]? {
+        guard let values, !values.isEmpty else { return nil }
+        if values.count == 1 { return Array(repeating: values[0], count: count) }
+        if values.count == count { return values }
+        return nil
+    }
+
+    func sliderRange(at index: Int, step: Double = 0.0001) -> ClosedRange<Double> {
+        let lo = minimum.indices.contains(index) ? minimum[index] : (minimum.first ?? 0)
+        let hi = maximum.indices.contains(index) ? maximum[index] : (maximum.first ?? 1)
+        return lo...max(hi, lo + step)
     }
 }
 
@@ -155,8 +199,57 @@ struct EffectManifest: Codable {
     struct Param: Codable {
         var type: String?
         var value: [Double]
-        var min: Double?
-        var max: Double?
+        var min: [Double]?
+        var max: [Double]?
+
+        enum CodingKeys: String, CodingKey {
+            case type, value, min, max
+        }
+
+        init(type: String?, value: [Double], min: [Double]?, max: [Double]?) {
+            self.type = type
+            self.value = value
+            self.min = min
+            self.max = max
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            type = try container.decodeIfPresent(String.self, forKey: .type)
+            value = try container.decode([Double].self, forKey: .value)
+            min = Self.decodeFlexibleDoubles(from: container, key: .min)
+            max = Self.decodeFlexibleDoubles(from: container, key: .max)
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encodeIfPresent(type, forKey: .type)
+            try container.encode(value, forKey: .value)
+            try Self.encodeFlexibleDoubles(min, to: &container, key: .min)
+            try Self.encodeFlexibleDoubles(max, to: &container, key: .max)
+        }
+
+        private static func decodeFlexibleDoubles(
+            from container: KeyedDecodingContainer<CodingKeys>,
+            key: CodingKeys
+        ) -> [Double]? {
+            if let values = try? container.decode([Double].self, forKey: key) { return values }
+            if let value = try? container.decode(Double.self, forKey: key) { return [value] }
+            return nil
+        }
+
+        private static func encodeFlexibleDoubles(
+            _ values: [Double]?,
+            to container: inout KeyedEncodingContainer<CodingKeys>,
+            key: CodingKeys
+        ) throws {
+            guard let values else { return }
+            if values.count == 1 {
+                try container.encode(values[0], forKey: key)
+            } else {
+                try container.encode(values, forKey: key)
+            }
+        }
     }
 
     struct TextureBinding: Codable {

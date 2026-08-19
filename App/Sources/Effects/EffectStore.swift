@@ -191,12 +191,14 @@ final class EffectStore: ObservableObject {
                 let type = EffectParameter.normalizeReflectionType(
                     param.type ?? inferredLegacyType(for: param)
                 )
+                let defaults = EffectParameter.makeDefault(name: paramName, type: type)
+                let count = EffectParameter.componentCount(for: type)
                 parameters.append(EffectParameter(
                     name: paramName,
                     type: type,
                     values: param.value,
-                    minimum: param.min ?? EffectParameter.makeDefault(name: paramName, type: type).minimum,
-                    maximum: param.max ?? EffectParameter.makeDefault(name: paramName, type: type).maximum
+                    minimum: EffectParameter.aligned(param.min, count: count) ?? defaults.minimum,
+                    maximum: EffectParameter.aligned(param.max, count: count) ?? defaults.maximum
                 ))
             }
             for (samplerName, binding) in manifest.textures ?? [:] {

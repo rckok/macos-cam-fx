@@ -15,9 +15,9 @@ struct ShaderReflection: Codable {
         let type: String
         let offset: Int
         /// Inspector range from a preceding `// @metadata(...)` line, if any.
-        var minimum: Double? = nil
-        var maximum: Double? = nil
-        var defaultValue: Double? = nil
+        var minimum: [Double]? = nil
+        var maximum: [Double]? = nil
+        var defaultValue: [Double]? = nil
         var isColor: Bool? = nil
 
         enum CodingKeys: String, CodingKey {
@@ -49,7 +49,7 @@ struct ShaderCompileOutput {
     let diagnostics: [ShaderDiagnostic]
 }
 
-struct ShaderDiagnostic: Identifiable, Equatable {
+struct ShaderDiagnostic: Identifiable, Equatable, Error {
     enum Severity: Equatable {
         case error
         case warning
@@ -197,9 +197,10 @@ enum ShaderCompiler {
         }
 
         let log = logOut.map { String(cString: $0) } ?? ""
-        let diagnostics = parseDiagnostics(log: log)
+        var diagnostics = parseDiagnostics(log: log)
 
         guard status == 0, let mslOut, let reflectionOut else {
+            diagnostics.append(contentsOf: ParamMetadataParser.parse(from: userSource).diagnostics)
             throw ShaderCompileError(diagnostics: diagnostics.isEmpty
                 ? [ShaderDiagnostic(line: nil, message: log.isEmpty ? "Unknown shader compile error" : log)]
                 : diagnostics)
@@ -207,10 +208,12 @@ enum ShaderCompiler {
 
         let msl = String(cString: mslOut)
         let reflectionJSON = Data(String(cString: reflectionOut).utf8)
-        let reflection = applyingParamMetadata(
-            try JSONDecoder().decode(ShaderReflection.self, from: reflectionJSON),
-            source: userSource
-        )
+        let decoded = try JSONDecoder().decode(ShaderReflection.self, from: reflectionJSON)
+        let (reflection, metadataDiagnostics) = applyingParamMetadata(decoded, source: userSource)
+        diagnostics.append(contentsOf: metadataDiagnostics)
+        if diagnostics.contains(where: { $0.severity == .error }) {
+            throw ShaderCompileError(diagnostics: diagnostics)
+        }
         return ShaderCompileOutput(
             msl: msl,
             reflection: reflection,
@@ -218,17 +221,60 @@ enum ShaderCompiler {
         )
     }
 
-    private static func applyingParamMetadata(_ reflection: ShaderReflection, source: String) -> ShaderReflection {
-        let metadata = ParamMetadataParser.parse(from: source)
-        guard !metadata.isEmpty else { return reflection }
+    private static func applyingParamMetadata(
+        _ reflection: ShaderReflection,
+        source: String
+    ) -> (ShaderReflection, [ShaderDiagnostic]) {
+        let parsed = ParamMetadataParser.parse(from: source)
+        var diagnostics = parsed.diagnostics
+        guard !parsed.metadata.isEmpty || !diagnostics.isEmpty else {
+            return (reflection, diagnostics)
+        }
+
         let blocks = reflection.uniformBlocks.map { block -> ShaderReflection.UniformBlock in
             guard block.name == "Params" else { return block }
             let members = block.members.map { member -> ShaderReflection.BlockMember in
-                guard let meta = metadata[member.name] else { return member }
+                guard let meta = parsed.metadata[member.name] else { return member }
+                let expected = EffectParameter.componentCount(for: member.type)
                 var updated = member
-                updated.minimum = meta.minimum
-                updated.maximum = meta.maximum
-                updated.defaultValue = meta.defaultValue
+                var valid = true
+
+                func align(_ values: [Double]?, key: String) -> [Double]? {
+                    guard let values else { return nil }
+                    switch ParamMetadataParser.alignedComponents(
+                        values,
+                        expected: expected,
+                        key: key,
+                        type: member.type,
+                        name: member.name,
+                        line: meta.line
+                    ) {
+                    case .success(let aligned):
+                        return aligned
+                    case .failure(let diagnostic):
+                        diagnostics.append(diagnostic)
+                        valid = false
+                        return nil
+                    }
+                }
+
+                let minimum = align(meta.minimum, key: "min")
+                let maximum = align(meta.maximum, key: "max")
+                let defaultValue = align(meta.defaultValue, key: "default")
+                if let minimum, let maximum {
+                    for (index, pair) in zip(minimum, maximum).enumerated() where pair.0 > pair.1 {
+                        diagnostics.append(ShaderDiagnostic(
+                            line: meta.line,
+                            message: "@metadata min exceeds max for \(member.type) \(member.name) component \(index)",
+                            severity: .error
+                        ))
+                        valid = false
+                    }
+                }
+                guard valid else { return member }
+                updated.minimum = minimum
+                updated.maximum = maximum
+                updated.defaultValue = defaultValue
                 updated.isColor = meta.isColor
                 return updated
             }
@@ -240,10 +286,13 @@ enum ShaderCompiler {
                 members: members
             )
         }
-        return ShaderReflection(
-            entryPoint: reflection.entryPoint,
-            textures: reflection.textures,
-            uniformBlocks: blocks
+        return (
+            ShaderReflection(
+                entryPoint: reflection.entryPoint,
+                textures: reflection.textures,
+                uniformBlocks: blocks
+            ),
+            diagnostics
         )
     }
 

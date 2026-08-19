@@ -102,7 +102,7 @@ struct ParameterControl: View {
                 EditableFloatSlider(
                     title: parameter.name,
                     value: componentBinding(0),
-                    range: floatSliderRange
+                    range: parameter.sliderRange(at: 0)
                 )
             } else {
                 VStack(alignment: .leading, spacing: 8) {
@@ -111,7 +111,7 @@ struct ParameterControl: View {
                         EditableFloatSlider(
                             title: componentLabel(index),
                             value: componentBinding(index),
-                            range: floatSliderRange
+                            range: parameter.sliderRange(at: index)
                         )
                     }
                 }
@@ -128,7 +128,7 @@ struct ParameterControl: View {
                         get: { parameter.values[0] },
                         set: { parameter.values[0] = $0.rounded(); onChange() }
                     ),
-                    in: parameter.minimum...max(parameter.maximum, parameter.minimum + 1),
+                    in: parameter.sliderRange(at: 0, step: 1),
                     step: 1
                 )
             }
@@ -176,10 +176,6 @@ struct ParameterControl: View {
                 Text(typeName).foregroundStyle(.secondary)
             }
         }
-    }
-
-    private var floatSliderRange: ClosedRange<Double> {
-        parameter.minimum...max(parameter.maximum, parameter.minimum + 0.0001)
     }
 
     private func boolBinding(index: Int) -> Binding<Bool> {
