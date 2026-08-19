@@ -218,20 +218,18 @@ private struct EditableFloatSlider: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(title)
-                Spacer(minLength: 8)
-                TextField("Value", text: $draft)
-                    .textFieldStyle(.roundedBorder)
-                    .multilineTextAlignment(.trailing)
-                    .monospacedDigit()
-                    .frame(width: 80)
-                    .focused($isFocused)
-                    .onSubmit(commitDraft)
-            }
+            Text(title)
             Slider(value: $value, in: range) { editing in
                 if editing { isFocused = false }
             }
+            TextField("", text: $draft)
+                .textFieldStyle(.plain)
+                .multilineTextAlignment(.trailing)
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .focused($isFocused)
+                .onSubmit(commitDraft)
+                .accessibilityLabel(title)
         }
         .onAppear { draft = Self.format(value) }
         .onChange(of: value) { _, newValue in
