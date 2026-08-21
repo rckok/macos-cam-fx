@@ -80,13 +80,26 @@ Your shader is a GLSL 450 **fragment shader body**. The app injects a prelude
 that declares the interface, so you only write `main()` plus an optional
 `Params` block. The inspector lists every built-in symbol when editing an effect.
 
+### Effect chain
+
+Enabled effects in enabled groups run top to bottom, each one sampling the
+previous effect's output through `uPrev` (effect 0 sees the scaled/mirrored
+camera frame). Use the sidebar to reorder effects, drag them between groups,
+or duplicate one (the copy lands right below the original with the same shader
+and parameter values).
+
+An effect that never samples `uPrev` does not build on the chain — it replaces
+the whole frame. Everything before such an effect is therefore invisible, so
+the app skips those passes entirely and marks them in the sidebar, even when
+they are enabled. Their vision detectors do not run either.
+
 ### Built-in interface
 
 | Symbol | Type | Description |
 | --- | --- | --- |
 | `vUV` | `in vec2` | Fullscreen UV coordinates. (0, 0) is top-left; (1, 1) is bottom-right. |
 | `outColor` | `out vec4` | Write the effect output here. |
-| `uPrev` | `sampler2D` | Previous pass output (or the scaled/mirrored camera frame for pass 0). |
+| `uPrev` | `sampler2D` | Previous pass output (or the scaled/mirrored camera frame for pass 0). Not sampling it disables every earlier effect — see [Effect chain](#effect-chain). |
 | `uFrames` | `sampler3D` | Last **N** raw camera frames. The z axis is history — prefer `ceHistory()` over manual z indexing. |
 | `ceHistory(uv, ago)` | `vec4` | Sample the raw frame from `ago` frames ago (0 = newest). Handles ring-buffer wrapping. |
 

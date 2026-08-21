@@ -95,21 +95,36 @@ final class AppState: ObservableObject {
 
     func rebuildChain() {
         guard let cache = mediaLibrary.textureCache else { return }
-        let chain = store.groups
+        let runnable = store.groups
             .filter(\.enabled)
             .flatMap { group in
-                group.effectIDs.compactMap { id -> RunningEffect? in
+                group.effectIDs.compactMap { id -> (effect: Effect, compiled: CompiledEffect)? in
                     guard let effect = store.effect(id: id),
                           effect.enabled,
                           let compiled = effect.compiled
                     else { return nil }
-                    return RunningEffect(
-                        compiled: compiled,
-                        textureAssets: EffectTextureAssets(bindings: effect.textureBindings, cache: cache)
-                    )
+                    return (effect, compiled)
                 }
             }
-        engine.setEffects(chain)
+
+        // An effect that never samples `uPrev` overwrites the whole frame, so
+        // everything before it in the chain is invisible work. Start the chain
+        // at the last such effect and mark the ones it shadows.
+        let start = runnable.lastIndex { !$0.compiled.reflection.samplesPreviousOutput } ?? runnable.startIndex
+        let shadowedIDs = Set(runnable[..<start].map { $0.effect.id })
+        for effect in store.effects {
+            let shadowed = shadowedIDs.contains(effect.id)
+            if effect.isShadowed != shadowed {
+                effect.isShadowed = shadowed
+            }
+        }
+
+        engine.setEffects(runnable[start...].map { entry in
+            RunningEffect(
+                compiled: entry.compiled,
+                textureAssets: EffectTextureAssets(bindings: entry.effect.textureBindings, cache: cache)
+            )
+        })
     }
 
     func addEffect(toGroup groupID: String? = nil) {

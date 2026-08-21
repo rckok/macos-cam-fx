@@ -323,8 +323,15 @@ struct EffectRow: View {
 
             Text(effect.name)
                 .lineLimit(1)
+                .opacity(effect.isShadowed ? 0.5 : 1)
 
             Spacer()
+
+            if effect.isShadowed {
+                Image(systemName: "eye.slash")
+                    .foregroundStyle(.secondary)
+                    .help(Effect.shadowedExplanation)
+            }
 
             if !effect.diagnostics.isEmpty {
                 Image(systemName: "exclamationmark.triangle.fill")
