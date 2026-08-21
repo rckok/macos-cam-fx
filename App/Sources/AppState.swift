@@ -121,6 +121,12 @@ final class AppState: ObservableObject {
         scheduleCompile(effect, debounce: false)
     }
 
+    func duplicateEffect(_ effect: Effect) {
+        guard let copy = store.duplicateEffect(effect) else { return }
+        selectedEffectID = copy.id
+        scheduleCompile(copy, debounce: false)
+    }
+
     func addGroup() {
         _ = store.addGroup()
     }
