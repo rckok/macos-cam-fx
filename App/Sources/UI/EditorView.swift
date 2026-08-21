@@ -25,6 +25,12 @@ struct EditorView: View {
                         state.store.persist(effect: effect)
                     }
                 Spacer()
+                if effect.isShadowed {
+                    Label("Not rendered", systemImage: "eye.slash")
+                        .foregroundStyle(.secondary)
+                        .font(.caption)
+                        .help(Effect.shadowedExplanation)
+                }
                 statusLabel
             }
             .padding(.horizontal, 12)

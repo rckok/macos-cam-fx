@@ -223,14 +223,7 @@ final class EffectStore: ObservableObject {
     // MARK: Mutations — effects
 
     func addEffect(named requestedName: String, toGroup groupID: String? = nil) -> Effect? {
-        let baseName = requestedName.isEmpty ? "New Effect" : requestedName
-        var folderName = baseName.replacingOccurrences(of: "/", with: "-")
-        var counter = 2
-        while FileManager.default.fileExists(atPath: effectsURL.appendingPathComponent(folderName).path) {
-            folderName = "\(baseName) \(counter)"
-            counter += 1
-        }
-
+        let folderName = uniqueFolderName(preferring: requestedName)
         let folder = effectsURL.appendingPathComponent(folderName, isDirectory: true)
         do {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -244,7 +237,7 @@ final class EffectStore: ObservableObject {
         let effect = Effect(
             id: folderName,
             folderURL: folder,
-            name: baseName,
+            name: folderName,
             enabled: true,
             source: Self.newEffectTemplate,
             parameters: []
@@ -264,6 +257,73 @@ final class EffectStore: ObservableObject {
         persist(effect: effect)
         saveConfigSoon()
         return effect
+    }
+
+    /// Copies an effect's folder (shader, manifest and any extra files) and
+    /// places the copy directly after the original in the same group.
+    func duplicateEffect(_ effect: Effect) -> Effect? {
+        let folderName = uniqueFolderName(preferring: "\(effect.name) Copy")
+        let folder = effectsURL.appendingPathComponent(folderName, isDirectory: true)
+        do {
+            if FileManager.default.fileExists(atPath: effect.folderURL.path) {
+                try FileManager.default.copyItem(at: effect.folderURL, to: folder)
+            } else {
+                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            }
+        } catch {
+            return nil
+        }
+
+        let copy = Effect(
+            id: folderName,
+            folderURL: folder,
+            name: folderName,
+            enabled: effect.enabled,
+            source: effect.source,
+            parameters: effect.parameters,
+            textureBindings: effect.textureBindings
+        )
+        effects.append(copy)
+
+        if let groupIndex = groups.firstIndex(where: { $0.effectIDs.contains(effect.id) }) {
+            updateGroup(at: groupIndex) { group in
+                if let index = group.effectIDs.firstIndex(of: effect.id) {
+                    group.effectIDs.insert(copy.id, at: index + 1)
+                } else {
+                    group.effectIDs.append(copy.id)
+                }
+            }
+        } else if let index = groups.indices.first {
+            updateGroup(at: index) { $0.effectIDs.append(copy.id) }
+        } else {
+            groups = [EffectGroup(id: Self.generalGroupID, name: "General", effectIDs: [copy.id])]
+        }
+
+        reorderEffectsFromGroups()
+        persist(effect: copy)
+        saveConfigSoon()
+        return copy
+    }
+
+    /// Folder name — which doubles as the effect ID — that is free on disk and
+    /// unused by a loaded effect, suffixed with a counter when needed.
+    private func uniqueFolderName(preferring requestedName: String) -> String {
+        var base = requestedName
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: "-")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if base.isEmpty || base.hasPrefix(".") {
+            base = "New Effect"
+        }
+
+        var candidate = base
+        var counter = 2
+        while FileManager.default.fileExists(atPath: effectsURL.appendingPathComponent(candidate).path)
+            || effects.contains(where: { $0.id == candidate }) {
+            candidate = "\(base) \(counter)"
+            counter += 1
+        }
+        return candidate
     }
 
     func removeEffect(_ effect: Effect) {

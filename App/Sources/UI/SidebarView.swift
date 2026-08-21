@@ -30,9 +30,11 @@ struct SidebarView: View {
                 Section {
                     if !isCollapsed(group) {
                         ForEach(store.effects(in: group)) { effect in
-                            EffectRow(effect: effect, onDelete: {
-                                state.removeEffect(effect)
-                            })
+                            EffectRow(
+                                effect: effect,
+                                onDuplicate: { state.duplicateEffect(effect) },
+                                onDelete: { state.removeEffect(effect) }
+                            )
                             .tag(effect.id)
                             .padding(.leading, effectIndent)
                             .draggable(effect.id)
@@ -307,6 +309,7 @@ private struct GroupHeaderRow: View {
 struct EffectRow: View {
     @EnvironmentObject private var state: AppState
     @ObservedObject var effect: Effect
+    let onDuplicate: () -> Void
     let onDelete: () -> Void
 
     var body: some View {
@@ -320,8 +323,15 @@ struct EffectRow: View {
 
             Text(effect.name)
                 .lineLimit(1)
+                .opacity(effect.isShadowed ? 0.5 : 1)
 
             Spacer()
+
+            if effect.isShadowed {
+                Image(systemName: "eye.slash")
+                    .foregroundStyle(.secondary)
+                    .help(Effect.shadowedExplanation)
+            }
 
             if !effect.diagnostics.isEmpty {
                 Image(systemName: "exclamationmark.triangle.fill")
@@ -329,12 +339,23 @@ struct EffectRow: View {
                     .help("Shader has compile errors")
             }
 
+            Button(action: onDuplicate) {
+                Image(systemName: "plus.square.on.square")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Duplicate effect")
+
             Button(action: onDelete) {
                 Image(systemName: "minus.circle")
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
             .help("Remove effect")
+        }
+        .contextMenu {
+            Button("Duplicate", action: onDuplicate)
+            Button("Remove", action: onDelete)
         }
     }
 }
