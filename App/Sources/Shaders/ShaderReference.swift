@@ -140,7 +140,31 @@ enum ShaderReference {
             id: "uFaceRects",
             name: "uFaceRects[4]",
             type: "vec4 (CEFace, binding = 19)",
-            description: "Face bounding boxes in vUV space: xy = top-left corner, zw = size."
+            description: "Axis-aligned face bounding boxes in vUV space: xy = top-left corner, zw = size. These stay upright and grow as the head rolls; use uFaceOriented for a box that turns with the face."
+        ),
+        Symbol(
+            id: "uFaceOriented",
+            name: "uFaceOriented[4]",
+            type: "vec4 (CEFace, binding = 19)",
+            description: "Face box that rotates with the head: xy = centre in vUV, zw = size in frame heights (both lanes), rotated by the roll in uFaceAngles. Prefer ceFaceLocal() / ceFaceBox() over using it directly."
+        ),
+        Symbol(
+            id: "uFaceAngles",
+            name: "uFaceAngles[4]",
+            type: "vec4 (CEFace, binding = 19)",
+            description: "Head orientation per face in radians: x = roll (positive turns the face clockwise on screen), y = yaw, z = pitch (positive nods down), w = detection confidence."
+        ),
+        Symbol(
+            id: "ceFaceLocal",
+            name: "ceFaceLocal(face, uv)",
+            type: "vec2",
+            description: "Maps uv into the rotated frame of face `face`: (0, 0) at the centre of its box, ±1 at the edges, x along the face's right and y towards its chin. Aspect-corrected, so the box stays rectangular on screen."
+        ),
+        Symbol(
+            id: "ceFaceBox",
+            name: "ceFaceBox(face, uv)",
+            type: "float",
+            description: "1 inside the rotated box of face `face`, 0 outside."
         ),
         Symbol(
             id: "uHandCount",

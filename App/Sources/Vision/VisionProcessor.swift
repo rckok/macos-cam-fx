@@ -150,9 +150,13 @@ final class VisionProcessor {
         requestFeatures = features
 
         if features.contains(.faceMask) {
-            faceRequest = VNDetectFaceLandmarksRequest()
+            let request = VNDetectFaceLandmarksRequest()
+            Self.prefer(revision: Int(VNDetectFaceLandmarksRequestRevision3), on: request)
+            faceRequest = request
         } else if features.contains(.faceRects) {
-            faceRequest = VNDetectFaceRectanglesRequest()
+            let request = VNDetectFaceRectanglesRequest()
+            Self.prefer(revision: Int(VNDetectFaceRectanglesRequestRevision3), on: request)
+            faceRequest = request
         } else {
             faceRequest = nil
         }
@@ -175,19 +179,26 @@ final class VisionProcessor {
         }
     }
 
+    /// Only revision 3 reports roll, yaw, and pitch continuously; revision 2
+    /// quantises roll and yaw into bins and never computes pitch.
+    private static func prefer(revision: Int, on request: VNImageBasedRequest) {
+        guard type(of: request).supportedRevisions.contains(revision) else { return }
+        request.revision = revision
+    }
+
     private func buildSnapshot(pixelBuffer: CVPixelBuffer, mirrored: Bool, features: VisionFeatures) -> VisionSnapshot {
         var snapshot = VisionSnapshot()
 
+        let imageSize = CGSize(
+            width: CVPixelBufferGetWidth(pixelBuffer),
+            height: CVPixelBufferGetHeight(pixelBuffer)
+        )
         let faceObservations = (faceRequest?.results as? [VNFaceObservation]) ?? []
-        snapshot.faceRects = faceObservations
+        snapshot.faces = faceObservations
             .prefix(VisionUniforms.maxFaces)
-            .map { convert(rect: $0.boundingBox, mirrored: mirrored) }
+            .map { convert(face: $0, imageSize: imageSize, mirrored: mirrored) }
 
         if features.contains(.faceMask) {
-            let imageSize = CGSize(
-                width: CVPixelBufferGetWidth(pixelBuffer),
-                height: CVPixelBufferGetHeight(pixelBuffer)
-            )
             let regions = faceObservations.map { face in
                 faceRegions(for: face, imageSize: imageSize, mirrored: mirrored)
             }
@@ -217,6 +228,64 @@ final class VisionProcessor {
 
     private func convert(point: CGPoint, mirrored: Bool) -> SIMD2<Float> {
         SIMD2<Float>(Float(mirrored ? 1 - point.x : point.x), Float(1 - point.y))
+    }
+
+    private func convert(face observation: VNFaceObservation, imageSize: CGSize, mirrored: Bool) -> VisionFace {
+        // Vision measures roll counter-clockwise with y pointing up. vUV points
+        // y down, which flips the sign; mirroring flips it back. Yaw is a
+        // rotation about the vertical axis, so only mirroring affects it, and
+        // pitch is unaffected by either.
+        let visionRoll = observation.roll?.floatValue ?? 0
+        let roll = mirrored ? visionRoll : -visionRoll
+        let yaw = (observation.yaw?.floatValue ?? 0) * (mirrored ? -1 : 1)
+
+        let rect = convert(rect: observation.boundingBox, mirrored: mirrored)
+        let aspect = imageSize.height > 0 ? Float(imageSize.width / imageSize.height) : 1
+        return VisionFace(
+            rect: rect,
+            center: SIMD2<Float>(rect.x + rect.z * 0.5, rect.y + rect.w * 0.5),
+            size: Self.rolledSize(width: rect.z * aspect, height: rect.w, roll: roll),
+            roll: roll,
+            yaw: yaw,
+            pitch: observation.pitch?.floatValue ?? 0,
+            confidence: observation.confidence
+        )
+    }
+
+    /// Recovers the size of the box that tracks a rolled head from the
+    /// axis-aligned box Vision reports. The reported box is the projection of
+    /// the rolled box onto the image axes:
+    ///
+    ///     W = w·|cos θ| + h·|sin θ|
+    ///     H = w·|sin θ| + h·|cos θ|
+    ///
+    /// Inverting that recovers w and h. `width` and `height` are in the same
+    /// units — frame heights.
+    private static func rolledSize(width: Float, height: Float, roll: Float) -> SIMD2<Float> {
+        let axisAligned = SIMD2<Float>(width, height)
+        let cosine = abs(cos(roll))
+        let sine = abs(sin(roll))
+        // cos 2θ. Its sign only tells which way the box is turned; its
+        // magnitude is what conditions the inversion, which is singular at 45°.
+        let determinant = cosine * cosine - sine * sine
+
+        // Fade back to the axis-aligned size around 45°, where inverting would
+        // amplify detector noise instead of removing the roll.
+        let edge = min(max((abs(determinant) - 0.15) / 0.25, 0), 1)
+        let blend = edge * edge * (3 - 2 * edge)
+        guard blend > 0 else { return axisAligned }
+
+        // Each side of the rolled box projects onto both image axes, which
+        // bounds it; the clamp keeps a roll that disagrees with the rectangle
+        // from producing a degenerate box.
+        let epsilon: Float = 1e-4
+        let widthBound = min(width / max(cosine, epsilon), height / max(sine, epsilon))
+        let heightBound = min(height / max(cosine, epsilon), width / max(sine, epsilon))
+        let rolled = SIMD2<Float>(
+            min(max((width * cosine - height * sine) / determinant, 0.25 * widthBound), widthBound),
+            min(max((height * cosine - width * sine) / determinant, 0.25 * heightBound), heightBound)
+        )
+        return axisAligned + (rolled - axisAligned) * blend
     }
 
     /// Canonical joint order matching the CE_* indices in the shader prelude.

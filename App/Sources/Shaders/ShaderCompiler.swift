@@ -116,8 +116,10 @@ enum ShaderCompiler {
     layout(binding = 18) uniform sampler2D uHandMask;    // approximate hand silhouette (luma)
 
     layout(std140, binding = 19) uniform CEFace {
-        int  uFaceCount;      // detected faces (0 ... CE_MAX_FACES)
-        vec4 uFaceRects[4];   // xy = top-left origin, zw = size, in vUV space
+        int  uFaceCount;        // detected faces (0 ... CE_MAX_FACES)
+        vec4 uFaceRects[4];     // xy = top-left origin, zw = size, in vUV space
+        vec4 uFaceOriented[4];  // xy = centre in vUV, zw = size of the rolled box in frame heights
+        vec4 uFaceAngles[4];    // x = roll, y = yaw, z = pitch (radians), w = confidence
     };
 
     layout(std140, binding = 20) uniform CEHands {
@@ -162,6 +164,27 @@ enum ShaderCompiler {
 
     vec4 ceHandJoint(int hand, int joint) {
         return uHandJoints[hand * CE_HAND_JOINTS + joint];
+    }
+
+    // Maps uv into the local frame of a face: (0, 0) at the centre of its box,
+    // +-1 at the edges, x along the face's right and y towards its chin. The
+    // frame rotates with the head, so this is the rotated counterpart of
+    // uFaceRects. Aspect is corrected with uResolution, keeping the box
+    // rectangular on screen.
+    vec2 ceFaceLocal(int face, vec2 uv) {
+        vec4 box = uFaceOriented[face];
+        float aspect = uResolution.x / max(uResolution.y, 1.0);
+        vec2 d = vec2((uv.x - box.x) * aspect, uv.y - box.y);
+        float c = cos(uFaceAngles[face].x);
+        float s = sin(uFaceAngles[face].x);
+        vec2 local = vec2(c * d.x + s * d.y, c * d.y - s * d.x);
+        return local / max(box.zw * 0.5, vec2(1e-6));
+    }
+
+    // 1 inside the rotated box of `face`, 0 outside.
+    float ceFaceBox(int face, vec2 uv) {
+        vec2 p = abs(ceFaceLocal(face, uv));
+        return step(max(p.x, p.y), 1.0);
     }
 
     """

@@ -268,7 +268,7 @@ final class RenderEngine {
                 resolution: SIMD2<Float>(Float(outputWidth), Float(outputHeight))
             )
         }
-        let faceSlots = VisionUniformPacking.packFace(rects: vision.faceRects)
+        let faceSlots = VisionUniformPacking.packFace(vision.faces)
         let handSlots = VisionUniformPacking.packHands(vision.hands)
 
         // 4. Timing / context uniforms.

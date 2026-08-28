@@ -130,11 +130,24 @@ origin, mirroring already applied).
 | `uFaceMask` | `sampler2D` | Face parts from facial landmarks: R = left eye, G = right eye, B = mouth, A = union. |
 | `uHandMask` | `sampler2D` | Approximate hand silhouette built from the hand skeleton. Sample `.r`. |
 | `uFaceCount` | `int` (`CEFace`, binding = 19) | Detected faces (0 … `CE_MAX_FACES`). |
-| `uFaceRects[4]` | `vec4` (`CEFace`) | Face bounding boxes: xy = top-left corner, zw = size, in vUV space. |
+| `uFaceRects[4]` | `vec4` (`CEFace`) | Axis-aligned face bounding boxes: xy = top-left corner, zw = size, in vUV space. |
+| `uFaceOriented[4]` | `vec4` (`CEFace`) | Face box that turns with the head: xy = centre in vUV, zw = size in frame heights, rotated by the roll below. |
+| `uFaceAngles[4]` | `vec4` (`CEFace`) | Head orientation in radians: x = roll (positive is clockwise on screen), y = yaw, z = pitch (positive nods down), w = confidence. |
+| `ceFaceLocal(face, uv)` | `vec2` | `uv` in the rotated frame of a face: (0, 0) at the box centre, ±1 at its edges, x along the face's right, y towards its chin. |
+| `ceFaceBox(face, uv)` | `float` | 1 inside the rotated face box, 0 outside. |
 | `uHandCount` | `int` (`CEHands`, binding = 20) | Detected hands (0 … `CE_MAX_HANDS`). |
 | `uHandInfo[2]` | `vec4` (`CEHands`) | Per hand: x = chirality (−1 left, +1 right), y = confidence. |
 | `uHandJoints[42]` | `vec4` (`CEHands`) | 21 joints per hand: xy = vUV position, z = confidence. |
 | `ceHandJoint(hand, joint)` | `vec4` | Convenience accessor; use with the `CE_*` joint constants (`CE_WRIST`, `CE_THUMB_TIP`, `CE_INDEX_TIP`, …). |
+
+Vision itself only reports an upright rectangle, which grows wider and taller
+as the head tilts. `uFaceOriented` and `uFaceAngles` describe the same region
+with that growth divided back out, giving a box that follows the tilt. Both
+lanes of its size are in frame heights (not vUV units) because the box axes are
+rotated; `ceFaceLocal()` handles that conversion, so prefer it over doing the
+trigonometry yourself. Undoing the growth is exact at every angle except close
+to 45° (and 135°, …), where it is ill-conditioned; within about 12° of those
+angles the box fades back to the upright one, which is up to ~50% too large.
 
 Example — background subtraction with a luma matte:
 
@@ -142,6 +155,19 @@ Example — background subtraction with a luma matte:
 void main() {
     float matte = texture(uPersonMatte, vUV).r;
     outColor = mix(vec4(0.0, 1.0, 0.0, 1.0), texture(uPrev, vUV), matte);
+}
+```
+
+Example — outline that tilts with each face:
+
+```glsl
+void main() {
+    outColor = texture(uPrev, vUV);
+    for (int i = 0; i < uFaceCount; i++) {
+        vec2 p = abs(ceFaceLocal(i, vUV));      // ±1 at the edges of the tilted box
+        float border = 1.0 - smoothstep(0.0, 0.02, abs(max(p.x, p.y) - 1.0));
+        outColor = mix(outColor, vec4(0.0, 1.0, 1.0, 1.0), border);
+    }
 }
 ```
 
