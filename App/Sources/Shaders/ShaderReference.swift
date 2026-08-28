@@ -143,6 +143,24 @@ enum ShaderReference {
             description: "Face bounding boxes in vUV space: xy = top-left corner, zw = size."
         ),
         Symbol(
+            id: "uFaceLeftEye",
+            name: "uFaceLeftEye[4]",
+            type: "vec4 (CEFacePoints, binding = 21)",
+            description: "Center of face i's left eye: xy = position in vUV space, z = 1 when the eye was located (0 otherwise), w = half the eye's width in the same units as uFaceRects.z. Taken from the pupil landmark when Vision reports one, otherwise from the eye contour."
+        ),
+        Symbol(
+            id: "uFaceRightEye",
+            name: "uFaceRightEye[4]",
+            type: "vec4 (CEFacePoints, binding = 21)",
+            description: "Center of face i's right eye, in the same xy / z / w layout as uFaceLeftEye."
+        ),
+        Symbol(
+            id: "uFaceMouth",
+            name: "uFaceMouth[4]",
+            type: "vec4 (CEFacePoints, binding = 21)",
+            description: "Center of face i's mouth (outer-lip contour), in the same xy / z / w layout as uFaceLeftEye."
+        ),
+        Symbol(
             id: "uHandCount",
             name: "uHandCount",
             type: "int (CEHands, binding = 20)",
