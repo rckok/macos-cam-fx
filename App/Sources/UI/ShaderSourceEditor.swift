@@ -332,6 +332,20 @@ final class ShaderTextView: NSTextView {
         }
     }
 
+    /// ⌘/ toggles `//` on every line the selection touches. NSTextView has no
+    /// action for this, and no default key equivalent claims the shortcut.
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if modifiers == .command,
+           event.charactersIgnoringModifiers == "/",
+           isEditable,
+           window?.firstResponder === self {
+            toggleLineComments()
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
     override func doCommand(by selector: Selector) {
         switch selector {
         case #selector(insertNewline(_:)):
@@ -492,11 +506,141 @@ final class ShaderTextView: NSTextView {
         return rect
     }
 
+    // MARK: - Line comments
+
+    private static let lineCommentMarker = "//"
+
+    /// Comments every line the selection touches, or uncomments them when they
+    /// all already start with `//`. Markers are aligned on the shallowest
+    /// indentation in the selection, and the selection is mapped through the
+    /// edits so it keeps covering the same text.
+    private func toggleLineComments() {
+        let nsString = string as NSString
+        let selections = activeBlockRanges()
+        let touched = lineRanges(touchedBy: selections, in: nsString)
+        let nonBlank = touched.filter { $0.length > indentLength(of: $0, in: nsString) }
+        let lines = nonBlank.isEmpty ? touched : nonBlank
+        guard !lines.isEmpty else { return }
+
+        let marker = Self.lineCommentMarker as NSString
+        var edits: [(range: NSRange, replacement: String)] = []
+        if lines.allSatisfy({ commentMarkerOffset(in: $0, of: nsString) != nil }) {
+            for line in lines {
+                guard let offset = commentMarkerOffset(in: line, of: nsString) else { continue }
+                let markerEnd = offset + marker.length
+                let followedBySpace = markerEnd < line.length
+                    && nsString.character(at: line.location + markerEnd) == 0x20
+                edits.append((
+                    NSRange(location: line.location + offset, length: marker.length + (followedBySpace ? 1 : 0)),
+                    ""
+                ))
+            }
+        } else {
+            let column = lines.map { indentLength(of: $0, in: nsString) }.min() ?? 0
+            for line in lines {
+                edits.append((
+                    NSRange(location: line.location + min(column, line.length), length: 0),
+                    Self.lineCommentMarker + " "
+                ))
+            }
+        }
+        guard !edits.isEmpty else { return }
+
+        let newLength = edits.reduce(nsString.length) { total, edit in
+            total + (edit.replacement as NSString).length - edit.range.length
+        }
+        applyReplacements(
+            edits.map { ($0.range, $0.replacement) },
+            selectionAfterEdit: selections.map { mapped($0, through: edits, newLength: newLength) }
+        )
+    }
+
+    /// Content ranges (newline excluded) of every line any of `ranges` covers.
+    /// A range ending exactly at a line start does not pull in that line.
+    private func lineRanges(touchedBy ranges: [NSRange], in nsString: NSString) -> [NSRange] {
+        var lines: [NSRange] = []
+        var seenStarts = Set<Int>()
+        for range in ranges {
+            var location = min(max(range.location, 0), nsString.length)
+            let end = min(max(NSMaxRange(range), location), nsString.length)
+            repeat {
+                var lineStart = 0
+                var lineEnd = 0
+                var contentsEnd = 0
+                nsString.getLineStart(
+                    &lineStart, end: &lineEnd, contentsEnd: &contentsEnd,
+                    for: NSRange(location: location, length: 0)
+                )
+                if seenStarts.insert(lineStart).inserted {
+                    lines.append(NSRange(location: lineStart, length: max(contentsEnd - lineStart, 0)))
+                }
+                if lineEnd <= location { break }
+                location = lineEnd
+            } while location < end
+        }
+        return lines.sorted { $0.location < $1.location }
+    }
+
+    private func indentLength(of line: NSRange, in nsString: NSString) -> Int {
+        var length = 0
+        while length < line.length {
+            let character = nsString.character(at: line.location + length)
+            guard character == 0x20 || character == 0x09 else { break }
+            length += 1
+        }
+        return length
+    }
+
+    /// Offset of the leading `//` within `line`, or nil when it is not commented.
+    private func commentMarkerOffset(in line: NSRange, of nsString: NSString) -> Int? {
+        let marker = Self.lineCommentMarker as NSString
+        let offset = indentLength(of: line, in: nsString)
+        guard line.length - offset >= marker.length else { return nil }
+        let candidate = NSRange(location: line.location + offset, length: marker.length)
+        return nsString.substring(with: candidate) == Self.lineCommentMarker ? offset : nil
+    }
+
+    /// Maps a pre-edit selection range through a batch of non-overlapping edits
+    /// so it still covers the same text afterwards. All comparisons use pre-edit
+    /// coordinates, so the corrections are order independent.
+    private func mapped(
+        _ range: NSRange,
+        through edits: [(range: NSRange, replacement: String)],
+        newLength: Int
+    ) -> NSRange {
+        var location = range.location
+        var length = range.length
+        for edit in edits {
+            let insertedLength = (edit.replacement as NSString).length
+            // Text inserted exactly where a non-empty range starts belongs to
+            // that range rather than pushing it forward.
+            let insertionAtStart = edit.range.length == 0 && edit.range.location == range.location
+            if NSMaxRange(edit.range) <= range.location, !(range.length > 0 && insertionAtStart) {
+                location += insertedLength - edit.range.length
+            } else if edit.range.location < range.location {
+                // The range starts inside replaced text: pull the start back to
+                // the edit and drop what the edit took from inside the range.
+                let removedInside = max(min(NSMaxRange(edit.range), NSMaxRange(range)) - range.location, 0)
+                location -= range.location - edit.range.location
+                length = max(length - removedInside, 0)
+            } else if range.length > 0, edit.range.location <= NSMaxRange(range) {
+                let removedInside = max(min(NSMaxRange(edit.range), NSMaxRange(range)) - edit.range.location, 0)
+                length = max(length + insertedLength - removedInside, 0)
+            }
+        }
+        location = min(max(location, 0), newLength)
+        length = min(max(length, 0), newLength - location)
+        return NSRange(location: location, length: length)
+    }
+
     private func applyReplacement(_ replacement: String) {
         applyReplacements(activeBlockRanges().map { ($0, replacement) })
     }
 
-    private func applyReplacements(_ replacements: [(NSRange, String)]) {
+    private func applyReplacements(
+        _ replacements: [(NSRange, String)],
+        selectionAfterEdit: [NSRange]? = nil
+    ) {
         guard !replacements.isEmpty, let textStorage else { return }
         let sorted = replacements.sorted { $0.0.location > $1.0.location }
         let values = sorted.map { NSValue(range: $0.0) }
@@ -516,15 +660,25 @@ final class ShaderTextView: NSTextView {
         textStorage.endEditing()
         didChangeText()
 
-        let orderedCarets = carets.sorted { $0.location < $1.location }
-        blockCarets = orderedCarets
+        let ordered = (selectionAfterEdit ?? carets).sorted { $0.location < $1.location }
+        // A single explicit range is not a block caret; restoreBlockCarets()
+        // ignores it, so it has to be applied directly.
+        let single: NSRange? = selectionAfterEdit != nil && ordered.count == 1 ? ordered.first : nil
+        blockCarets = ordered
+        if let single {
+            setSelectedRange(single)
+        }
         restoreBlockCarets()
         isApplyingBlockEdit = false
 
         // `didChangeText()` resets to a single caret on the first line after
-        // returning to the run loop; put the block carets back.
+        // returning to the run loop; put the selection back.
         DispatchQueue.main.async { [weak self] in
-            self?.restoreBlockCarets()
+            guard let self else { return }
+            if let single {
+                self.setSelectedRange(single)
+            }
+            self.restoreBlockCarets()
         }
     }
 

@@ -40,6 +40,17 @@ struct ShaderReflection: Codable {
     var paramsBlock: UniformBlock? {
         uniformBlocks.first { $0.name == "Params" }
     }
+
+    /// Prelude sampler carrying the previous pass' output.
+    static let previousOutputSampler = "uPrev"
+
+    /// True when the shader reads `uPrev`, i.e. it builds on the output of the
+    /// effects before it. A prelude uniform the user source never references is
+    /// dead-code-eliminated by the transpiler and reported with a negative
+    /// Metal resource index, so it does not count.
+    var samplesPreviousOutput: Bool {
+        textures.contains { $0.name == Self.previousOutputSampler && $0.mslTexture >= 0 }
+    }
 }
 
 struct ShaderCompileOutput {

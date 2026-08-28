@@ -274,9 +274,18 @@ final class Effect: Identifiable, ObservableObject {
     @Published var parameters: [EffectParameter]
     @Published var textureBindings: [EffectTextureBinding]
     @Published var diagnostics: [ShaderDiagnostic] = []
+    /// Enabled, but dropped from the render chain because a later enabled
+    /// effect never samples `uPrev` and therefore discards this one's output.
+    @Published var isShadowed = false
 
     /// Set after a successful compile; consumed by the render engine.
     var compiled: CompiledEffect?
+
+    /// Shown next to effects whose `isShadowed` flag is set.
+    static let shadowedExplanation = """
+    Not rendered: a later enabled effect never samples uPrev, so it replaces \
+    everything this effect would contribute.
+    """
 
     /// Prelude-provided samplers that must not appear as media-library pickers.
     static let reservedTextureNames: Set<String> = [
