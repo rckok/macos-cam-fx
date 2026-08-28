@@ -131,7 +131,7 @@ enum GLSLSyntaxHighlighter {
         "bitfieldExtract", "bitfieldInsert", "bitfieldReverse", "bitCount",
         "findLSB", "findMSB",
         // Injected by the prelude
-        "ceHistory", "ceHandJoint",
+        "ceHistory", "ceHandJoint", "ceFaceLocal", "ceFaceBox",
     ]
 
     /// Variables and constants visible to every effect shader: GLSL built-ins
@@ -144,7 +144,8 @@ enum GLSLSyntaxHighlighter {
         "uResolution", "uTime", "uTimeDelta", "uFrameCount", "uHeadIndex", "uFrameNumber",
         // Vision data
         "uPersonMatte", "uFaceMask", "uHandMask",
-        "uFaceCount", "uFaceRects", "uHandCount", "uHandInfo", "uHandJoints",
+        "uFaceCount", "uFaceRects", "uFaceOriented", "uFaceAngles",
+        "uHandCount", "uHandInfo", "uHandJoints",
         // Prelude #defines
         "CE_MAX_FACES", "CE_MAX_HANDS", "CE_HAND_JOINTS",
         "CE_WRIST",

@@ -57,6 +57,31 @@ struct VisionFeatures: OptionSet, Hashable {
     }
 }
 
+/// One detected face in vUV space (top-left origin, mirroring applied).
+///
+/// Vision only ever reports an axis-aligned box, which grows as the head rolls.
+/// `center`/`size`/`roll` describe the box that tracks the head instead: the
+/// same region with the roll divided back out.
+struct VisionFace {
+    /// xy = top-left corner, zw = size, in vUV space. Axis-aligned.
+    var rect: SIMD4<Float>
+    /// Centre of the box in vUV space, shared by the axis-aligned and the
+    /// rolled box.
+    var center: SIMD2<Float>
+    /// Size of the rolled box. Both lanes are in frame heights so the box stays
+    /// rectangular on screen once a shader corrects for the frame aspect.
+    var size: SIMD2<Float>
+    /// In-plane rotation in radians; positive turns the face clockwise on
+    /// screen. 0 for an upright face.
+    var roll: Float
+    /// Rotation around the vertical axis in radians; positive turns the face
+    /// towards the viewer's left (as seen in vUV space).
+    var yaw: Float
+    /// Rotation around the horizontal axis in radians; positive is nodding down.
+    var pitch: Float
+    var confidence: Float
+}
+
 /// One detected hand in vUV space (top-left origin, mirroring applied).
 struct VisionHand {
     /// -1 = left, +1 = right, 0 = unknown.
@@ -72,8 +97,8 @@ struct VisionHand {
 /// and mask textures are in vUV space, except `personMatte`, which is
 /// unmirrored (the engine blits it into orientation).
 struct VisionSnapshot {
-    /// xy = top-left origin, zw = size, in vUV space. At most `maxFaces`.
-    var faceRects: [SIMD4<Float>] = []
+    /// At most `maxFaces`.
+    var faces: [VisionFace] = []
     /// At most `maxHands`.
     var hands: [VisionHand] = []
     /// r8Unorm person matte imported from Vision; 1 = person. Not mirrored.
@@ -86,13 +111,23 @@ struct VisionSnapshot {
 /// Block-level ints are stored via bit pattern in the first slot's x lane.
 enum VisionUniformPacking {
 
-    /// CEFace: int uFaceCount (offset 0), vec4 uFaceRects[4] (offset 16). 80 bytes.
-    static func packFace(rects: [SIMD4<Float>]) -> [SIMD4<Float>] {
-        var slots = [SIMD4<Float>](repeating: .zero, count: 1 + VisionUniforms.maxFaces)
-        let count = min(rects.count, VisionUniforms.maxFaces)
+    /// CEFace: int uFaceCount (offset 0), vec4 uFaceRects[4] (offset 16),
+    /// vec4 uFaceOriented[4] (offset 80), vec4 uFaceAngles[4] (offset 144).
+    /// 208 bytes.
+    static func packFace(_ faces: [VisionFace]) -> [SIMD4<Float>] {
+        let maxFaces = VisionUniforms.maxFaces
+        var slots = [SIMD4<Float>](repeating: .zero, count: 1 + 3 * maxFaces)
+        let count = min(faces.count, maxFaces)
         slots[0].x = Float(bitPattern: UInt32(bitPattern: Int32(count)))
         for index in 0..<count {
-            slots[1 + index] = rects[index]
+            let face = faces[index]
+            slots[1 + index] = face.rect
+            slots[1 + maxFaces + index] = SIMD4<Float>(
+                face.center.x, face.center.y, face.size.x, face.size.y
+            )
+            slots[1 + 2 * maxFaces + index] = SIMD4<Float>(
+                face.roll, face.yaw, face.pitch, face.confidence
+            )
         }
         return slots
     }
