@@ -87,7 +87,7 @@ enum ShaderCompiler {
 
     /// Interface every effect shader sees. Uniform bindings 0-2 are reserved;
     /// user `Params` blocks conventionally use binding 3, user samplers
-    /// bindings 4-15. Bindings 16-20 carry the vision data (segmentation
+    /// bindings 4-15. Bindings 16-21 carry the vision data (segmentation
     /// mattes, face/hand observations); the underlying detectors only run
     /// while an enabled effect actually uses one of those uniforms.
     static let prelude = """
@@ -118,6 +118,16 @@ enum ShaderCompiler {
     layout(std140, binding = 19) uniform CEFace {
         int  uFaceCount;      // detected faces (0 ... CE_MAX_FACES)
         vec4 uFaceRects[4];   // xy = top-left origin, zw = size, in vUV space
+    };
+
+    // Separate from CEFace so that using rectangles alone keeps the cheaper
+    // detector: these centers need full facial-landmark detection. Indexed
+    // like uFaceRects. Each entry: xy = center, z = 1 when located,
+    // w = half the region's width (same units as uFaceRects.z).
+    layout(std140, binding = 21) uniform CEFacePoints {
+        vec4 uFaceLeftEye[4];
+        vec4 uFaceRightEye[4];
+        vec4 uFaceMouth[4];
     };
 
     layout(std140, binding = 20) uniform CEHands {

@@ -144,7 +144,9 @@ enum GLSLSyntaxHighlighter {
         "uResolution", "uTime", "uTimeDelta", "uFrameCount", "uHeadIndex", "uFrameNumber",
         // Vision data
         "uPersonMatte", "uFaceMask", "uHandMask",
-        "uFaceCount", "uFaceRects", "uHandCount", "uHandInfo", "uHandJoints",
+        "uFaceCount", "uFaceRects",
+        "uFaceLeftEye", "uFaceRightEye", "uFaceMouth",
+        "uHandCount", "uHandInfo", "uHandJoints",
         // Prelude #defines
         "CE_MAX_FACES", "CE_MAX_HANDS", "CE_HAND_JOINTS",
         "CE_WRIST",

@@ -114,7 +114,7 @@ they are enabled. Their vision detectors do not run either.
 | `uHeadIndex` | `int` | z-slice index of the newest raw frame (0 … N − 1). |
 | `uFrameNumber` | `int` | Frame counter since the stream started. |
 
-### Vision data (bindings 16–20)
+### Vision data (bindings 16–21)
 
 Face detection, eye/mouth segmentation, hand pose, hand segmentation, and a
 person matte for background subtraction are available as standard uniforms.
@@ -131,6 +131,9 @@ origin, mirroring already applied).
 | `uHandMask` | `sampler2D` | Approximate hand silhouette built from the hand skeleton. Sample `.r`. |
 | `uFaceCount` | `int` (`CEFace`, binding = 19) | Detected faces (0 … `CE_MAX_FACES`). |
 | `uFaceRects[4]` | `vec4` (`CEFace`) | Face bounding boxes: xy = top-left corner, zw = size, in vUV space. |
+| `uFaceLeftEye[4]` | `vec4` (`CEFacePoints`, binding = 21) | Left-eye center of face _i_: xy = vUV position, z = 1 when located, w = half the eye's width (units of `uFaceRects.z`). |
+| `uFaceRightEye[4]` | `vec4` (`CEFacePoints`) | Right-eye center, same layout. |
+| `uFaceMouth[4]` | `vec4` (`CEFacePoints`) | Mouth center (outer-lip contour), same layout. |
 | `uHandCount` | `int` (`CEHands`, binding = 20) | Detected hands (0 … `CE_MAX_HANDS`). |
 | `uHandInfo[2]` | `vec4` (`CEHands`) | Per hand: x = chirality (−1 left, +1 right), y = confidence. |
 | `uHandJoints[42]` | `vec4` (`CEHands`) | 21 joints per hand: xy = vUV position, z = confidence. |
@@ -145,6 +148,13 @@ void main() {
 }
 ```
 
+`uFaceLeftEye`, `uFaceRightEye`, `uFaceMouth`, and `uFaceMask` all come from the
+same facial-landmark pass, so referencing any of them upgrades face detection
+from bounding boxes to landmarks. `uFaceRects` on its own keeps using the
+cheaper rectangle detector. "Left" and "right" are Vision's own labels for the
+landmark regions, matching the `uFaceMask` R and G channels; note that mirroring
+swaps which side of the frame they land on.
+
 Example — circle following the right index fingertip:
 
 ```glsl
@@ -155,6 +165,23 @@ void main() {
         if (tip.z < 0.3) { continue; }
         float d = distance(vUV * uResolution, tip.xy * uResolution);
         outColor = mix(vec4(1.0, 0.0, 0.0, 1.0), outColor, smoothstep(18.0, 22.0, d));
+    }
+}
+```
+
+Example — a glow on each eye, sized to the eye itself:
+
+```glsl
+void main() {
+    outColor = texture(uPrev, vUV);
+    for (int i = 0; i < uFaceCount; i++) {
+        vec4 eyes[2] = vec4[2](uFaceLeftEye[i], uFaceRightEye[i]);
+        for (int e = 0; e < 2; e++) {
+            if (eyes[e].z < 0.5) { continue; }
+            float radius = max(eyes[e].w * uResolution.x, 2.0);
+            float d = distance(vUV * uResolution, eyes[e].xy * uResolution);
+            outColor += vec4(1.0, 0.85, 0.2, 0.0) * (1.0 - smoothstep(0.0, radius, d));
+        }
     }
 }
 ```

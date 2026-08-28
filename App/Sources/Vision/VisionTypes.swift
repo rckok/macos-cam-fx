@@ -7,6 +7,7 @@ enum VisionUniforms {
     static let faceMaskSampler = "uFaceMask"
     static let handMaskSampler = "uHandMask"
     static let faceBlock = "CEFace"
+    static let facePointsBlock = "CEFacePoints"
     static let handsBlock = "CEHands"
 
     static let maxFaces = 4
@@ -29,8 +30,14 @@ struct VisionFeatures: OptionSet, Hashable {
     static let handPose = VisionFeatures(rawValue: 1 << 3)
     /// Approximate hand silhouette rendered into `uHandMask` (implies hand pose).
     static let handMask = VisionFeatures(rawValue: 1 << 4)
+    /// Eye and mouth centers from face landmarks, filling the `CEFacePoints`
+    /// block (implies face rects).
+    static let facePoints = VisionFeatures(rawValue: 1 << 5)
 
-    var needsFaceDetection: Bool { !isDisjoint(with: [.faceRects, .faceMask]) }
+    var needsFaceDetection: Bool { !isDisjoint(with: [.faceRects, .faceMask, .facePoints]) }
+    /// Landmarks are strictly more expensive than rectangles, so they are only
+    /// requested for the features that actually read them.
+    var needsFaceLandmarks: Bool { !isDisjoint(with: [.faceMask, .facePoints]) }
     var needsHandDetection: Bool { !isDisjoint(with: [.handPose, .handMask]) }
 
     /// Features used by one compiled shader. A prelude uniform that the user
@@ -49,6 +56,7 @@ struct VisionFeatures: OptionSet, Hashable {
         for block in reflection.uniformBlocks where block.mslBuffer >= 0 {
             switch block.name {
             case VisionUniforms.faceBlock: features.insert(.faceRects)
+            case VisionUniforms.facePointsBlock: features.insert(.facePoints)
             case VisionUniforms.handsBlock: features.insert(.handPose)
             default: break
             }
@@ -67,6 +75,15 @@ struct VisionHand {
     var joints: [SIMD4<Float>]
 }
 
+/// Landmark-derived centers of one detected face, in vUV space. Each entry is
+/// xy = center, z = 1 when the region was located (0 otherwise), w = half the
+/// region's width, normalized to the frame width like `faceRects`' size.
+struct VisionFacePoints {
+    var leftEye: SIMD4<Float> = .zero
+    var rightEye: SIMD4<Float> = .zero
+    var mouth: SIMD4<Float> = .zero
+}
+
 /// Vision results for one camera frame, produced by `VisionProcessor` and
 /// consumed by the render thread together with that same frame. All coordinates
 /// and mask textures are in vUV space, except `personMatte`, which is
@@ -74,6 +91,8 @@ struct VisionHand {
 struct VisionSnapshot {
     /// xy = top-left origin, zw = size, in vUV space. At most `maxFaces`.
     var faceRects: [SIMD4<Float>] = []
+    /// Parallel to `faceRects` when face landmarks were requested, else empty.
+    var facePoints: [VisionFacePoints] = []
     /// At most `maxHands`.
     var hands: [VisionHand] = []
     /// r8Unorm person matte imported from Vision; 1 = person. Not mirrored.
@@ -82,7 +101,8 @@ struct VisionSnapshot {
     var faceMask: MTLTexture?
 }
 
-/// std140 packing of the `CEFace` and `CEHands` prelude blocks as vec4 slots.
+/// std140 packing of the `CEFace`, `CEFacePoints`, and `CEHands` prelude blocks
+/// as vec4 slots.
 /// Block-level ints are stored via bit pattern in the first slot's x lane.
 enum VisionUniformPacking {
 
@@ -93,6 +113,19 @@ enum VisionUniformPacking {
         slots[0].x = Float(bitPattern: UInt32(bitPattern: Int32(count)))
         for index in 0..<count {
             slots[1 + index] = rects[index]
+        }
+        return slots
+    }
+
+    /// CEFacePoints: vec4 uFaceLeftEye[4] (offset 0), vec4 uFaceRightEye[4]
+    /// (offset 64), vec4 uFaceMouth[4] (offset 128). 192 bytes.
+    static func packFacePoints(_ points: [VisionFacePoints]) -> [SIMD4<Float>] {
+        let maxFaces = VisionUniforms.maxFaces
+        var slots = [SIMD4<Float>](repeating: .zero, count: 3 * maxFaces)
+        for index in 0..<min(points.count, maxFaces) {
+            slots[index] = points[index].leftEye
+            slots[maxFaces + index] = points[index].rightEye
+            slots[2 * maxFaces + index] = points[index].mouth
         }
         return slots
     }
