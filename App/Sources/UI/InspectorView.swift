@@ -1,37 +1,105 @@
 import AppKit
 import SwiftUI
 
-/// Auto-generated parameter controls reflected from the effect's Params block.
-struct InspectorView: View {
-    @EnvironmentObject private var state: AppState
-    @ObservedObject var effect: Effect
+/// Effect-level controls: every `@metadata(global)` parameter its stages
+/// declare. This is the only inspector Basic Mode shows.
+struct EffectInspectorView: View {
+    let effect: Effect
+    @ObservedObject var store: EffectStore
+
+    private var contributors: [Stage] {
+        store.stages(in: effect).filter { !$0.globalParameters.isEmpty }
+    }
 
     var body: some View {
         Form {
-            if !effect.textureBindings.isEmpty {
+            if contributors.isEmpty {
+                Section("Controls") {
+                    Text(emptyMessage)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else if contributors.count == 1, let stage = contributors.first {
+                Section("Controls") {
+                    GlobalParameterControls(stage: stage)
+                }
+            } else {
+                ForEach(contributors) { stage in
+                    Section(stage.name) {
+                        GlobalParameterControls(stage: stage)
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private var emptyMessage: String {
+        if effect.stageIDs.isEmpty {
+            return "This effect has no stages yet. Add one in Editor Mode."
+        }
+        return "No effect-level controls. Mark a stage parameter with `// @metadata(global)` to surface it here."
+    }
+}
+
+/// The `global` parameters of one stage, edited in place on that stage.
+private struct GlobalParameterControls: View {
+    @EnvironmentObject private var state: AppState
+    @ObservedObject var stage: Stage
+
+    var body: some View {
+        ForEach(stage.globalParameters) { parameter in
+            ParameterControl(parameter: binding(for: parameter)) {
+                state.parametersChanged(stage)
+            }
+            .id("\(stage.id)-\(parameter.name)-\(parameter.type)-\(parameter.values.count)-\(parameter.isColor)")
+        }
+    }
+
+    /// Writes straight back into the owning stage, matched by name so a
+    /// recompile that reorders `Params` cannot scramble the controls.
+    private func binding(for parameter: StageParameter) -> Binding<StageParameter> {
+        Binding(
+            get: { stage.parameters.first { $0.name == parameter.name } ?? parameter },
+            set: { updated in
+                guard let index = stage.parameters.firstIndex(where: { $0.name == parameter.name }) else { return }
+                stage.parameters[index] = updated
+            }
+        )
+    }
+}
+
+/// Auto-generated parameter controls reflected from the stage's Params block.
+struct StageInspectorView: View {
+    @EnvironmentObject private var state: AppState
+    @ObservedObject var stage: Stage
+
+    var body: some View {
+        Form {
+            if !stage.textureBindings.isEmpty {
                 Section("Textures") {
-                    ForEach($effect.textureBindings) { $binding in
-                        TextureBindingRow(effect: effect, binding: $binding)
+                    ForEach($stage.textureBindings) { $binding in
+                        TextureBindingRow(stage: stage, binding: $binding)
                     }
                 }
             }
 
             Section("Parameters") {
-                if effect.parameters.isEmpty {
+                if stage.parameters.isEmpty {
                     Text("No scalar parameters.\nDeclare a `Params` uniform block to add sliders and toggles.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
-                    ForEach($effect.parameters) { $parameter in
+                    ForEach($stage.parameters) { $parameter in
                         ParameterControl(parameter: $parameter) {
-                            state.parametersChanged(effect)
+                            state.parametersChanged(stage)
                         }
                         .id("\(parameter.name)-\(parameter.type)-\(parameter.values.count)-\(parameter.isColor)")
                     }
                 }
             }
 
-            if effect.textureBindings.isEmpty && effect.parameters.isEmpty {
+            if stage.textureBindings.isEmpty && stage.parameters.isEmpty {
                 Text("Declare a `Params` block and/or `sampler2D` uniforms (binding ≥ 4) in your shader.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -44,8 +112,8 @@ struct InspectorView: View {
 
 private struct TextureBindingRow: View {
     @EnvironmentObject private var state: AppState
-    @ObservedObject var effect: Effect
-    @Binding var binding: EffectTextureBinding
+    @ObservedObject var stage: Stage
+    @Binding var binding: StageTextureBinding
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -85,14 +153,14 @@ private struct TextureBindingRow: View {
         Binding(
             get: { binding.mediaID },
             set: { newValue in
-                state.assignMedia(newValue, toSampler: binding.name, in: effect)
+                state.assignMedia(newValue, toSampler: binding.name, in: stage)
             }
         )
     }
 }
 
 struct ParameterControl: View {
-    @Binding var parameter: EffectParameter
+    @Binding var parameter: StageParameter
     let onChange: () -> Void
 
     var body: some View {

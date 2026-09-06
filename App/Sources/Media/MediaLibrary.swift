@@ -23,7 +23,7 @@ private struct MediaLibraryManifest: Codable {
     var assets: [MediaAsset] = []
 }
 
-/// Shared media library: images and videos available to any effect shader.
+/// Shared media library: images and videos available to any stage shader.
 @MainActor
 final class MediaLibrary: ObservableObject {
 

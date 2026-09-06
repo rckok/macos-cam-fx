@@ -35,7 +35,7 @@ enum ShaderReference {
         Category(
             id: "vision",
             title: "Vision data",
-            footer: "Face, hand, and segmentation data. The detectors only run while an enabled effect uses one of these uniforms. All coordinates and mask textures are in vUV space (top-left origin, mirroring applied).",
+            footer: "Face, hand, and segmentation data. The detectors only run while a stage of the active effect uses one of these uniforms. All coordinates and mask textures are in vUV space (top-left origin, mirroring applied).",
             symbols: vision
         ),
         Category(id: "functions", title: "Functions", symbols: functions),
@@ -53,7 +53,7 @@ enum ShaderReference {
             id: "outColor",
             name: "outColor",
             type: "out vec4",
-            description: "Write the effect output here. Alpha is preserved through the chain."
+            description: "Write the stage output here. Alpha is preserved through the effect's stages."
         ),
     ]
 
@@ -62,7 +62,7 @@ enum ShaderReference {
             id: "uPrev",
             name: "uPrev",
             type: "uniform sampler2D",
-            description: "The previous pass output at the current UV. For the first effect in the chain this is the scaled (and optionally mirrored) camera frame."
+            description: "The previous stage's output at the current UV. For the first stage of an effect this is the scaled (and optionally mirrored) camera frame — the same pixels as ceHistory(vUV, 0). Nothing carries over from other effects."
         ),
         Symbol(
             id: "uFrames",
@@ -192,13 +192,13 @@ enum ShaderReference {
             id: "Params",
             name: "Params",
             type: "uniform block, binding = 3",
-            description: "Optional std140 block for effect parameters. Members become sliders, toggles, or color pickers in the inspector. Put `// @metadata(min=0 max=1 default=0.5)` on the line above a member to set its slider range. Vectors accept GLSL constructors (`min=vec3(0) max=vec3(1, 2, 1)`). `vec3`/`vec4` use per-component sliders unless you add `color=true`."
+            description: "Optional std140 block for stage parameters. Members become sliders, toggles, or color pickers in the inspector. Put `// @metadata(min=0 max=1 default=0.5)` on the line above a member to set its slider range. Vectors accept GLSL constructors (`min=vec3(0) max=vec3(1, 2, 1)`). `vec3`/`vec4` use per-component sliders unless you add `color=true`. Add `global` to list the control on the owning effect too, which is the only place Basic Mode can reach it."
         ),
         Symbol(
             id: "sampler2D",
             name: "yourSampler",
             type: "uniform sampler2D, binding ≥ 4",
-            description: "Optional 2D textures assigned from the shared media library in the inspector."
+            description: "Optional 2D textures assigned from the shared media library in the stage inspector."
         ),
     ]
 }

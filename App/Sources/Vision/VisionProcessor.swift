@@ -45,7 +45,7 @@ final class VisionProcessor {
 
     // MARK: Render-thread interface
 
-    /// Reconfigures which algorithms run. Called whenever the effect chain
+    /// Reconfigures which algorithms run. Called whenever the active effect
     /// changes; results of features no longer needed are dropped immediately.
     func setFeatures(_ newFeatures: VisionFeatures) {
         lock.lock()
@@ -58,7 +58,7 @@ final class VisionProcessor {
     /// next. `completion` is invoked on the vision queue with the snapshot
     /// computed from this buffer (or the later pending buffer that replaced it).
     /// `mirrored` mirrors observation coordinates to match the flipped
-    /// working texture the effects sample.
+    /// working texture the stages sample.
     func submit(
         pixelBuffer: CVPixelBuffer,
         timestamp: CMTime,

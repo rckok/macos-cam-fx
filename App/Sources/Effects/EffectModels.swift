@@ -1,8 +1,25 @@
 import Foundation
 
-/// A user-tweakable shader parameter, reflected from the shader's `Params`
-/// uniform block and merged with persisted values from effect.json.
-struct EffectParameter: Identifiable, Equatable {
+/// How much of the effect tree the UI exposes.
+enum ViewMode: String, Codable, CaseIterable, Identifiable {
+    /// Only the effects list and the effect-level (`global`) controls.
+    case basic
+    /// Effects, their stages, the GLSL editor and every stage control.
+    case editor
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .basic: return "Basic"
+        case .editor: return "Editor"
+        }
+    }
+}
+
+/// A user-tweakable shader parameter, reflected from a stage's `Params`
+/// uniform block and merged with persisted values from stage.json.
+struct StageParameter: Identifiable, Equatable {
     let name: String
     /// GLSL type name: float, int, bool, vec2, vec3, vec4.
     let type: String
@@ -11,6 +28,9 @@ struct EffectParameter: Identifiable, Equatable {
     var maximum: [Double]
     /// vec3/vec4 use per-component sliders unless `@metadata(color=true)`.
     var isColor: Bool = false
+    /// `@metadata(global)` also lists this control on the owning effect, so it
+    /// stays reachable in Basic Mode where stages are hidden.
+    var isGlobal: Bool = false
 
     var id: String { name }
 
@@ -70,12 +90,12 @@ struct EffectParameter: Identifiable, Equatable {
         }
     }
 
-    static func makeDefault(name: String, type: String) -> EffectParameter {
+    static func makeDefault(name: String, type: String) -> StageParameter {
         let normalized = normalizeReflectionType(type)
         let count = componentCount(for: normalized)
         switch normalized {
         case "bool", "bvec2", "bvec3", "bvec4", "uint", "uvec2", "uvec3", "uvec4":
-            return EffectParameter(
+            return StageParameter(
                 name: name,
                 type: normalized,
                 values: Array(repeating: 0, count: count),
@@ -83,7 +103,7 @@ struct EffectParameter: Identifiable, Equatable {
                 maximum: Array(repeating: 1, count: count)
             )
         case "int", "ivec2", "ivec3", "ivec4":
-            return EffectParameter(
+            return StageParameter(
                 name: name,
                 type: normalized,
                 values: Array(repeating: 0, count: count),
@@ -91,7 +111,7 @@ struct EffectParameter: Identifiable, Equatable {
                 maximum: Array(repeating: 10, count: count)
             )
         case "vec3", "vec4":
-            return EffectParameter(
+            return StageParameter(
                 name: name,
                 type: normalized,
                 values: Array(repeating: 1, count: count),
@@ -99,7 +119,7 @@ struct EffectParameter: Identifiable, Equatable {
                 maximum: Array(repeating: 1, count: count)
             )
         default:
-            return EffectParameter(
+            return StageParameter(
                 name: name,
                 type: normalized,
                 values: Array(repeating: 0.5, count: count),
@@ -110,17 +130,18 @@ struct EffectParameter: Identifiable, Equatable {
     }
 
     /// Builds a parameter from reflection, optional shader `@metadata`, and
-    /// any value already stored in the effect. Shader min/max/`color` win when
-    /// present; the current value is kept and clamped into the resulting range.
+    /// any value already stored in the stage. Shader min/max/`color`/`global`
+    /// win when present; the current value is kept and clamped into the range.
     static func resolved(
         name: String,
         type: String,
-        existing: EffectParameter?,
+        existing: StageParameter?,
         minimum: [Double]?,
         maximum: [Double]?,
         defaultValue: [Double]?,
-        isColor: Bool?
-    ) -> EffectParameter {
+        isColor: Bool?,
+        isGlobal: Bool?
+    ) -> StageParameter {
         let normalized = normalizeReflectionType(type)
         let typeDefaults = makeDefault(name: name, type: normalized)
         let count = componentCount(for: normalized)
@@ -145,13 +166,14 @@ struct EffectParameter: Identifiable, Equatable {
             min(max(value, bounds.0), bounds.1)
         }
 
-        return EffectParameter(
+        return StageParameter(
             name: name,
             type: normalized,
             values: values,
             minimum: minima,
             maximum: maxima,
-            isColor: isColor ?? typeDefaults.isColor
+            isColor: isColor ?? typeDefaults.isColor,
+            isGlobal: isGlobal ?? false
         )
     }
 
@@ -169,23 +191,23 @@ struct EffectParameter: Identifiable, Equatable {
     }
 }
 
-/// A named pipeline group that can be enabled/disabled as a whole.
-struct EffectGroup: Identifiable, Codable, Equatable {
+/// A named pipeline of stages. Exactly one effect is active at a time — the
+/// one that owns the current selection — so effects never chain into each
+/// other: every effect starts from the current camera frame.
+struct Effect: Identifiable, Codable, Equatable {
     var id: String
     var name: String
-    var enabled: Bool
-    var effectIDs: [String]
+    var stageIDs: [String]
 
-    init(id: String, name: String, enabled: Bool = true, effectIDs: [String] = []) {
+    init(id: String, name: String, stageIDs: [String] = []) {
         self.id = id
         self.name = name
-        self.enabled = enabled
-        self.effectIDs = effectIDs
+        self.stageIDs = stageIDs
     }
 }
 
-/// Assigns a media-library asset to a `sampler2D` uniform in the effect shader.
-struct EffectTextureBinding: Identifiable, Equatable {
+/// Assigns a media-library asset to a `sampler2D` uniform in the stage shader.
+struct StageTextureBinding: Identifiable, Equatable {
     /// GLSL sampler name, e.g. `uOverlay`.
     let name: String
     /// ID of the asset in the shared media library, if assigned.
@@ -194,23 +216,27 @@ struct EffectTextureBinding: Identifiable, Equatable {
     var id: String { name }
 }
 
-/// On-disk manifest stored next to shader.frag in each effect folder.
-struct EffectManifest: Codable {
+/// On-disk manifest stored next to shader.frag in each stage folder.
+struct StageManifest: Codable {
     struct Param: Codable {
         var type: String?
         var value: [Double]
         var min: [Double]?
         var max: [Double]?
+        /// Mirrors `@metadata(global)`; kept so effect-level controls are
+        /// available before the stage finishes its first compile.
+        var global: Bool?
 
         enum CodingKeys: String, CodingKey {
-            case type, value, min, max
+            case type, value, min, max, global
         }
 
-        init(type: String?, value: [Double], min: [Double]?, max: [Double]?) {
+        init(type: String?, value: [Double], min: [Double]?, max: [Double]?, global: Bool?) {
             self.type = type
             self.value = value
             self.min = min
             self.max = max
+            self.global = global
         }
 
         init(from decoder: Decoder) throws {
@@ -219,6 +245,7 @@ struct EffectManifest: Codable {
             value = try container.decode([Double].self, forKey: .value)
             min = Self.decodeFlexibleDoubles(from: container, key: .min)
             max = Self.decodeFlexibleDoubles(from: container, key: .max)
+            global = try container.decodeIfPresent(Bool.self, forKey: .global)
         }
 
         func encode(to encoder: Encoder) throws {
@@ -227,6 +254,9 @@ struct EffectManifest: Codable {
             try container.encode(value, forKey: .value)
             try Self.encodeFlexibleDoubles(min, to: &container, key: .min)
             try Self.encodeFlexibleDoubles(max, to: &container, key: .max)
+            if global == true {
+                try container.encode(true, forKey: .global)
+            }
         }
 
         private static func decodeFlexibleDoubles(
@@ -257,34 +287,32 @@ struct EffectManifest: Codable {
     }
 
     var name: String
-    var enabled: Bool?
     var params: [String: Param]?
     var textures: [String: TextureBinding]?
 }
 
-/// One effect: a GLSL shader on disk plus runtime compile state.
-final class Effect: Identifiable, ObservableObject {
+/// One stage of an effect: a GLSL shader on disk plus runtime compile state.
+final class Stage: Identifiable, ObservableObject {
     /// Folder name; doubles as the stable identifier.
     let id: String
     let folderURL: URL
 
     @Published var name: String
-    @Published var enabled: Bool
     @Published var source: String
-    @Published var parameters: [EffectParameter]
-    @Published var textureBindings: [EffectTextureBinding]
+    @Published var parameters: [StageParameter]
+    @Published var textureBindings: [StageTextureBinding]
     @Published var diagnostics: [ShaderDiagnostic] = []
-    /// Enabled, but dropped from the render chain because a later enabled
+    /// Dropped from the effect's chain because a later stage of the same
     /// effect never samples `uPrev` and therefore discards this one's output.
     @Published var isShadowed = false
 
     /// Set after a successful compile; consumed by the render engine.
-    var compiled: CompiledEffect?
+    var compiled: CompiledStage?
 
-    /// Shown next to effects whose `isShadowed` flag is set.
+    /// Shown next to stages whose `isShadowed` flag is set.
     static let shadowedExplanation = """
-    Not rendered: a later enabled effect never samples uPrev, so it replaces \
-    everything this effect would contribute.
+    Not rendered: a later stage of this effect never samples uPrev, so it \
+    replaces everything this stage would contribute.
     """
 
     /// Prelude-provided samplers that must not appear as media-library pickers.
@@ -299,18 +327,21 @@ final class Effect: Identifiable, ObservableObject {
         id: String,
         folderURL: URL,
         name: String,
-        enabled: Bool,
         source: String,
-        parameters: [EffectParameter],
-        textureBindings: [EffectTextureBinding] = []
+        parameters: [StageParameter],
+        textureBindings: [StageTextureBinding] = []
     ) {
         self.id = id
         self.folderURL = folderURL
         self.name = name
-        self.enabled = enabled
         self.source = source
         self.parameters = parameters
         self.textureBindings = textureBindings
+    }
+
+    /// Parameters listed on the owning effect as well as on this stage.
+    var globalParameters: [StageParameter] {
+        parameters.filter(\.isGlobal)
     }
 
     /// Merges reflected `Params` members with existing parameter state,
@@ -321,17 +352,18 @@ final class Effect: Identifiable, ObservableObject {
             return
         }
         parameters = block.members.map { member in
-            let type = EffectParameter.normalizeReflectionType(member.type)
-            let count = EffectParameter.componentCount(for: type)
+            let type = StageParameter.normalizeReflectionType(member.type)
+            let count = StageParameter.componentCount(for: type)
             let existing = parameters.first(where: { $0.name == member.name && $0.values.count == count })
-            return EffectParameter.resolved(
+            return StageParameter.resolved(
                 name: member.name,
                 type: type,
                 existing: existing,
                 minimum: member.minimum,
                 maximum: member.maximum,
                 defaultValue: member.defaultValue,
-                isColor: member.isColor
+                isColor: member.isColor,
+                isGlobal: member.isGlobal
             )
         }
     }
@@ -345,36 +377,36 @@ final class Effect: Identifiable, ObservableObject {
             if let existing = textureBindings.first(where: { $0.name == binding.name }) {
                 return existing
             }
-            return EffectTextureBinding(name: binding.name, mediaID: nil)
+            return StageTextureBinding(name: binding.name, mediaID: nil)
         }
     }
 
-    /// Pushes all current parameter values into the compiled effect's buffer.
+    /// Pushes all current parameter values into the compiled stage's buffer.
     func applyParameters() {
         guard let compiled else { return }
         for parameter in parameters {
-            let type = EffectParameter.normalizeReflectionType(parameter.type)
+            let type = StageParameter.normalizeReflectionType(parameter.type)
             compiled.writeParam(name: parameter.name, type: type, values: parameter.values)
         }
     }
 
-    var manifest: EffectManifest {
-        var params: [String: EffectManifest.Param] = [:]
+    var manifest: StageManifest {
+        var params: [String: StageManifest.Param] = [:]
         for parameter in parameters {
-            params[parameter.name] = EffectManifest.Param(
+            params[parameter.name] = StageManifest.Param(
                 type: parameter.type,
                 value: parameter.values,
                 min: parameter.minimum,
-                max: parameter.maximum
+                max: parameter.maximum,
+                global: parameter.isGlobal ? true : nil
             )
         }
-        var textureManifest: [String: EffectManifest.TextureBinding] = [:]
+        var textureManifest: [String: StageManifest.TextureBinding] = [:]
         for binding in textureBindings {
-            textureManifest[binding.name] = EffectManifest.TextureBinding(media: binding.mediaID)
+            textureManifest[binding.name] = StageManifest.TextureBinding(media: binding.mediaID)
         }
-        return EffectManifest(
+        return StageManifest(
             name: name,
-            enabled: enabled,
             params: params,
             textures: textureManifest.isEmpty ? nil : textureManifest
         )

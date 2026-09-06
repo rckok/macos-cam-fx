@@ -134,7 +134,7 @@ enum GLSLSyntaxHighlighter {
         "ceHistory", "ceHandJoint",
     ]
 
-    /// Variables and constants visible to every effect shader: GLSL built-ins
+    /// Variables and constants visible to every stage shader: GLSL built-ins
     /// plus everything `ShaderCompiler.prelude` injects.
     static let builtinSymbols: Set<String> = [
         "gl_FragCoord", "gl_FrontFacing", "gl_PointCoord", "gl_FragDepth",

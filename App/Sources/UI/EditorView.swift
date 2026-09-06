@@ -3,33 +3,33 @@ import SwiftUI
 /// GLSL source editor with live recompile and inline diagnostics.
 struct EditorView: View {
     @EnvironmentObject private var state: AppState
-    @ObservedObject var effect: Effect
+    @ObservedObject var stage: Stage
     @State private var revealLine: Int?
     @State private var revealNonce = 0
 
     private var errorCount: Int {
-        effect.diagnostics.filter { $0.severity == .error }.count
+        stage.diagnostics.filter { $0.severity == .error }.count
     }
 
     private var warningCount: Int {
-        effect.diagnostics.filter { $0.severity == .warning }.count
+        stage.diagnostics.filter { $0.severity == .warning }.count
     }
 
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                TextField("Effect name", text: $effect.name)
+                TextField("Stage name", text: $stage.name)
                     .textFieldStyle(.plain)
                     .font(.headline)
                     .onSubmit {
-                        state.store.persist(effect: effect)
+                        state.store.persist(stage: stage)
                     }
                 Spacer()
-                if effect.isShadowed {
+                if stage.isShadowed {
                     Label("Not rendered", systemImage: "eye.slash")
                         .foregroundStyle(.secondary)
                         .font(.caption)
-                        .help(Effect.shadowedExplanation)
+                        .help(Stage.shadowedExplanation)
                 }
                 statusLabel
             }
@@ -42,19 +42,19 @@ struct EditorView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .overlay {
                     ShaderSourceEditor(
-                        text: effect.source,
-                        diagnostics: effect.diagnostics,
+                        text: stage.source,
+                        diagnostics: stage.diagnostics,
                         revealLine: revealLine,
                         revealNonce: revealNonce,
                         onChange: handleEditorChange
                     )
                 }
 
-            if !effect.diagnostics.isEmpty {
+            if !stage.diagnostics.isEmpty {
                 Divider()
                 ScrollView {
                     VStack(alignment: .leading, spacing: 2) {
-                        ForEach(effect.diagnostics) { diagnostic in
+                        ForEach(stage.diagnostics) { diagnostic in
                             Button {
                                 guard let line = diagnostic.line else { return }
                                 revealLine = line
@@ -111,9 +111,9 @@ struct EditorView: View {
 
     private func handleEditorChange(_ newText: String) {
         DispatchQueue.main.async {
-            guard effect.source != newText else { return }
-            effect.source = newText
-            state.scheduleCompile(effect, debounce: true)
+            guard stage.source != newText else { return }
+            stage.source = newText
+            state.scheduleCompile(stage, debounce: true)
         }
     }
 }

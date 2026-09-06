@@ -5,8 +5,8 @@ import Metal
 import QuartzCore
 
 /// GPU pipeline: imports captured frames, maintains the N-frame history as a
-/// 3D texture, runs the effect chain, and produces output pixel buffers for
-/// the virtual camera plus a texture for the preview.
+/// 3D texture, runs the active effect's stages, and produces output pixel
+/// buffers for the virtual camera plus a texture for the preview.
 final class RenderEngine {
 
     /// std140 layout of the CEContext uniform block declared in the prelude.
@@ -40,7 +40,7 @@ final class RenderEngine {
     private let renderQueue = DispatchQueue(label: "cameraEffects.render", qos: .userInteractive)
 
     // Protected by `lock`:
-    private var effects: [RunningEffect] = []
+    private var stages: [RunningStage] = []
     private var historyDepth: Int = 16
     private var flipHorizontal: Bool = true
     private var visionFeatures: VisionFeatures = []
@@ -138,14 +138,14 @@ final class RenderEngine {
 
     // MARK: Configuration (called from the main thread)
 
-    func setEffects(_ newEffects: [RunningEffect]) {
-        // Vision algorithms only run while some enabled effect's compiled
-        // shader actually uses their uniforms (per shader reflection).
-        let features = newEffects.reduce(into: VisionFeatures()) { result, running in
+    func setStages(_ newStages: [RunningStage]) {
+        // Vision algorithms only run while a stage of the active effect
+        // actually uses their uniforms (per shader reflection).
+        let features = newStages.reduce(into: VisionFeatures()) { result, running in
             result.formUnion(VisionFeatures.required(by: running.compiled.reflection))
         }
         lock.lock()
-        effects = newEffects
+        stages = newStages
         visionFeatures = features
         lock.unlock()
         visionProcessor.setFeatures(features)
@@ -177,7 +177,7 @@ final class RenderEngine {
         let activeVision = visionFeatures
         lock.unlock()
 
-        // Vision-backed effects wait for the snapshot computed from this buffer
+        // Vision-backed stages wait for the snapshot computed from this buffer
         // so mattes line up with the image. Intermediate camera frames replace
         // a single pending slot inside VisionProcessor (latest-wins).
         if !activeVision.isEmpty {
@@ -213,7 +213,7 @@ final class RenderEngine {
         vision: VisionSnapshot
     ) {
         lock.lock()
-        let currentEffects = effects
+        let currentStages = stages
         let depth = historyDepth
         let activeVision = visionFeatures
         lock.unlock()
@@ -285,13 +285,15 @@ final class RenderEngine {
         lastFrameTime = now
         frameNumber &+= 1
 
-        // 5. Run the effect chain, ping-ponging between offscreen textures.
+        // 5. Run the active effect's stages, ping-ponging between offscreen
+        //    textures. Stage 0 samples the camera frame through `uPrev`, so
+        //    nothing carries over from whichever effect ran before.
         var currentInput: MTLTexture = workingTexture
         var pingPongIndex = 0
-        for running in currentEffects {
+        for running in currentStages {
             running.textureAssets.advanceVideoFrames()
 
-            let effect = running.compiled
+            let stage = running.compiled
             let target = pingPong[pingPongIndex]
             pingPongIndex = 1 - pingPongIndex
 
@@ -301,9 +303,9 @@ final class RenderEngine {
             pass.colorAttachments[0].storeAction = .store
 
             guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { continue }
-            encoder.setRenderPipelineState(effect.pipeline)
+            encoder.setRenderPipelineState(stage.pipeline)
 
-            for texture in effect.reflection.textures {
+            for texture in stage.reflection.textures {
                 let source: MTLTexture?
                 switch texture.name {
                 case "uPrev": source = currentInput
@@ -324,15 +326,15 @@ final class RenderEngine {
                 }
             }
 
-            for block in effect.reflection.uniformBlocks where block.mslBuffer >= 0 {
-                let requiredLength = effect.constantBufferLength(for: block)
+            for block in stage.reflection.uniformBlocks where block.mslBuffer >= 0 {
+                let requiredLength = stage.constantBufferLength(for: block)
                 switch block.name {
                 case "CEContext":
                     withUnsafeBytes(of: &context) { bytes in
                         Self.setFragmentBytes(encoder, bytes: bytes, index: block.mslBuffer, requiredLength: requiredLength)
                     }
                 case "Params":
-                    if let paramsBuffer = effect.paramsBuffer {
+                    if let paramsBuffer = stage.paramsBuffer {
                         encoder.setFragmentBuffer(paramsBuffer, offset: 0, index: block.mslBuffer)
                     }
                 case VisionUniforms.faceBlock:

@@ -1,12 +1,12 @@
 import Foundation
 import Metal
 
-/// Maps an effect's sampler bindings to textures from the shared media library.
-final class EffectTextureAssets {
-    private let bindings: [EffectTextureBinding]
+/// Maps a stage's sampler bindings to textures from the shared media library.
+final class StageTextureAssets {
+    private let bindings: [StageTextureBinding]
     private let cache: MediaTextureCache
 
-    init(bindings: [EffectTextureBinding], cache: MediaTextureCache) {
+    init(bindings: [StageTextureBinding], cache: MediaTextureCache) {
         self.bindings = bindings
         self.cache = cache
     }

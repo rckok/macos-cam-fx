@@ -8,7 +8,7 @@ import os.log
 
 private let textureLogger = Logger(subsystem: "studio.polyglot.CameraEffects", category: "media-texture")
 
-/// GPU textures for media-library assets, shared across all effects.
+/// GPU textures for media-library assets, shared across all stages.
 final class MediaTextureCache {
     private let device: MTLDevice
     private let assetIndex: [String: (url: URL, kind: MediaAsset.Kind)]

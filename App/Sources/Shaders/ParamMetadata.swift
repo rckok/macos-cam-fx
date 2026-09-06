@@ -1,7 +1,7 @@
 import Foundation
 
 /// Inspector hints declared in the shader as a preceding-line decorator:
-/// `// @metadata(min=0.0 max=1000.0 default=1.0 color=true)`
+/// `// @metadata(min=0.0 max=1000.0 default=1.0 color=true global)`
 /// Vector uniforms accept GLSL constructors: `min=vec3(0) max=vec3(1, 2, 1)`.
 struct ParamMetadata: Equatable {
     var minimum: [Double]?
@@ -10,6 +10,9 @@ struct ParamMetadata: Equatable {
     /// When set, `true` shows a color picker for vec3/vec4; omitted or false
     /// keeps per-component sliders.
     var isColor: Bool?
+    /// When set, `true` also lists the control on the owning effect, so it
+    /// stays reachable in Basic Mode where stages are hidden.
+    var isGlobal: Bool?
     /// 1-based line of the `@metadata` decorator in user source.
     var line: Int?
 }
@@ -179,12 +182,15 @@ enum ParamMetadataParser {
                 case "color":
                     metadata.isColor = try boolValue(field)
                     found = true
+                case "global":
+                    metadata.isGlobal = try boolValue(field)
+                    found = true
                 default:
                     break
                 }
             }
             guard found else {
-                return .failed("@metadata has no recognized keys (min, max, default, color)")
+                return .failed("@metadata has no recognized keys (min, max, default, color, global)")
             }
             return .parsed(metadata)
         } catch let error as MetadataParseError {
@@ -234,7 +240,9 @@ enum ParamMetadataParser {
         case .number(let value) where value == 0 || value == 1:
             return value == 1
         default:
-            throw MetadataParseError(message: "@metadata color must be true, false, 1, or 0")
+            throw MetadataParseError(
+                message: "@metadata \(field.key) must be true, false, 1, or 0 (or written as a bare flag)"
+            )
         }
     }
 

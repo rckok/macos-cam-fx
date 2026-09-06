@@ -14,8 +14,8 @@ enum VisionUniforms {
     static let handJointCount = 21
 }
 
-/// The set of vision algorithms an effect chain requires. Derived from shader
-/// reflection so detectors only run while some enabled effect uses their output.
+/// The set of vision algorithms the active effect requires. Derived from shader
+/// reflection so detectors only run while one of its stages uses their output.
 struct VisionFeatures: OptionSet, Hashable {
     let rawValue: Int
 

@@ -2,8 +2,15 @@ import Combine
 import Foundation
 import SwiftUI
 
+/// What the sidebar currently points at. The effect that owns the selection is
+/// the one being rendered, so selecting a stage also activates its effect.
+enum EffectSelection: Hashable {
+    case effect(String)
+    case stage(String)
+}
+
 /// Central coordinator: wires capture -> render engine -> preview/virtual
-/// camera, and orchestrates effect compilation and persistence.
+/// camera, and orchestrates stage compilation and persistence.
 @MainActor
 final class AppState: ObservableObject {
 
@@ -14,9 +21,19 @@ final class AppState: ObservableObject {
     let sink: VirtualCameraSink
     let engine: RenderEngine
 
-    @Published var selectedEffectID: String?
-    @Published var virtualCameraEnabled = false {
-        didSet { sink.enabled = virtualCameraEnabled }
+    @Published private(set) var selection: EffectSelection?
+    /// Bumped whenever the effect graph or a stage's compile state changes, so
+    /// views that read stage state indirectly (through the store) refresh.
+    @Published private(set) var graphRevision = 0
+    @Published var viewMode: ViewMode = .basic {
+        didSet {
+            guard viewMode != oldValue else { return }
+            if viewMode == .basic, case .stage(let stageID) = selection {
+                selection = store.effect(containing: stageID).map { .effect($0.id) }
+            }
+            store.config.viewMode = viewMode
+            store.saveConfigSoon()
+        }
     }
     @Published var historyDepth: Int {
         didSet {
@@ -36,8 +53,23 @@ final class AppState: ObservableObject {
     private var compileTasks: [String: Task<Void, Never>] = [:]
     private var cancellables = Set<AnyCancellable>()
 
-    var selectedEffect: Effect? {
-        store.effects.first { $0.id == selectedEffectID }
+    /// The single effect currently rendering: the selected one, or the one that
+    /// owns the selected stage.
+    var activeEffectID: String? {
+        switch selection {
+        case .effect(let id): return store.effect(id: id)?.id
+        case .stage(let id): return store.effect(containing: id)?.id
+        case nil: return nil
+        }
+    }
+
+    var activeEffect: Effect? {
+        activeEffectID.flatMap { store.effect(id: $0) }
+    }
+
+    var selectedStage: Stage? {
+        guard case .stage(let id) = selection else { return nil }
+        return store.stage(id: id)
     }
 
     init() {
@@ -57,6 +89,9 @@ final class AppState: ObservableObject {
 
         historyDepth = store.config.historyDepth
         flipHorizontal = store.config.flipHorizontal
+        viewMode = store.config.viewMode
+        // Property observers do not fire for assignments inside an initializer.
+        engine.setHistoryDepth(historyDepth)
         engine.setFlipHorizontal(flipHorizontal)
         capture.selectedDeviceID = store.config.selectedDeviceID
 
@@ -78,133 +113,167 @@ final class AppState: ObservableObject {
             .store(in: &cancellables)
 
         store.externalChange
-            .sink { [weak self] effect in
-                self?.scheduleCompile(effect, debounce: false)
+            .sink { [weak self] stage in
+                self?.scheduleCompile(stage, debounce: false)
             }
             .store(in: &cancellables)
 
-        selectedEffectID = store.effects.first?.id
+        // Streaming needs no user action: the sink follows the extension.
+        extensionManager.$status
+            .map { $0 == .installed }
+            .removeDuplicates()
+            .sink { [virtualCamera = sink] isInstalled in
+                virtualCamera.enabled = isInstalled
+            }
+            .store(in: &cancellables)
+
+        let restored = store.config.activeEffectID.flatMap { store.effect(id: $0) } ?? store.effects.first
+        selection = restored.map { .effect($0.id) }
         capture.start()
 
-        for effect in store.effects {
-            scheduleCompile(effect, debounce: false)
+        for stage in store.stages {
+            scheduleCompile(stage, debounce: false)
         }
     }
 
-    // MARK: Effect chain
+    // MARK: Selection
 
+    func select(_ newSelection: EffectSelection?) {
+        guard selection != newSelection else { return }
+        let previousEffectID = activeEffectID
+        selection = newSelection
+        guard activeEffectID != previousEffectID else { return }
+        store.config.activeEffectID = activeEffectID
+        store.saveConfigSoon()
+        rebuildChain()
+    }
+
+    /// Falls back to the first effect when the selection points at something
+    /// that no longer exists.
+    private func validateSelection() {
+        switch selection {
+        case .effect(let id) where store.effect(id: id) != nil:
+            return
+        case .stage(let id) where store.stage(id: id) != nil && store.effect(containing: id) != nil:
+            return
+        default:
+            selection = store.effects.first.map { .effect($0.id) }
+            store.config.activeEffectID = activeEffectID
+            store.saveConfigSoon()
+        }
+    }
+
+    // MARK: Render chain
+
+    /// Only the active effect renders, and it always starts from the current
+    /// camera frame — nothing carries over between effects.
     func rebuildChain() {
+        graphRevision &+= 1
         guard let cache = mediaLibrary.textureCache else { return }
-        let runnable = store.groups
-            .filter(\.enabled)
-            .flatMap { group in
-                group.effectIDs.compactMap { id -> (effect: Effect, compiled: CompiledEffect)? in
-                    guard let effect = store.effect(id: id),
-                          effect.enabled,
-                          let compiled = effect.compiled
-                    else { return nil }
-                    return (effect, compiled)
-                }
-            }
+        let stageIDs = activeEffect?.stageIDs ?? []
+        let runnable = stageIDs.compactMap { stageID -> (stage: Stage, compiled: CompiledStage)? in
+            guard let stage = store.stage(id: stageID), let compiled = stage.compiled else { return nil }
+            return (stage, compiled)
+        }
 
-        // An effect that never samples `uPrev` overwrites the whole frame, so
-        // everything before it in the chain is invisible work. Start the chain
-        // at the last such effect and mark the ones it shadows.
+        // A stage that never samples `uPrev` overwrites the whole frame, so
+        // everything before it in the effect is invisible work. Start at the
+        // last such stage and mark the ones it shadows.
         let start = runnable.lastIndex { !$0.compiled.reflection.samplesPreviousOutput } ?? runnable.startIndex
-        let shadowedIDs = Set(runnable[..<start].map { $0.effect.id })
-        for effect in store.effects {
-            let shadowed = shadowedIDs.contains(effect.id)
-            if effect.isShadowed != shadowed {
-                effect.isShadowed = shadowed
+        let shadowedIDs = Set(runnable[..<start].map { $0.stage.id })
+        for stage in store.stages {
+            let shadowed = shadowedIDs.contains(stage.id)
+            if stage.isShadowed != shadowed {
+                stage.isShadowed = shadowed
             }
         }
 
-        engine.setEffects(runnable[start...].map { entry in
-            RunningEffect(
+        engine.setStages(runnable[start...].map { entry in
+            RunningStage(
                 compiled: entry.compiled,
-                textureAssets: EffectTextureAssets(bindings: entry.effect.textureBindings, cache: cache)
+                textureAssets: StageTextureAssets(bindings: entry.stage.textureBindings, cache: cache)
             )
         })
     }
 
-    func addEffect(toGroup groupID: String? = nil) {
-        let resolvedGroupID = groupID
-            ?? store.group(containing: selectedEffectID ?? "")?.id
-            ?? store.groups.first?.id
-        guard let effect = store.addEffect(named: "New Effect", toGroup: resolvedGroupID) else { return }
-        selectedEffectID = effect.id
-        scheduleCompile(effect, debounce: false)
+    // MARK: Mutations — stages
+
+    func addStage(toEffect effectID: String? = nil) {
+        guard let target = effectID ?? activeEffectID ?? store.effects.first?.id,
+              let stage = store.addStage(named: "New Stage", toEffect: target)
+        else { return }
+        select(.stage(stage.id))
+        scheduleCompile(stage, debounce: false)
     }
 
-    func duplicateEffect(_ effect: Effect) {
-        guard let copy = store.duplicateEffect(effect) else { return }
-        selectedEffectID = copy.id
+    func duplicateStage(_ stage: Stage) {
+        guard let copy = store.duplicateStage(stage) else { return }
+        select(.stage(copy.id))
         scheduleCompile(copy, debounce: false)
     }
 
-    func addGroup() {
-        _ = store.addGroup()
-    }
-
-    func removeEffect(_ effect: Effect) {
-        compileTasks[effect.id]?.cancel()
-        compileTasks[effect.id] = nil
-        store.removeEffect(effect)
-        if selectedEffectID == effect.id {
-            selectedEffectID = store.effects.first?.id
+    func removeStage(_ stage: Stage) {
+        compileTasks[stage.id]?.cancel()
+        compileTasks[stage.id] = nil
+        let owner = store.effect(containing: stage.id)
+        store.removeStage(stage)
+        if selection == .stage(stage.id) {
+            selection = owner.map { .effect($0.id) }
         }
+        validateSelection()
         rebuildChain()
     }
 
-    func moveEffects(inGroup groupID: String, fromOffsets source: IndexSet, toOffset destination: Int) {
-        store.moveEffects(inGroup: groupID, fromOffsets: source, toOffset: destination)
+    func moveStages(inEffect effectID: String, fromOffsets source: IndexSet, toOffset destination: Int) {
+        store.moveStages(inEffect: effectID, fromOffsets: source, toOffset: destination)
         rebuildChain()
     }
 
-    func moveEffect(_ effectID: String, toGroup targetGroupID: String, beforeEffectID: String? = nil) {
-        store.moveEffect(effectID, toGroup: targetGroupID, beforeEffectID: beforeEffectID)
+    func moveStage(_ stageID: String, toEffect targetEffectID: String, beforeStageID: String? = nil) {
+        store.moveStage(stageID, toEffect: targetEffectID, beforeStageID: beforeStageID)
         rebuildChain()
     }
 
-    func moveGroups(fromOffsets source: IndexSet, toOffset destination: Int) {
-        store.moveGroups(fromOffsets: source, toOffset: destination)
+    // MARK: Mutations — effects
+
+    /// New effects start with one stage so there is something to edit.
+    func addEffect() {
+        let effect = store.addEffect()
+        if let stage = store.addStage(named: "New Stage", toEffect: effect.id) {
+            select(.stage(stage.id))
+            scheduleCompile(stage, debounce: false)
+        } else {
+            select(.effect(effect.id))
+        }
+    }
+
+    func renameEffect(_ effectID: String, to name: String) {
+        store.renameEffect(id: effectID, to: name)
+    }
+
+    func moveEffects(fromOffsets source: IndexSet, toOffset destination: Int) {
+        store.moveEffects(fromOffsets: source, toOffset: destination)
         rebuildChain()
     }
 
-    func setGroupEnabled(_ groupID: String, enabled: Bool) {
-        store.setGroupEnabled(id: groupID, enabled: enabled)
-        rebuildChain()
-    }
+    func removeEffect(_ effect: Effect, deleteStages: Bool, moveStagesTo targetEffectID: String? = nil) {
+        let removedStageIDs = Set(effect.stageIDs)
+        store.removeEffect(id: effect.id, deleteStages: deleteStages, moveStagesTo: targetEffectID)
 
-    func renameGroup(_ groupID: String, to name: String) {
-        store.renameGroup(id: groupID, to: name)
-    }
-
-    func removeGroup(_ group: EffectGroup, deleteEffects: Bool, moveEffectsTo targetGroupID: String? = nil) {
-        let removedEffectIDs = Set(group.effectIDs)
-        store.removeGroup(id: group.id, deleteEffects: deleteEffects, moveEffectsTo: targetGroupID)
-
-        if deleteEffects {
-            for effectID in removedEffectIDs {
-                compileTasks[effectID]?.cancel()
-                compileTasks[effectID] = nil
-            }
-            if let selected = selectedEffectID, removedEffectIDs.contains(selected) {
-                selectedEffectID = store.effects.first?.id
+        if deleteStages {
+            for stageID in removedStageIDs {
+                compileTasks[stageID]?.cancel()
+                compileTasks[stageID] = nil
             }
         }
 
+        validateSelection()
         rebuildChain()
     }
 
-    func effectToggled(_ effect: Effect) {
-        rebuildChain()
-        store.persist(effect: effect)
-    }
-
-    func parametersChanged(_ effect: Effect) {
-        effect.applyParameters()
-        store.persist(effect: effect)
+    func parametersChanged(_ stage: Stage) {
+        stage.applyParameters()
+        store.persist(stage: stage)
     }
 
     // MARK: Media library
@@ -220,14 +289,14 @@ final class AppState: ObservableObject {
     }
 
     func removeMediaAsset(id: String) {
-        for effect in store.effects {
+        for stage in store.stages {
             var changed = false
-            for index in effect.textureBindings.indices where effect.textureBindings[index].mediaID == id {
-                effect.textureBindings[index].mediaID = nil
+            for index in stage.textureBindings.indices where stage.textureBindings[index].mediaID == id {
+                stage.textureBindings[index].mediaID = nil
                 changed = true
             }
             if changed {
-                store.persist(effect: effect)
+                store.persist(stage: stage)
             }
         }
         mediaLibrary.removeAsset(id: id)
@@ -235,35 +304,35 @@ final class AppState: ObservableObject {
         rebuildChain()
     }
 
-    func assignMedia(_ mediaID: String?, toSampler samplerName: String, in effect: Effect) {
-        guard let index = effect.textureBindings.firstIndex(where: { $0.name == samplerName }) else { return }
-        effect.textureBindings[index].mediaID = mediaID
-        store.persist(effect: effect)
+    func assignMedia(_ mediaID: String?, toSampler samplerName: String, in stage: Stage) {
+        guard let index = stage.textureBindings.firstIndex(where: { $0.name == samplerName }) else { return }
+        stage.textureBindings[index].mediaID = mediaID
+        store.persist(stage: stage)
         rebuildChain()
     }
 
     // MARK: Compilation
 
-    func scheduleCompile(_ effect: Effect, debounce: Bool) {
-        compileTasks[effect.id]?.cancel()
-        compileTasks[effect.id] = Task { [weak self] in
+    func scheduleCompile(_ stage: Stage, debounce: Bool) {
+        compileTasks[stage.id]?.cancel()
+        compileTasks[stage.id] = Task { [weak self] in
             if debounce {
                 try? await Task.sleep(nanoseconds: 400_000_000)
             }
             guard !Task.isCancelled else { return }
-            await self?.compile(effect)
+            await self?.compile(stage)
         }
     }
 
-    private func compile(_ effect: Effect) async {
-        let source = effect.source
+    private func compile(_ stage: Stage) async {
+        let source = stage.source
         let device = engine.device
         let vertexFunction = engine.vertexFunction
 
-        let result: Result<CompiledEffect, Error> = await Task.detached(priority: .userInitiated) {
+        let result: Result<CompiledStage, Error> = await Task.detached(priority: .userInitiated) {
             do {
                 let output = try ShaderCompiler.compile(userSource: source)
-                let compiled = try CompiledEffect(device: device, vertexFunction: vertexFunction, output: output)
+                let compiled = try CompiledStage(device: device, vertexFunction: vertexFunction, output: output)
                 return .success(compiled)
             } catch {
                 return .failure(error)
@@ -272,24 +341,24 @@ final class AppState: ObservableObject {
 
         // Hop off the current SwiftUI turn. `Task { @MainActor in }` can run
         // inline while a view is still updating and then trip the publish warning.
-        DispatchQueue.main.async { [weak self, weak effect] in
-            guard let self, let effect else { return }
-            guard effect.source == source else { return }
+        DispatchQueue.main.async { [weak self, weak stage] in
+            guard let self, let stage else { return }
+            guard stage.source == source else { return }
 
             switch result {
             case .success(let compiled):
-                effect.compiled = compiled
-                effect.syncParameters(with: compiled.reflection)
-                effect.syncTextureBindings(with: compiled.reflection)
-                effect.applyParameters()
-                effect.diagnostics = compiled.warnings
+                stage.compiled = compiled
+                stage.syncParameters(with: compiled.reflection)
+                stage.syncTextureBindings(with: compiled.reflection)
+                stage.applyParameters()
+                stage.diagnostics = compiled.warnings
                 rebuildChain()
-                store.persist(effect: effect)
+                store.persist(stage: stage)
             case .failure(let error):
                 if let compileError = error as? ShaderCompileError {
-                    effect.diagnostics = compileError.diagnostics
+                    stage.diagnostics = compileError.diagnostics
                 } else {
-                    effect.diagnostics = [ShaderDiagnostic(line: nil, message: error.localizedDescription)]
+                    stage.diagnostics = [ShaderDiagnostic(line: nil, message: error.localizedDescription)]
                 }
             }
         }

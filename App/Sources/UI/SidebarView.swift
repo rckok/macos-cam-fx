@@ -1,130 +1,18 @@
 import SwiftUI
 
+/// Effect list. Basic Mode shows only the effects; Editor Mode adds their
+/// stages plus the controls to create, reorder and delete both.
 struct SidebarView: View {
     @EnvironmentObject private var state: AppState
     @ObservedObject var store: EffectStore
     @ObservedObject var capture: CaptureManager
-    @State private var groupToDelete: EffectGroup?
-    @State private var collapsedGroupIDs: Set<String> = []
-    @State private var editingGroupID: String?
-    @State private var editingGroupName = ""
-    @FocusState private var focusedGroupID: String?
-
-    private let effectIndent: CGFloat = 20
 
     var body: some View {
-        List(selection: $state.selectedEffectID) {
-            Section("Source") {
-                Picker("Camera", selection: Binding(
-                    get: { capture.selectedDeviceID },
-                    set: { capture.selectedDeviceID = $0 }
-                )) {
-                    ForEach(capture.devices) { device in
-                        Text(device.name).tag(Optional(device.id))
-                    }
-                }
-                .labelsHidden()
-            }
-
-            ForEach(store.groups) { group in
-                Section {
-                    if !isCollapsed(group) {
-                        ForEach(store.effects(in: group)) { effect in
-                            EffectRow(
-                                effect: effect,
-                                onDuplicate: { state.duplicateEffect(effect) },
-                                onDelete: { state.removeEffect(effect) }
-                            )
-                            .tag(effect.id)
-                            .padding(.leading, effectIndent)
-                            .draggable(effect.id)
-                            .dropDestination(for: String.self) { droppedIDs, _ in
-                                guard let droppedID = droppedIDs.first, droppedID != effect.id else { return false }
-                                state.moveEffect(droppedID, toGroup: group.id, beforeEffectID: effect.id)
-                                return true
-                            }
-                        }
-                        .onMove { source, destination in
-                            state.moveEffects(inGroup: group.id, fromOffsets: source, toOffset: destination)
-                        }
-
-                        Button {
-                            state.addEffect(toGroup: group.id)
-                        } label: {
-                            Label("Add Effect", systemImage: "plus")
-                                .font(.subheadline)
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.secondary)
-                        .padding(.leading, effectIndent)
-                        .dropDestination(for: String.self) { droppedIDs, _ in
-                            guard let droppedID = droppedIDs.first else { return false }
-                            state.moveEffect(droppedID, toGroup: group.id)
-                            return true
-                        }
-                    }
-                } header: {
-                    GroupHeaderRow(
-                        group: group,
-                        isExpanded: !isCollapsed(group),
-                        isEditing: editingGroupID == group.id,
-                        editingName: $editingGroupName,
-                        canDelete: store.groups.count > 1,
-                        onToggleExpanded: { toggleCollapsed(group.id) },
-                        onToggleEnabled: { enabled in
-                            state.setGroupEnabled(group.id, enabled: enabled)
-                        },
-                        onStartEditing: {
-                            startEditing(group)
-                        },
-                        onCommitEditing: {
-                            commitEditing(group)
-                        },
-                        onCancelEditing: {
-                            cancelEditing()
-                        },
-                        onDelete: {
-                            requestDeleteGroup(group)
-                        },
-                        focusedGroupID: $focusedGroupID
-                    )
-                    .dropDestination(for: String.self) { droppedIDs, _ in
-                        guard let droppedID = droppedIDs.first else { return false }
-                        state.moveEffect(droppedID, toGroup: group.id)
-                        return true
-                    }
-                }
-            }
-            .onMove { source, destination in
-                state.moveGroups(fromOffsets: source, toOffset: destination)
-            }
-        }
-        .safeAreaInset(edge: .bottom) {
-            HStack {
-                Button {
-                    state.addGroup()
-                } label: {
-                    Label("Add Group", systemImage: "folder.badge.plus")
-                }
-                .buttonStyle(.borderless)
-
-                Spacer()
-            }
-            .padding(8)
-            .background(.bar)
-        }
-        .sheet(item: $groupToDelete) { group in
-            DeleteGroupSheet(
-                group: group,
-                destinationGroups: store.groups.filter { $0.id != group.id }
-            ) { choice in
-                switch choice {
-                case .deleteEffects:
-                    state.removeGroup(group, deleteEffects: true)
-                case .move(let targetGroupID):
-                    state.removeGroup(group, deleteEffects: false, moveEffectsTo: targetGroupID)
-                }
-                groupToDelete = nil
+        Group {
+            if state.viewMode == .basic {
+                BasicSidebar(store: store, capture: capture)
+            } else {
+                EditorSidebar(store: store, capture: capture)
             }
         }
         .alert(
@@ -136,105 +24,304 @@ struct SidebarView: View {
             Text("Enable camera access for Camera Effects in System Settings → Privacy & Security → Camera.")
         }
     }
+}
 
-    private func requestDeleteGroup(_ group: EffectGroup) {
-        if group.effectIDs.isEmpty {
-            state.removeGroup(group, deleteEffects: true)
-        } else {
-            groupToDelete = group
+private struct CameraSourceSection: View {
+    @ObservedObject var capture: CaptureManager
+
+    var body: some View {
+        Section("Source") {
+            Picker("Camera", selection: Binding(
+                get: { capture.selectedDeviceID },
+                set: { capture.selectedDeviceID = $0 }
+            )) {
+                ForEach(capture.devices) { device in
+                    Text(device.name).tag(Optional(device.id))
+                }
+            }
+            .labelsHidden()
+        }
+    }
+}
+
+// MARK: - Basic Mode
+
+private struct BasicSidebar: View {
+    @EnvironmentObject private var state: AppState
+    @ObservedObject var store: EffectStore
+    @ObservedObject var capture: CaptureManager
+
+    /// Selecting a row is what activates an effect, so the list selection is
+    /// the active effect.
+    private var activeEffectSelection: Binding<String?> {
+        Binding(
+            get: { state.activeEffectID },
+            set: { newValue in state.select(newValue.map { EffectSelection.effect($0) }) }
+        )
+    }
+
+    var body: some View {
+        List(selection: activeEffectSelection) {
+            CameraSourceSection(capture: capture)
+
+            Section("Effects") {
+                if store.effects.isEmpty {
+                    Text("No effects yet. Switch to Editor Mode to build one.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(store.effects) { effect in
+                        BasicEffectRow(
+                            effect: effect,
+                            isActive: state.activeEffectID == effect.id
+                        )
+                        .tag(effect.id)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct BasicEffectRow: View {
+    let effect: Effect
+    let isActive: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: isActive ? "largecircle.fill.circle" : "circle")
+                .foregroundStyle(isActive ? Color.accentColor : Color.secondary)
+            Text(effect.name)
+                .lineLimit(1)
+            Spacer()
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+// MARK: - Editor Mode
+
+private struct EditorSidebar: View {
+    @EnvironmentObject private var state: AppState
+    @ObservedObject var store: EffectStore
+    @ObservedObject var capture: CaptureManager
+
+    @State private var effectToDelete: Effect?
+    @State private var collapsedEffectIDs: Set<String> = []
+    @State private var editingEffectID: String?
+    @State private var editingEffectName = ""
+    @FocusState private var focusedEffectID: String?
+
+    private let stageIndent: CGFloat = 20
+
+    var body: some View {
+        List {
+            CameraSourceSection(capture: capture)
+
+            ForEach(store.effects) { effect in
+                Section {
+                    if !isCollapsed(effect) {
+                        ForEach(store.stages(in: effect)) { stage in
+                            StageRow(
+                                stage: stage,
+                                isSelected: state.selection == .stage(stage.id),
+                                onDuplicate: { state.duplicateStage(stage) },
+                                onDelete: { state.removeStage(stage) }
+                            )
+                            .padding(.leading, stageIndent)
+                            .contentShape(Rectangle())
+                            .onTapGesture { state.select(.stage(stage.id)) }
+                            .draggable(stage.id)
+                            .dropDestination(for: String.self) { droppedIDs, _ in
+                                guard let droppedID = droppedIDs.first, droppedID != stage.id else { return false }
+                                state.moveStage(droppedID, toEffect: effect.id, beforeStageID: stage.id)
+                                return true
+                            }
+                        }
+                        .onMove { source, destination in
+                            state.moveStages(inEffect: effect.id, fromOffsets: source, toOffset: destination)
+                        }
+
+                        Button {
+                            state.addStage(toEffect: effect.id)
+                        } label: {
+                            Label("Add Stage", systemImage: "plus")
+                                .font(.subheadline)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                        .padding(.leading, stageIndent)
+                        .dropDestination(for: String.self) { droppedIDs, _ in
+                            guard let droppedID = droppedIDs.first else { return false }
+                            state.moveStage(droppedID, toEffect: effect.id)
+                            return true
+                        }
+                    }
+                } header: {
+                    EffectHeaderRow(
+                        effect: effect,
+                        isExpanded: !isCollapsed(effect),
+                        isSelected: state.selection == .effect(effect.id),
+                        isActive: state.activeEffectID == effect.id,
+                        isEditing: editingEffectID == effect.id,
+                        editingName: $editingEffectName,
+                        onToggleExpanded: { toggleCollapsed(effect.id) },
+                        onSelect: { state.select(.effect(effect.id)) },
+                        onStartEditing: { startEditing(effect) },
+                        onCommitEditing: { commitEditing(effect) },
+                        onCancelEditing: { cancelEditing() },
+                        onDelete: { requestDeleteEffect(effect) },
+                        focusedEffectID: $focusedEffectID
+                    )
+                    .dropDestination(for: String.self) { droppedIDs, _ in
+                        guard let droppedID = droppedIDs.first else { return false }
+                        state.moveStage(droppedID, toEffect: effect.id)
+                        return true
+                    }
+                }
+            }
+            .onMove { source, destination in
+                state.moveEffects(fromOffsets: source, toOffset: destination)
+            }
+        }
+        .safeAreaInset(edge: .bottom) {
+            HStack {
+                Button {
+                    state.addEffect()
+                } label: {
+                    Label("Add Effect", systemImage: "plus")
+                }
+                .buttonStyle(.borderless)
+
+                Spacer()
+            }
+            .padding(8)
+            .background(.bar)
+        }
+        .sheet(item: $effectToDelete) { effect in
+            DeleteEffectSheet(
+                effect: effect,
+                stageCount: effect.stageIDs.count,
+                destinations: store.effects.filter { $0.id != effect.id }
+            ) { choice in
+                switch choice {
+                case .deleteStages:
+                    state.removeEffect(effect, deleteStages: true)
+                case .move(let targetEffectID):
+                    state.removeEffect(effect, deleteStages: false, moveStagesTo: targetEffectID)
+                }
+                effectToDelete = nil
+            }
         }
     }
 
-    private func isCollapsed(_ group: EffectGroup) -> Bool {
-        collapsedGroupIDs.contains(group.id)
-    }
-
-    private func toggleCollapsed(_ groupID: String) {
-        if collapsedGroupIDs.contains(groupID) {
-            collapsedGroupIDs.remove(groupID)
+    private func requestDeleteEffect(_ effect: Effect) {
+        if effect.stageIDs.isEmpty {
+            state.removeEffect(effect, deleteStages: true)
         } else {
-            collapsedGroupIDs.insert(groupID)
+            effectToDelete = effect
         }
     }
 
-    private func startEditing(_ group: EffectGroup) {
-        editingGroupID = group.id
-        editingGroupName = group.name
-        focusedGroupID = group.id
+    private func isCollapsed(_ effect: Effect) -> Bool {
+        collapsedEffectIDs.contains(effect.id)
     }
 
-    private func commitEditing(_ group: EffectGroup) {
-        let trimmed = editingGroupName.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty, trimmed != group.name {
-            state.renameGroup(group.id, to: trimmed)
+    private func toggleCollapsed(_ effectID: String) {
+        if collapsedEffectIDs.contains(effectID) {
+            collapsedEffectIDs.remove(effectID)
+        } else {
+            collapsedEffectIDs.insert(effectID)
+        }
+    }
+
+    private func startEditing(_ effect: Effect) {
+        editingEffectID = effect.id
+        editingEffectName = effect.name
+        focusedEffectID = effect.id
+    }
+
+    private func commitEditing(_ effect: Effect) {
+        let trimmed = editingEffectName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty, trimmed != effect.name {
+            state.renameEffect(effect.id, to: trimmed)
         }
         cancelEditing()
     }
 
     private func cancelEditing() {
-        editingGroupID = nil
-        editingGroupName = ""
-        focusedGroupID = nil
+        editingEffectID = nil
+        editingEffectName = ""
+        focusedEffectID = nil
     }
 }
 
-private struct DeleteGroupSheet: View {
+private struct DeleteEffectSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     enum Choice {
-        case deleteEffects
-        case move(toGroupID: String)
+        case deleteStages
+        case move(toEffectID: String)
     }
 
-    let group: EffectGroup
-    let destinationGroups: [EffectGroup]
+    let effect: Effect
+    let stageCount: Int
+    let destinations: [Effect]
     let onConfirm: (Choice) -> Void
 
-    @State private var deleteEffects = false
-    @State private var targetGroupID: String
+    @State private var deleteStages: Bool
+    @State private var targetEffectID: String
 
-    init(group: EffectGroup, destinationGroups: [EffectGroup], onConfirm: @escaping (Choice) -> Void) {
-        self.group = group
-        self.destinationGroups = destinationGroups
+    init(effect: Effect, stageCount: Int, destinations: [Effect], onConfirm: @escaping (Choice) -> Void) {
+        self.effect = effect
+        self.stageCount = stageCount
+        self.destinations = destinations
         self.onConfirm = onConfirm
-        _targetGroupID = State(initialValue: destinationGroups.first?.id ?? "")
+        _deleteStages = State(initialValue: destinations.isEmpty)
+        _targetEffectID = State(initialValue: destinations.first?.id ?? "")
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Delete \"\(group.name)\"?")
+            Text("Delete \"\(effect.name)\"?")
                 .font(.headline)
 
-            Text("This group contains \(group.effectIDs.count) effect(s).")
+            Text("This effect has \(stageCount) stage\(stageCount == 1 ? "" : "s").")
                 .foregroundStyle(.secondary)
 
-            Picker("What should happen to the effects?", selection: $deleteEffects) {
-                Text("Move to another group").tag(false)
-                Text("Delete all effects").tag(true)
-            }
-            .pickerStyle(.radioGroup)
-
-            if !deleteEffects {
-                Picker("Destination group", selection: $targetGroupID) {
-                    ForEach(destinationGroups) { destination in
-                        Text(destination.name).tag(destination.id)
-                    }
+            if destinations.isEmpty {
+                Text("There is no other effect to move them to, so deleting this effect deletes its stages.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Picker("What should happen to the stages?", selection: $deleteStages) {
+                    Text("Move to another effect").tag(false)
+                    Text("Delete all stages").tag(true)
                 }
-                .labelsHidden()
+                .pickerStyle(.radioGroup)
+
+                if !deleteStages {
+                    Picker("Destination effect", selection: $targetEffectID) {
+                        ForEach(destinations) { destination in
+                            Text(destination.name).tag(destination.id)
+                        }
+                    }
+                    .labelsHidden()
+                }
             }
 
             HStack {
                 Button("Cancel") { dismiss() }
                 Spacer()
-                Button("Delete Group", role: .destructive) {
-                    if deleteEffects {
-                        onConfirm(.deleteEffects)
+                Button("Delete Effect", role: .destructive) {
+                    if deleteStages {
+                        onConfirm(.deleteStages)
                     } else {
-                        onConfirm(.move(toGroupID: targetGroupID))
+                        onConfirm(.move(toEffectID: targetEffectID))
                     }
                     dismiss()
                 }
-                .disabled(!deleteEffects && targetGroupID.isEmpty)
+                .disabled(!deleteStages && targetEffectID.isEmpty)
             }
         }
         .padding(20)
@@ -242,19 +329,20 @@ private struct DeleteGroupSheet: View {
     }
 }
 
-private struct GroupHeaderRow: View {
-    let group: EffectGroup
+private struct EffectHeaderRow: View {
+    let effect: Effect
     let isExpanded: Bool
+    let isSelected: Bool
+    let isActive: Bool
     let isEditing: Bool
     @Binding var editingName: String
-    let canDelete: Bool
     let onToggleExpanded: () -> Void
-    let onToggleEnabled: (Bool) -> Void
+    let onSelect: () -> Void
     let onStartEditing: () -> Void
     let onCommitEditing: () -> Void
     let onCancelEditing: () -> Void
     let onDelete: () -> Void
-    var focusedGroupID: FocusState<String?>.Binding
+    var focusedEffectID: FocusState<String?>.Binding
 
     var body: some View {
         HStack(spacing: 6) {
@@ -266,74 +354,72 @@ private struct GroupHeaderRow: View {
                     .frame(width: 16, height: 16)
             }
             .buttonStyle(.plain)
-            .help(isExpanded ? "Collapse group" : "Expand group")
+            .help(isExpanded ? "Collapse effect" : "Expand effect")
 
-            Toggle("", isOn: Binding(
-                get: { group.enabled },
-                set: onToggleEnabled
-            ))
-            .labelsHidden()
-            .toggleStyle(.checkbox)
+            Image(systemName: isActive ? "largecircle.fill.circle" : "circle")
+                .font(.caption)
+                .foregroundStyle(isActive ? Color.accentColor : Color.secondary)
+                .help(isActive ? "Active effect" : "Click to make this the active effect")
 
             if isEditing {
-                TextField("Group name", text: $editingName)
+                TextField("Effect name", text: $editingName)
                     .textFieldStyle(.plain)
                     .font(.subheadline.weight(.semibold))
-                    .focused(focusedGroupID, equals: group.id)
+                    .focused(focusedEffectID, equals: effect.id)
                     .onSubmit(onCommitEditing)
                     .onExitCommand(perform: onCancelEditing)
             } else {
-                Text(group.name)
+                Text(effect.name)
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
-                    .contentShape(Rectangle())
-                    .onTapGesture(perform: onStartEditing)
-                    .help("Click to rename")
+                    .help("Right-click to rename")
             }
 
             Spacer()
 
-            if canDelete {
-                Button(action: onDelete) {
-                    Image(systemName: "trash")
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .help("Delete group")
+            Button(action: onDelete) {
+                Image(systemName: "trash")
+                    .foregroundStyle(.secondary)
             }
+            .buttonStyle(.plain)
+            .help("Delete effect")
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 3)
+        .padding(.horizontal, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color.accentColor.opacity(isSelected ? 0.18 : 0))
+        )
+        .contentShape(Rectangle())
+        .onTapGesture(perform: onSelect)
+        .contextMenu {
+            Button("Rename", action: onStartEditing)
+            Button("Delete", role: .destructive, action: onDelete)
+        }
     }
 }
 
-struct EffectRow: View {
-    @EnvironmentObject private var state: AppState
-    @ObservedObject var effect: Effect
+private struct StageRow: View {
+    @ObservedObject var stage: Stage
+    let isSelected: Bool
     let onDuplicate: () -> Void
     let onDelete: () -> Void
 
     var body: some View {
         HStack(spacing: 6) {
-            Toggle("", isOn: $effect.enabled)
-                .labelsHidden()
-                .toggleStyle(.checkbox)
-                .onChange(of: effect.enabled) {
-                    state.effectToggled(effect)
-                }
-
-            Text(effect.name)
+            Text(stage.name)
                 .lineLimit(1)
-                .opacity(effect.isShadowed ? 0.5 : 1)
+                .opacity(stage.isShadowed ? 0.5 : 1)
 
             Spacer()
 
-            if effect.isShadowed {
+            if stage.isShadowed {
                 Image(systemName: "eye.slash")
                     .foregroundStyle(.secondary)
-                    .help(Effect.shadowedExplanation)
+                    .help(Stage.shadowedExplanation)
             }
 
-            if !effect.diagnostics.isEmpty {
+            if !stage.diagnostics.isEmpty {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(.yellow)
                     .help("Shader has compile errors")
@@ -344,15 +430,21 @@ struct EffectRow: View {
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
-            .help("Duplicate effect")
+            .help("Duplicate stage")
 
             Button(action: onDelete) {
                 Image(systemName: "minus.circle")
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
-            .help("Remove effect")
+            .help("Remove stage")
         }
+        .padding(.vertical, 3)
+        .padding(.horizontal, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color.accentColor.opacity(isSelected ? 0.18 : 0))
+        )
         .contextMenu {
             Button("Duplicate", action: onDuplicate)
             Button("Remove", action: onDelete)

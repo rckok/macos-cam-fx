@@ -1,82 +1,179 @@
 import Combine
 import Foundation
 
-/// Loads and persists effects (one folder per effect: shader.frag +
-/// effect.json) plus the global app configuration, and watches the effects
-/// directory for external edits (hot reload).
+/// Loads and persists stages (one folder per stage: shader.frag + stage.json)
+/// plus the global app configuration, including the effects that group stages
+/// into pipelines, and watches the stages directory for external edits.
 @MainActor
 final class EffectStore: ObservableObject {
 
     struct AppConfig: Codable {
-        var order: [String] = []
-        var groups: [EffectGroup] = []
+        var effects: [Effect] = []
+        /// Effect whose pipeline was rendering when the app last quit.
+        var activeEffectID: String?
+        var viewMode: ViewMode = .basic
         var selectedDeviceID: String?
         var historyDepth: Int = 16
         /// Mirror the incoming camera feed horizontally (default on, like FaceTime).
         var flipHorizontal: Bool = true
 
         enum CodingKeys: String, CodingKey {
-            case order, groups, selectedDeviceID, historyDepth, flipHorizontal
+            case effects, activeEffectID, viewMode, selectedDeviceID, historyDepth, flipHorizontal
+            // Written before groups-of-effects became effects-of-stages.
+            case groups, order
         }
 
         init() {}
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
-            order = try container.decodeIfPresent([String].self, forKey: .order) ?? []
-            groups = try container.decodeIfPresent([EffectGroup].self, forKey: .groups) ?? []
+            effects = try container.decodeIfPresent([Effect].self, forKey: .effects) ?? []
+            if effects.isEmpty {
+                effects = Self.decodeLegacyEffects(from: container)
+            }
+            activeEffectID = try container.decodeIfPresent(String.self, forKey: .activeEffectID)
+            viewMode = try container.decodeIfPresent(ViewMode.self, forKey: .viewMode) ?? .basic
             selectedDeviceID = try container.decodeIfPresent(String.self, forKey: .selectedDeviceID)
             historyDepth = try container.decodeIfPresent(Int.self, forKey: .historyDepth) ?? 16
             flipHorizontal = try container.decodeIfPresent(Bool.self, forKey: .flipHorizontal) ?? true
         }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(effects, forKey: .effects)
+            try container.encodeIfPresent(activeEffectID, forKey: .activeEffectID)
+            try container.encode(viewMode, forKey: .viewMode)
+            try container.encodeIfPresent(selectedDeviceID, forKey: .selectedDeviceID)
+            try container.encode(historyDepth, forKey: .historyDepth)
+            try container.encode(flipHorizontal, forKey: .flipHorizontal)
+        }
+
+        /// A group used to be a chain segment of effects, which is exactly what
+        /// an effect is now, so each group becomes one effect of stages.
+        private struct LegacyGroup: Decodable {
+            var id: String
+            var name: String
+            var effectIDs: [String]?
+        }
+
+        private static func decodeLegacyEffects(
+            from container: KeyedDecodingContainer<CodingKeys>
+        ) -> [Effect] {
+            let groups = (try? container.decodeIfPresent([LegacyGroup].self, forKey: .groups)) ?? nil
+            if let groups, !groups.isEmpty {
+                return groups.map { Effect(id: $0.id, name: $0.name, stageIDs: $0.effectIDs ?? []) }
+            }
+            let order = ((try? container.decodeIfPresent([String].self, forKey: .order)) ?? nil) ?? []
+            guard !order.isEmpty else { return [] }
+            return [Effect(id: UUID().uuidString, name: "General", stageIDs: order)]
+        }
     }
 
-    static let generalGroupID = "general"
-
+    @Published private(set) var stages: [Stage] = []
     @Published private(set) var effects: [Effect] = []
-    @Published private(set) var groups: [EffectGroup] = []
     @Published var config = AppConfig()
 
-    /// Fired when an effect's shader changed on disk (external editor).
-    let externalChange = PassthroughSubject<Effect, Never>()
+    /// Fired when a stage's shader changed on disk (external editor).
+    let externalChange = PassthroughSubject<Stage, Never>()
 
     private let rootURL: URL
-    private let effectsURL: URL
+    private let stagesURL: URL
     private let configURL: URL
     private var directoryMonitor: DispatchSourceFileSystemObject?
     private var saveWorkItem: DispatchWorkItem?
 
     static let shaderFileName = "shader.frag"
-    static let manifestFileName = "effect.json"
+    static let manifestFileName = "stage.json"
+    private static let legacyDirectoryName = "Effects"
+    private static let legacyManifestFileName = "effect.json"
+    private static let bundledResourceName = "BuiltInEffects"
 
     init() {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         rootURL = appSupport.appendingPathComponent("CameraEffects", isDirectory: true)
-        effectsURL = rootURL.appendingPathComponent("Effects", isDirectory: true)
+        stagesURL = rootURL.appendingPathComponent("Stages", isDirectory: true)
         configURL = rootURL.appendingPathComponent("config.json")
 
-        try? FileManager.default.createDirectory(at: effectsURL, withIntermediateDirectories: true)
-        seedBuiltInEffectsIfNeeded()
+        migrateLegacyLayoutIfNeeded()
+        try? FileManager.default.createDirectory(at: stagesURL, withIntermediateDirectories: true)
+        seedBuiltInStagesIfNeeded()
         loadConfig()
-        loadEffects()
+        loadStages()
         startWatching()
     }
 
     // MARK: Loading
 
-    private func seedBuiltInEffectsIfNeeded() {
-        let existing = (try? FileManager.default.contentsOfDirectory(atPath: effectsURL.path)) ?? []
-        guard existing.isEmpty,
-              let bundled = Bundle.main.url(forResource: "BuiltInEffects", withExtension: nil)
+    /// Effects used to be single shaders in `Effects/<name>/effect.json`; they
+    /// are stages now, so move the whole tree across on first launch.
+    private func migrateLegacyLayoutIfNeeded() {
+        let fileManager = FileManager.default
+        let legacyURL = rootURL.appendingPathComponent(Self.legacyDirectoryName, isDirectory: true)
+        guard fileManager.fileExists(atPath: legacyURL.path),
+              !fileManager.fileExists(atPath: stagesURL.path),
+              (try? fileManager.moveItem(at: legacyURL, to: stagesURL)) != nil
         else { return }
 
-        let folders = (try? FileManager.default.contentsOfDirectory(
-            at: bundled, includingPropertiesForKeys: [.isDirectoryKey]
+        let folders = (try? fileManager.contentsOfDirectory(
+            at: stagesURL, includingPropertiesForKeys: [.isDirectoryKey]
         )) ?? []
         for folder in folders {
-            let destination = effectsURL.appendingPathComponent(folder.lastPathComponent)
+            let legacyManifest = folder.appendingPathComponent(Self.legacyManifestFileName)
+            let manifest = folder.appendingPathComponent(Self.manifestFileName)
+            guard fileManager.fileExists(atPath: legacyManifest.path),
+                  !fileManager.fileExists(atPath: manifest.path)
+            else { continue }
+            try? fileManager.moveItem(at: legacyManifest, to: manifest)
+        }
+    }
+
+    private static var bundledRootURL: URL? {
+        Bundle.main.url(forResource: bundledResourceName, withExtension: nil)
+    }
+
+    private func seedBuiltInStagesIfNeeded() {
+        let existing = (try? FileManager.default.contentsOfDirectory(atPath: stagesURL.path)) ?? []
+        guard existing.isEmpty, let bundled = Self.bundledRootURL else { return }
+
+        let bundledStages = bundled.appendingPathComponent("Stages", isDirectory: true)
+        let folders = (try? FileManager.default.contentsOfDirectory(
+            at: bundledStages, includingPropertiesForKeys: [.isDirectoryKey]
+        )) ?? []
+        for folder in folders {
+            let destination = stagesURL.appendingPathComponent(folder.lastPathComponent)
             try? FileManager.default.copyItem(at: folder, to: destination)
         }
+    }
+
+    /// Effects shipped with the app, described by `BuiltInEffects/effects.json`.
+    private struct BuiltInLayout: Decodable {
+        struct Entry: Decodable {
+            var name: String
+            var stages: [String]
+        }
+
+        var effects: [Entry]
+    }
+
+    private static func builtInEffects(stageIDs: [String]) -> [Effect] {
+        let known = Set(stageIDs)
+        var assigned = Set<String>()
+        var effects: [Effect] = []
+
+        if let root = bundledRootURL,
+           let data = try? Data(contentsOf: root.appendingPathComponent("effects.json")),
+           let layout = try? JSONDecoder().decode(BuiltInLayout.self, from: data) {
+            for entry in layout.effects {
+                let stages = entry.stages.filter { known.contains($0) && assigned.insert($0).inserted }
+                guard !stages.isEmpty else { continue }
+                effects.append(Effect(id: UUID().uuidString, name: entry.name, stageIDs: stages))
+            }
+        }
+
+        for stageID in stageIDs where !assigned.contains(stageID) {
+            effects.append(Effect(id: UUID().uuidString, name: stageID, stageIDs: [stageID]))
+        }
+        return effects
     }
 
     private func loadConfig() {
@@ -86,85 +183,65 @@ final class EffectStore: ObservableObject {
         config = loaded
     }
 
-    private func loadEffects() {
+    private func loadStages() {
         let folders = (try? FileManager.default.contentsOfDirectory(
-            at: effectsURL, includingPropertiesForKeys: [.isDirectoryKey]
+            at: stagesURL, includingPropertiesForKeys: [.isDirectoryKey]
         ))?.filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true } ?? []
 
-        let loaded: [Effect] = folders.compactMap(loadEffect(from:))
-        effects = loaded
+        let loaded: [Stage] = folders.compactMap(loadStage(from:))
+        stages = loaded
 
-        if config.groups.isEmpty {
-            groups = Self.migrateGroups(from: config.order, effectIDs: loaded.map(\.id))
-        } else {
-            groups = normalizeGroups(config.groups, effectIDs: loaded.map(\.id))
-        }
-        reorderEffectsFromGroups()
+        let stageIDs = loaded.map(\.id)
+        effects = config.effects.isEmpty
+            ? Self.builtInEffects(stageIDs: stageIDs)
+            : normalizeEffects(config.effects, stageIDs: stageIDs)
+        reorderStagesFromEffects()
     }
 
-    private static func migrateGroups(from order: [String], effectIDs: [String]) -> [EffectGroup] {
-        let orderedIDs: [String]
-        if order.isEmpty {
-            orderedIDs = effectIDs
-        } else {
-            let known = Set(order)
-            orderedIDs = order + effectIDs.filter { !known.contains($0) }
-        }
-        return [EffectGroup(id: generalGroupID, name: "General", enabled: true, effectIDs: orderedIDs)]
-    }
-
-    /// Reconciles saved groups with effects on disk (drops missing IDs, appends orphans).
-    private func normalizeGroups(_ saved: [EffectGroup], effectIDs: [String]) -> [EffectGroup] {
-        let validIDs = Set(effectIDs)
+    /// Reconciles saved effects with the stages on disk: drops stage IDs that
+    /// no longer exist and adopts stages nobody claims as their own effect.
+    private func normalizeEffects(_ saved: [Effect], stageIDs: [String]) -> [Effect] {
+        let known = Set(stageIDs)
         var assigned = Set<String>()
-        var normalized = saved.map { group -> EffectGroup in
-            var group = group
-            group.effectIDs = group.effectIDs.filter { validIDs.contains($0) }
-            assigned.formUnion(group.effectIDs)
-            return group
+        var normalized = saved.map { effect -> Effect in
+            var effect = effect
+            effect.stageIDs = effect.stageIDs.filter { known.contains($0) && assigned.insert($0).inserted }
+            return effect
         }
-
-        let orphans = effectIDs.filter { !assigned.contains($0) }
-        if !orphans.isEmpty {
-            if let generalIndex = normalized.firstIndex(where: { $0.id == Self.generalGroupID }) {
-                normalized[generalIndex].effectIDs.append(contentsOf: orphans)
-            } else if let firstIndex = normalized.indices.first {
-                normalized[firstIndex].effectIDs.append(contentsOf: orphans)
-            } else {
-                normalized.append(EffectGroup(id: Self.generalGroupID, name: "General", effectIDs: orphans))
-            }
-        }
-
-        if normalized.isEmpty {
-            normalized = [EffectGroup(id: Self.generalGroupID, name: "General", effectIDs: effectIDs)]
+        for stageID in stageIDs where !assigned.contains(stageID) {
+            normalized.append(Effect(id: UUID().uuidString, name: stageID, stageIDs: [stageID]))
         }
         return normalized
     }
 
-    private func reorderEffectsFromGroups() {
-        let byID = Dictionary(uniqueKeysWithValues: effects.map { ($0.id, $0) })
-        effects = groups.flatMap(\.effectIDs).compactMap { byID[$0] }
+    private func reorderStagesFromEffects() {
+        let byID = Dictionary(stages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        stages = effects.flatMap(\.stageIDs).compactMap { byID[$0] }
     }
 
-    private func updateGroup(at index: Int, _ body: (inout EffectGroup) -> Void) {
-        var group = groups[index]
-        body(&group)
-        groups[index] = group
+    private func updateEffect(at index: Int, _ body: (inout Effect) -> Void) {
+        var effect = effects[index]
+        body(&effect)
+        effects[index] = effect
+    }
+
+    func stage(id: String) -> Stage? {
+        stages.first { $0.id == id }
+    }
+
+    func stages(in effect: Effect) -> [Stage] {
+        effect.stageIDs.compactMap { stage(id: $0) }
     }
 
     func effect(id: String) -> Effect? {
         effects.first { $0.id == id }
     }
 
-    func effects(in group: EffectGroup) -> [Effect] {
-        group.effectIDs.compactMap { effect(id: $0) }
+    func effect(containing stageID: String) -> Effect? {
+        effects.first { $0.stageIDs.contains(stageID) }
     }
 
-    func group(containing effectID: String) -> EffectGroup? {
-        groups.first { $0.effectIDs.contains(effectID) }
-    }
-
-    private func inferredLegacyType(for param: EffectManifest.Param) -> String {
+    private func inferredLegacyType(for param: StageManifest.Param) -> String {
         switch param.value.count {
         case 2: return "vec2"
         case 3: return "vec3"
@@ -173,100 +250,91 @@ final class EffectStore: ObservableObject {
         }
     }
 
-    private func loadEffect(from folder: URL) -> Effect? {
+    private func loadStage(from folder: URL) -> Stage? {
         let shaderURL = folder.appendingPathComponent(Self.shaderFileName)
         guard let source = try? String(contentsOf: shaderURL, encoding: .utf8) else { return nil }
 
         var name = folder.lastPathComponent
-        var enabled = true
-        var parameters: [EffectParameter] = []
-        var textureBindings: [EffectTextureBinding] = []
+        var parameters: [StageParameter] = []
+        var textureBindings: [StageTextureBinding] = []
 
         let manifestURL = folder.appendingPathComponent(Self.manifestFileName)
         if let data = try? Data(contentsOf: manifestURL),
-           let manifest = try? JSONDecoder().decode(EffectManifest.self, from: data) {
+           let manifest = try? JSONDecoder().decode(StageManifest.self, from: data) {
             name = manifest.name
-            enabled = manifest.enabled ?? true
             for (paramName, param) in manifest.params ?? [:] {
-                let type = EffectParameter.normalizeReflectionType(
+                let type = StageParameter.normalizeReflectionType(
                     param.type ?? inferredLegacyType(for: param)
                 )
-                let defaults = EffectParameter.makeDefault(name: paramName, type: type)
-                let count = EffectParameter.componentCount(for: type)
-                parameters.append(EffectParameter(
+                let defaults = StageParameter.makeDefault(name: paramName, type: type)
+                let count = StageParameter.componentCount(for: type)
+                parameters.append(StageParameter(
                     name: paramName,
                     type: type,
                     values: param.value,
-                    minimum: EffectParameter.aligned(param.min, count: count) ?? defaults.minimum,
-                    maximum: EffectParameter.aligned(param.max, count: count) ?? defaults.maximum
+                    minimum: StageParameter.aligned(param.min, count: count) ?? defaults.minimum,
+                    maximum: StageParameter.aligned(param.max, count: count) ?? defaults.maximum,
+                    isGlobal: param.global ?? false
                 ))
             }
             for (samplerName, binding) in manifest.textures ?? [:] {
-                textureBindings.append(EffectTextureBinding(
+                textureBindings.append(StageTextureBinding(
                     name: samplerName,
                     mediaID: binding.media
                 ))
             }
         }
 
-        return Effect(
+        return Stage(
             id: folder.lastPathComponent,
             folderURL: folder,
             name: name,
-            enabled: enabled,
             source: source,
             parameters: parameters,
             textureBindings: textureBindings
         )
     }
 
-    // MARK: Mutations — effects
+    // MARK: Mutations — stages
 
-    func addEffect(named requestedName: String, toGroup groupID: String? = nil) -> Effect? {
+    func addStage(named requestedName: String, toEffect effectID: String) -> Stage? {
+        guard let effectIndex = effects.firstIndex(where: { $0.id == effectID }) else { return nil }
+
         let folderName = uniqueFolderName(preferring: requestedName)
-        let folder = effectsURL.appendingPathComponent(folderName, isDirectory: true)
+        let folder = stagesURL.appendingPathComponent(folderName, isDirectory: true)
         do {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            try Self.newEffectTemplate.write(
+            try Self.newStageTemplate.write(
                 to: folder.appendingPathComponent(Self.shaderFileName), atomically: true, encoding: .utf8
             )
         } catch {
             return nil
         }
 
-        let effect = Effect(
+        let stage = Stage(
             id: folderName,
             folderURL: folder,
             name: folderName,
-            enabled: true,
-            source: Self.newEffectTemplate,
+            source: Self.newStageTemplate,
             parameters: []
         )
-        effects.append(effect)
+        stages.append(stage)
+        updateEffect(at: effectIndex) { $0.stageIDs.append(stage.id) }
 
-        let targetGroupID = groupID ?? groups.first?.id ?? Self.generalGroupID
-        if let index = groups.firstIndex(where: { $0.id == targetGroupID }) {
-            updateGroup(at: index) { $0.effectIDs.append(effect.id) }
-        } else if let index = groups.indices.first {
-            updateGroup(at: index) { $0.effectIDs.append(effect.id) }
-        } else {
-            groups = [EffectGroup(id: Self.generalGroupID, name: "General", effectIDs: [effect.id])]
-        }
-
-        reorderEffectsFromGroups()
-        persist(effect: effect)
+        reorderStagesFromEffects()
+        persist(stage: stage)
         saveConfigSoon()
-        return effect
+        return stage
     }
 
-    /// Copies an effect's folder (shader, manifest and any extra files) and
-    /// places the copy directly after the original in the same group.
-    func duplicateEffect(_ effect: Effect) -> Effect? {
-        let folderName = uniqueFolderName(preferring: "\(effect.name) Copy")
-        let folder = effectsURL.appendingPathComponent(folderName, isDirectory: true)
+    /// Copies a stage's folder (shader, manifest and any extra files) and
+    /// places the copy directly after the original in the same effect.
+    func duplicateStage(_ stage: Stage) -> Stage? {
+        let folderName = uniqueFolderName(preferring: "\(stage.name) Copy")
+        let folder = stagesURL.appendingPathComponent(folderName, isDirectory: true)
         do {
-            if FileManager.default.fileExists(atPath: effect.folderURL.path) {
-                try FileManager.default.copyItem(at: effect.folderURL, to: folder)
+            if FileManager.default.fileExists(atPath: stage.folderURL.path) {
+                try FileManager.default.copyItem(at: stage.folderURL, to: folder)
             } else {
                 try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             }
@@ -274,169 +342,161 @@ final class EffectStore: ObservableObject {
             return nil
         }
 
-        let copy = Effect(
+        let copy = Stage(
             id: folderName,
             folderURL: folder,
             name: folderName,
-            enabled: effect.enabled,
-            source: effect.source,
-            parameters: effect.parameters,
-            textureBindings: effect.textureBindings
+            source: stage.source,
+            parameters: stage.parameters,
+            textureBindings: stage.textureBindings
         )
-        effects.append(copy)
+        stages.append(copy)
 
-        if let groupIndex = groups.firstIndex(where: { $0.effectIDs.contains(effect.id) }) {
-            updateGroup(at: groupIndex) { group in
-                if let index = group.effectIDs.firstIndex(of: effect.id) {
-                    group.effectIDs.insert(copy.id, at: index + 1)
+        if let effectIndex = effects.firstIndex(where: { $0.stageIDs.contains(stage.id) }) {
+            updateEffect(at: effectIndex) { effect in
+                if let index = effect.stageIDs.firstIndex(of: stage.id) {
+                    effect.stageIDs.insert(copy.id, at: index + 1)
                 } else {
-                    group.effectIDs.append(copy.id)
+                    effect.stageIDs.append(copy.id)
                 }
             }
-        } else if let index = groups.indices.first {
-            updateGroup(at: index) { $0.effectIDs.append(copy.id) }
         } else {
-            groups = [EffectGroup(id: Self.generalGroupID, name: "General", effectIDs: [copy.id])]
+            effects.append(Effect(id: UUID().uuidString, name: copy.name, stageIDs: [copy.id]))
         }
 
-        reorderEffectsFromGroups()
-        persist(effect: copy)
+        reorderStagesFromEffects()
+        persist(stage: copy)
         saveConfigSoon()
         return copy
     }
 
-    /// Folder name — which doubles as the effect ID — that is free on disk and
-    /// unused by a loaded effect, suffixed with a counter when needed.
+    /// Folder name — which doubles as the stage ID — that is free on disk and
+    /// unused by a loaded stage, suffixed with a counter when needed.
     private func uniqueFolderName(preferring requestedName: String) -> String {
         var base = requestedName
             .replacingOccurrences(of: "/", with: "-")
             .replacingOccurrences(of: ":", with: "-")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if base.isEmpty || base.hasPrefix(".") {
-            base = "New Effect"
+            base = "New Stage"
         }
 
         var candidate = base
         var counter = 2
-        while FileManager.default.fileExists(atPath: effectsURL.appendingPathComponent(candidate).path)
-            || effects.contains(where: { $0.id == candidate }) {
+        while FileManager.default.fileExists(atPath: stagesURL.appendingPathComponent(candidate).path)
+            || stages.contains(where: { $0.id == candidate }) {
             candidate = "\(base) \(counter)"
             counter += 1
         }
         return candidate
     }
 
-    func removeEffect(_ effect: Effect) {
-        effects.removeAll { $0.id == effect.id }
-        for index in groups.indices {
-            updateGroup(at: index) { group in
-                group.effectIDs.removeAll { $0 == effect.id }
+    func removeStage(_ stage: Stage) {
+        stages.removeAll { $0.id == stage.id }
+        for index in effects.indices {
+            updateEffect(at: index) { effect in
+                effect.stageIDs.removeAll { $0 == stage.id }
             }
         }
-        try? FileManager.default.removeItem(at: effect.folderURL)
+        try? FileManager.default.removeItem(at: stage.folderURL)
         saveConfigSoon()
     }
 
-    func moveEffects(inGroup groupID: String, fromOffsets source: IndexSet, toOffset destination: Int) {
-        guard let index = groups.firstIndex(where: { $0.id == groupID }) else { return }
-        updateGroup(at: index) { $0.effectIDs.move(fromOffsets: source, toOffset: destination) }
-        reorderEffectsFromGroups()
+    func moveStages(inEffect effectID: String, fromOffsets source: IndexSet, toOffset destination: Int) {
+        guard let index = effects.firstIndex(where: { $0.id == effectID }) else { return }
+        updateEffect(at: index) { $0.stageIDs.move(fromOffsets: source, toOffset: destination) }
+        reorderStagesFromEffects()
         saveConfigSoon()
     }
 
-    /// Moves an effect into `targetGroupID`, optionally inserting before `beforeEffectID`.
-    /// When `beforeEffectID` is nil, appends to the end of the target group.
-    func moveEffect(_ effectID: String, toGroup targetGroupID: String, beforeEffectID: String? = nil) {
-        for index in groups.indices {
-            updateGroup(at: index) { $0.effectIDs.removeAll { $0 == effectID } }
+    /// Moves a stage into `targetEffectID`, optionally inserting before
+    /// `beforeStageID`. When that is nil, appends to the end of the effect.
+    func moveStage(_ stageID: String, toEffect targetEffectID: String, beforeStageID: String? = nil) {
+        guard effects.contains(where: { $0.id == targetEffectID }) else { return }
+        for index in effects.indices {
+            updateEffect(at: index) { $0.stageIDs.removeAll { $0 == stageID } }
         }
-        guard let targetIndex = groups.firstIndex(where: { $0.id == targetGroupID }) else { return }
-        updateGroup(at: targetIndex) { group in
-            if let beforeEffectID, let insertIndex = group.effectIDs.firstIndex(of: beforeEffectID) {
-                group.effectIDs.insert(effectID, at: insertIndex)
+        guard let targetIndex = effects.firstIndex(where: { $0.id == targetEffectID }) else { return }
+        updateEffect(at: targetIndex) { effect in
+            if let beforeStageID, let insertIndex = effect.stageIDs.firstIndex(of: beforeStageID) {
+                effect.stageIDs.insert(stageID, at: insertIndex)
             } else {
-                group.effectIDs.append(effectID)
+                effect.stageIDs.append(stageID)
             }
         }
-        reorderEffectsFromGroups()
+        reorderStagesFromEffects()
         saveConfigSoon()
     }
 
-    // MARK: Mutations — groups
+    // MARK: Mutations — effects
 
     @discardableResult
-    func addGroup(named requestedName: String = "New Group") -> EffectGroup {
+    func addEffect(named requestedName: String = "New Effect") -> Effect {
         var name = requestedName
         var counter = 2
-        while groups.contains(where: { $0.name == name }) {
+        while effects.contains(where: { $0.name == name }) {
             name = "\(requestedName) \(counter)"
             counter += 1
         }
-        let group = EffectGroup(id: UUID().uuidString, name: name, enabled: true, effectIDs: [])
-        groups.append(group)
+        let effect = Effect(id: UUID().uuidString, name: name, stageIDs: [])
+        effects.append(effect)
         saveConfigSoon()
-        return group
+        return effect
     }
 
-    func renameGroup(id: String, to name: String) {
-        guard let index = groups.firstIndex(where: { $0.id == id }) else { return }
-        updateGroup(at: index) { $0.name = name }
-        saveConfigSoon()
-    }
-
-    func setGroupEnabled(id: String, enabled: Bool) {
-        guard let index = groups.firstIndex(where: { $0.id == id }) else { return }
-        updateGroup(at: index) { $0.enabled = enabled }
+    func renameEffect(id: String, to name: String) {
+        guard let index = effects.firstIndex(where: { $0.id == id }) else { return }
+        updateEffect(at: index) { $0.name = name }
         saveConfigSoon()
     }
 
-    func moveGroups(fromOffsets source: IndexSet, toOffset destination: Int) {
-        groups.move(fromOffsets: source, toOffset: destination)
-        reorderEffectsFromGroups()
+    func moveEffects(fromOffsets source: IndexSet, toOffset destination: Int) {
+        effects.move(fromOffsets: source, toOffset: destination)
+        reorderStagesFromEffects()
         saveConfigSoon()
     }
 
-    func removeGroup(id: String, deleteEffects: Bool, moveEffectsTo targetGroupID: String?) {
-        guard let index = groups.firstIndex(where: { $0.id == id }) else { return }
-        let effectIDs = groups[index].effectIDs
-        groups.remove(at: index)
+    func removeEffect(id: String, deleteStages: Bool, moveStagesTo targetEffectID: String?) {
+        guard let index = effects.firstIndex(where: { $0.id == id }) else { return }
+        let stageIDs = effects[index].stageIDs
+        effects.remove(at: index)
 
-        if deleteEffects {
-            for effectID in effectIDs {
-                guard let effect = effect(id: effectID) else { continue }
-                effects.removeAll { $0.id == effect.id }
-                try? FileManager.default.removeItem(at: effect.folderURL)
+        if deleteStages {
+            for stageID in stageIDs {
+                guard let stage = stage(id: stageID) else { continue }
+                stages.removeAll { $0.id == stage.id }
+                try? FileManager.default.removeItem(at: stage.folderURL)
             }
-        } else if let targetGroupID,
-                  let targetIndex = groups.firstIndex(where: { $0.id == targetGroupID }) {
-            updateGroup(at: targetIndex) { $0.effectIDs.append(contentsOf: effectIDs) }
+        } else if let targetEffectID,
+                  let targetIndex = effects.firstIndex(where: { $0.id == targetEffectID }) {
+            updateEffect(at: targetIndex) { $0.stageIDs.append(contentsOf: stageIDs) }
+        } else {
+            // Nowhere to put them: keep every stage reachable as its own effect.
+            for stageID in stageIDs {
+                let name = stage(id: stageID)?.name ?? stageID
+                effects.append(Effect(id: UUID().uuidString, name: name, stageIDs: [stageID]))
+            }
         }
 
-        if groups.isEmpty {
-            let remainingIDs = deleteEffects ? [] : effectIDs
-            groups = [EffectGroup(id: Self.generalGroupID, name: "General", effectIDs: remainingIDs)]
-        }
-
-        reorderEffectsFromGroups()
+        reorderStagesFromEffects()
         saveConfigSoon()
     }
 
     // MARK: Persistence
 
-    func persist(effect: Effect) {
-        let shaderURL = effect.folderURL.appendingPathComponent(Self.shaderFileName)
-        try? effect.source.write(to: shaderURL, atomically: true, encoding: .utf8)
+    func persist(stage: Stage) {
+        let shaderURL = stage.folderURL.appendingPathComponent(Self.shaderFileName)
+        try? stage.source.write(to: shaderURL, atomically: true, encoding: .utf8)
 
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        if let data = try? encoder.encode(effect.manifest) {
-            try? data.write(to: effect.folderURL.appendingPathComponent(Self.manifestFileName))
+        if let data = try? encoder.encode(stage.manifest) {
+            try? data.write(to: stage.folderURL.appendingPathComponent(Self.manifestFileName))
         }
     }
 
     func saveConfigSoon() {
-        config.order = effects.map(\.id)
-        config.groups = groups
+        config.effects = effects
         saveWorkItem?.cancel()
         let workItem = DispatchWorkItem { [weak self] in
             guard let self else { return }
@@ -453,7 +513,7 @@ final class EffectStore: ObservableObject {
     // MARK: Hot reload
 
     private func startWatching() {
-        let descriptor = open(effectsURL.path, O_EVTONLY)
+        let descriptor = open(stagesURL.path, O_EVTONLY)
         guard descriptor >= 0 else { return }
 
         let monitor = DispatchSource.makeFileSystemObjectSource(
@@ -470,21 +530,21 @@ final class EffectStore: ObservableObject {
     }
 
     private func reloadChangedShaders() {
-        for effect in effects {
-            let shaderURL = effect.folderURL.appendingPathComponent(Self.shaderFileName)
+        for stage in stages {
+            let shaderURL = stage.folderURL.appendingPathComponent(Self.shaderFileName)
             guard let diskSource = try? String(contentsOf: shaderURL, encoding: .utf8),
-                  diskSource != effect.source
+                  diskSource != stage.source
             else { continue }
-            effect.source = diskSource
-            externalChange.send(effect)
+            stage.source = diskSource
+            externalChange.send(stage)
         }
     }
 
-    static let newEffectTemplate = """
+    static let newStageTemplate = """
     // Built-in uniforms are listed in the inspector. See README for details.
 
     layout(std140, binding = 3) uniform Params {
-        // @metadata(min=0.0 max=1.0 default=0.5)
+        // @metadata(min=0.0 max=1.0 default=0.5 global)
         float amount;
     };
 

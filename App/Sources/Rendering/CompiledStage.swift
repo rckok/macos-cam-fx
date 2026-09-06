@@ -1,9 +1,9 @@
 import Foundation
 import Metal
 
-/// A user effect compiled into a Metal pipeline, plus the reflected resource
+/// A user stage compiled into a Metal pipeline, plus the reflected resource
 /// bindings and a CPU-side parameter buffer laid out to match std140.
-final class CompiledEffect {
+final class CompiledStage {
     let pipeline: MTLRenderPipelineState
     let reflection: ShaderReflection
     /// Warnings from GLSL compile that did not fail the build.

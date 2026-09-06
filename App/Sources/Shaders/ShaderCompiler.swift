@@ -19,6 +19,7 @@ struct ShaderReflection: Codable {
         var maximum: [Double]? = nil
         var defaultValue: [Double]? = nil
         var isColor: Bool? = nil
+        var isGlobal: Bool? = nil
 
         enum CodingKeys: String, CodingKey {
             case name, type, offset
@@ -45,7 +46,7 @@ struct ShaderReflection: Codable {
     static let previousOutputSampler = "uPrev"
 
     /// True when the shader reads `uPrev`, i.e. it builds on the output of the
-    /// effects before it. A prelude uniform the user source never references is
+    /// stages before it. A prelude uniform the user source never references is
     /// dead-code-eliminated by the transpiler and reported with a negative
     /// Metal resource index, so it does not count.
     var samplesPreviousOutput: Bool {
@@ -85,11 +86,11 @@ struct ShaderCompileError: Error {
 /// prelude and remapping compiler error lines back to user-source lines.
 enum ShaderCompiler {
 
-    /// Interface every effect shader sees. Uniform bindings 0-2 are reserved;
+    /// Interface every stage shader sees. Uniform bindings 0-2 are reserved;
     /// user `Params` blocks conventionally use binding 3, user samplers
     /// bindings 4-15. Bindings 16-20 carry the vision data (segmentation
     /// mattes, face/hand observations); the underlying detectors only run
-    /// while an enabled effect actually uses one of those uniforms.
+    /// while a stage of the active effect actually uses one of those uniforms.
     static let prelude = """
     #version 450
 
@@ -246,7 +247,7 @@ enum ShaderCompiler {
             guard block.name == "Params" else { return block }
             let members = block.members.map { member -> ShaderReflection.BlockMember in
                 guard let meta = parsed.metadata[member.name] else { return member }
-                let expected = EffectParameter.componentCount(for: member.type)
+                let expected = StageParameter.componentCount(for: member.type)
                 var updated = member
                 var valid = true
 
@@ -287,6 +288,7 @@ enum ShaderCompiler {
                 updated.maximum = maximum
                 updated.defaultValue = defaultValue
                 updated.isColor = meta.isColor
+                updated.isGlobal = meta.isGlobal
                 return updated
             }
             return ShaderReflection.UniformBlock(
