@@ -22,9 +22,6 @@ final class AppState: ObservableObject {
     let engine: RenderEngine
 
     @Published private(set) var selection: EffectSelection?
-    /// Bumped whenever the effect graph or a stage's compile state changes, so
-    /// views that read stage state indirectly (through the store) refresh.
-    @Published private(set) var graphRevision = 0
     @Published var viewMode: ViewMode = .basic {
         didSet {
             guard viewMode != oldValue else { return }
@@ -168,7 +165,6 @@ final class AppState: ObservableObject {
     /// Only the active effect renders, and it always starts from the current
     /// camera frame — nothing carries over between effects.
     func rebuildChain() {
-        graphRevision &+= 1
         guard let cache = mediaLibrary.textureCache else { return }
         let stageIDs = activeEffect?.stageIDs ?? []
         let runnable = stageIDs.compactMap { stageID -> (stage: Stage, compiled: CompiledStage)? in
@@ -353,6 +349,7 @@ final class AppState: ObservableObject {
                 stage.applyParameters()
                 stage.diagnostics = compiled.warnings
                 rebuildChain()
+                store.stageContentsDidChange()
                 store.persist(stage: stage)
             case .failure(let error):
                 if let compileError = error as? ShaderCompileError {

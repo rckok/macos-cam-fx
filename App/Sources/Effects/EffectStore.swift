@@ -229,6 +229,12 @@ final class EffectStore: ObservableObject {
         stages.first { $0.id == id }
     }
 
+    /// Republishes without touching the arrays, for changes inside a stage
+    /// (a recompile reshaping its parameters) that views read through here.
+    func stageContentsDidChange() {
+        objectWillChange.send()
+    }
+
     func stages(in effect: Effect) -> [Stage] {
         effect.stageIDs.compactMap { stage(id: $0) }
     }

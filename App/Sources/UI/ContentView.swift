@@ -22,11 +22,9 @@ struct ContentView: View {
                 .layoutPriority(1)
 
             if showInspector {
-                InspectorPanel(title: inspectorTitle) {
-                    inspectorContent
-                }
-                .frame(minWidth: 220, idealWidth: inspectorWidth, maxWidth: 400)
-                .layoutPriority(0)
+                InspectorColumn(store: state.store)
+                    .frame(minWidth: 220, idealWidth: inspectorWidth, maxWidth: 400)
+                    .layoutPriority(0)
             }
         }
         .toolbar {
@@ -120,27 +118,31 @@ struct ContentView: View {
         }
     }
 
-    private var inspectorTitle: String {
-        state.activeEffect?.name ?? "Inspector"
-    }
-
-    @ViewBuilder
-    private var inspectorContent: some View {
-        if state.viewMode == .editor, let stage = state.selectedStage {
-            StageInspectorView(stage: stage)
-        } else if let effect = state.activeEffect {
-            EffectInspectorView(effect: effect, store: state.store)
-        } else {
-            Text("Select an effect to adjust its controls.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(12)
-        }
-    }
-
     private func captureEditorDefaultHeight(_ totalHeight: CGFloat) {
         guard editorDefaultHeight == nil, totalHeight > 0 else { return }
         editorDefaultHeight = totalHeight * 0.5
+    }
+}
+
+/// Right-hand column. Observes the store as well as the app state so effect
+/// renames and recompiles that reshape the controls land here immediately.
+private struct InspectorColumn: View {
+    @EnvironmentObject private var state: AppState
+    @ObservedObject var store: EffectStore
+
+    var body: some View {
+        InspectorPanel(title: state.activeEffect?.name ?? "Inspector") {
+            if state.viewMode == .editor, let stage = state.selectedStage {
+                StageInspectorView(stage: stage)
+            } else if let effect = state.activeEffect {
+                EffectInspectorView(effect: effect, store: store)
+            } else {
+                Text("Select an effect to adjust its controls.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(12)
+            }
+        }
     }
 }
 
