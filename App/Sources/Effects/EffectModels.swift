@@ -206,6 +206,14 @@ struct Effect: Identifiable, Codable, Equatable {
     }
 }
 
+/// Where a stage lands when it is dragged into an effect.
+enum StagePlacement: Equatable {
+    case start
+    /// Immediately above the stage with this ID.
+    case before(String)
+    case end
+}
+
 /// Assigns a media-library asset to a `sampler2D` uniform in the stage shader.
 struct StageTextureBinding: Identifiable, Equatable {
     /// GLSL sampler name, e.g. `uOverlay`.

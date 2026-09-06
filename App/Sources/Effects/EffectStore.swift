@@ -408,27 +408,30 @@ final class EffectStore: ObservableObject {
         saveConfigSoon()
     }
 
-    func moveStages(inEffect effectID: String, fromOffsets source: IndexSet, toOffset destination: Int) {
-        guard let index = effects.firstIndex(where: { $0.id == effectID }) else { return }
-        updateEffect(at: index) { $0.stageIDs.move(fromOffsets: source, toOffset: destination) }
-        reorderStagesFromEffects()
-        saveConfigSoon()
-    }
+    /// Moves a stage to `placement` within `targetEffectID`, whether it comes
+    /// from that same effect (a reorder) or another one.
+    func moveStage(_ stageID: String, toEffect targetEffectID: String, placement: StagePlacement) {
+        guard stage(id: stageID) != nil,
+              let targetIndex = effects.firstIndex(where: { $0.id == targetEffectID })
+        else { return }
+        // Dropping a stage onto itself would otherwise send it to the end,
+        // because the anchor is gone by the time the insertion point is found.
+        if case .before(let anchorID) = placement, anchorID == stageID { return }
 
-    /// Moves a stage into `targetEffectID`, optionally inserting before
-    /// `beforeStageID`. When that is nil, appends to the end of the effect.
-    func moveStage(_ stageID: String, toEffect targetEffectID: String, beforeStageID: String? = nil) {
-        guard effects.contains(where: { $0.id == targetEffectID }) else { return }
         for index in effects.indices {
             updateEffect(at: index) { $0.stageIDs.removeAll { $0 == stageID } }
         }
-        guard let targetIndex = effects.firstIndex(where: { $0.id == targetEffectID }) else { return }
         updateEffect(at: targetIndex) { effect in
-            if let beforeStageID, let insertIndex = effect.stageIDs.firstIndex(of: beforeStageID) {
-                effect.stageIDs.insert(stageID, at: insertIndex)
-            } else {
-                effect.stageIDs.append(stageID)
+            let insertIndex: Int
+            switch placement {
+            case .start:
+                insertIndex = effect.stageIDs.startIndex
+            case .before(let anchorID):
+                insertIndex = effect.stageIDs.firstIndex(of: anchorID) ?? effect.stageIDs.endIndex
+            case .end:
+                insertIndex = effect.stageIDs.endIndex
             }
+            effect.stageIDs.insert(stageID, at: insertIndex)
         }
         reorderStagesFromEffects()
         saveConfigSoon()

@@ -92,9 +92,15 @@ replaces the whole frame. Every stage before it in the same effect is
 therefore invisible, so the app skips those passes entirely and marks them in
 the sidebar. Their vision detectors do not run either.
 
-Use Editor Mode to add, remove, duplicate and reorder stages, and to drag them
-between effects (the duplicate lands right below the original with the same
-shader and parameter values).
+Use Editor Mode to add, remove and duplicate stages (the duplicate lands right
+below the original with the same shader and parameter values). Drag a stage by
+its row to reorder it or to move it into another effect — an insertion line
+shows where it will land:
+
+- onto another stage, to go directly above it;
+- onto an effect's header, to become that effect's first stage (this is also
+  how you drop into a collapsed effect);
+- onto an effect's **Add Stage** row, to go last.
 
 ## Storage layout
 

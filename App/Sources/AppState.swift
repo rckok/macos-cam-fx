@@ -235,13 +235,8 @@ final class AppState: ObservableObject {
         rebuildChain()
     }
 
-    func moveStages(inEffect effectID: String, fromOffsets source: IndexSet, toOffset destination: Int) {
-        store.moveStages(inEffect: effectID, fromOffsets: source, toOffset: destination)
-        rebuildChain()
-    }
-
-    func moveStage(_ stageID: String, toEffect targetEffectID: String, beforeStageID: String? = nil) {
-        store.moveStage(stageID, toEffect: targetEffectID, beforeStageID: beforeStageID)
+    func moveStage(_ stageID: String, toEffect targetEffectID: String, placement: StagePlacement) {
+        store.moveStage(stageID, toEffect: targetEffectID, placement: placement)
         rebuildChain()
     }
 

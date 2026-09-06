@@ -101,6 +101,56 @@ private struct BasicEffectRow: View {
 
 // MARK: - Editor Mode
 
+/// A spot a dragged stage can land in, identified by the row that offers it.
+private enum StageDropTarget: Equatable {
+    case start(effectID: String)
+    case before(effectID: String, stageID: String)
+    case end(effectID: String)
+}
+
+/// Turns a row into a landing spot for a dragged stage, with an insertion line
+/// along the edge the stage would be inserted at.
+private struct StageDropZone: ViewModifier {
+    let target: StageDropTarget
+    var edge: VerticalAlignment = .top
+    @Binding var current: StageDropTarget?
+    let perform: (String, StageDropTarget) -> Bool
+
+    func body(content: Content) -> some View {
+        content
+            .dropDestination(for: String.self) { stageIDs, _ in
+                current = nil
+                guard let stageID = stageIDs.first else { return false }
+                return perform(stageID, target)
+            } isTargeted: { isTargeted in
+                if isTargeted {
+                    current = target
+                } else if current == target {
+                    current = nil
+                }
+            }
+            .overlay(alignment: Alignment(horizontal: .center, vertical: edge)) {
+                Capsule()
+                    .fill(Color.accentColor)
+                    .frame(height: 2)
+                    .padding(.horizontal, 4)
+                    .opacity(current == target ? 1 : 0)
+                    .allowsHitTesting(false)
+            }
+    }
+}
+
+private extension View {
+    func stageDropZone(
+        _ target: StageDropTarget,
+        edge: VerticalAlignment = .top,
+        current: Binding<StageDropTarget?>,
+        perform: @escaping (String, StageDropTarget) -> Bool
+    ) -> some View {
+        modifier(StageDropZone(target: target, edge: edge, current: current, perform: perform))
+    }
+}
+
 private struct EditorSidebar: View {
     @EnvironmentObject private var state: AppState
     @ObservedObject var store: EffectStore
@@ -110,12 +160,28 @@ private struct EditorSidebar: View {
     @State private var collapsedEffectIDs: Set<String> = []
     @State private var editingEffectID: String?
     @State private var editingEffectName = ""
+    @State private var dropTarget: StageDropTarget?
     @FocusState private var focusedEffectID: String?
 
     private let stageIndent: CGFloat = 20
 
+    /// Stage rows are selected through the list itself. A tap gesture of their
+    /// own would beat `draggable` to the mouse-down and stop drags starting.
+    private var selection: Binding<EffectSelection?> {
+        Binding(
+            get: { state.selection },
+            set: { newValue in
+                // Effects are selected on a section header, which the list
+                // does not consider one of its rows: it answers the same click
+                // by clearing its selection. Keep the effect instead.
+                guard let newValue else { return }
+                state.select(newValue)
+            }
+        )
+    }
+
     var body: some View {
-        List {
+        List(selection: selection) {
             CameraSourceSection(capture: capture)
 
             ForEach(store.effects) { effect in
@@ -124,22 +190,17 @@ private struct EditorSidebar: View {
                         ForEach(store.stages(in: effect)) { stage in
                             StageRow(
                                 stage: stage,
-                                isSelected: state.selection == .stage(stage.id),
                                 onDuplicate: { state.duplicateStage(stage) },
                                 onDelete: { state.removeStage(stage) }
                             )
+                            .tag(EffectSelection.stage(stage.id))
                             .padding(.leading, stageIndent)
-                            .contentShape(Rectangle())
-                            .onTapGesture { state.select(.stage(stage.id)) }
                             .draggable(stage.id)
-                            .dropDestination(for: String.self) { droppedIDs, _ in
-                                guard let droppedID = droppedIDs.first, droppedID != stage.id else { return false }
-                                state.moveStage(droppedID, toEffect: effect.id, beforeStageID: stage.id)
-                                return true
-                            }
-                        }
-                        .onMove { source, destination in
-                            state.moveStages(inEffect: effect.id, fromOffsets: source, toOffset: destination)
+                            .stageDropZone(
+                                .before(effectID: effect.id, stageID: stage.id),
+                                current: $dropTarget,
+                                perform: moveStage
+                            )
                         }
 
                         Button {
@@ -151,11 +212,11 @@ private struct EditorSidebar: View {
                         .buttonStyle(.plain)
                         .foregroundStyle(.secondary)
                         .padding(.leading, stageIndent)
-                        .dropDestination(for: String.self) { droppedIDs, _ in
-                            guard let droppedID = droppedIDs.first else { return false }
-                            state.moveStage(droppedID, toEffect: effect.id)
-                            return true
-                        }
+                        .stageDropZone(
+                            .end(effectID: effect.id),
+                            current: $dropTarget,
+                            perform: moveStage
+                        )
                     }
                 } header: {
                     EffectHeaderRow(
@@ -173,11 +234,15 @@ private struct EditorSidebar: View {
                         onDelete: { requestDeleteEffect(effect) },
                         focusedEffectID: $focusedEffectID
                     )
-                    .dropDestination(for: String.self) { droppedIDs, _ in
-                        guard let droppedID = droppedIDs.first else { return false }
-                        state.moveStage(droppedID, toEffect: effect.id)
-                        return true
-                    }
+                    // A header sits above its stages, so landing on one puts
+                    // the stage first — and it is the only target an effect
+                    // offers while it is collapsed.
+                    .stageDropZone(
+                        .start(effectID: effect.id),
+                        edge: .bottom,
+                        current: $dropTarget,
+                        perform: moveStage
+                    )
                 }
             }
             .onMove { source, destination in
@@ -213,6 +278,22 @@ private struct EditorSidebar: View {
                 effectToDelete = nil
             }
         }
+    }
+
+    /// Applies a dropped stage. Returns false for payloads that are not one of
+    /// our stages, and for the no-op of dropping a stage onto itself.
+    private func moveStage(_ stageID: String, to target: StageDropTarget) -> Bool {
+        guard store.stage(id: stageID) != nil else { return false }
+        switch target {
+        case .start(let effectID):
+            state.moveStage(stageID, toEffect: effectID, placement: .start)
+        case .before(let effectID, let anchorID):
+            guard anchorID != stageID else { return false }
+            state.moveStage(stageID, toEffect: effectID, placement: .before(anchorID))
+        case .end(let effectID):
+            state.moveStage(stageID, toEffect: effectID, placement: .end)
+        }
+        return true
     }
 
     private func requestDeleteEffect(_ effect: Effect) {
@@ -401,12 +482,16 @@ private struct EffectHeaderRow: View {
 
 private struct StageRow: View {
     @ObservedObject var stage: Stage
-    let isSelected: Bool
     let onDuplicate: () -> Void
     let onDelete: () -> Void
 
     var body: some View {
         HStack(spacing: 6) {
+            Image(systemName: "line.3.horizontal")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .help("Drag to reorder, or to move this stage to another effect")
+
             Text(stage.name)
                 .lineLimit(1)
                 .opacity(stage.isShadowed ? 0.5 : 1)
@@ -440,11 +525,6 @@ private struct StageRow: View {
             .help("Remove stage")
         }
         .padding(.vertical, 3)
-        .padding(.horizontal, 6)
-        .background(
-            RoundedRectangle(cornerRadius: 6)
-                .fill(Color.accentColor.opacity(isSelected ? 0.18 : 0))
-        )
         .contextMenu {
             Button("Duplicate", action: onDuplicate)
             Button("Remove", action: onDelete)
