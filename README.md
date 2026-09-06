@@ -1,20 +1,25 @@
 # Camera Effects
 
 A macOS app that captures your webcam (or any other camera source), applies a
-chain of user-editable GLSL effects on the GPU, and republishes the result as a
+user-editable GLSL **effect** on the GPU, and republishes the result as a
 system-wide **virtual camera** you can pick in Zoom, Meet, FaceTime, etc.
 
-- Effects are authored in **GLSL 450** and transpiled to Metal at runtime
+- An **effect** is a small pipeline of one or more **stages**. Exactly one
+  effect is active at a time — the one selected in the sidebar.
+- Stages are authored in **GLSL 450** and transpiled to Metal at runtime
   (glslang → SPIR-V → SPIRV-Cross → MSL).
-- Every effect gets the last **N frames** of the raw feed as a **3D texture**
+- Every stage gets the last **N frames** of the raw feed as a **3D texture**
   (`sampler3D uFrames`), with N configurable in the app.
+- **Basic Mode** (the default) is just the effect list plus the controls each
+  effect exposes. **Editor Mode** adds the stages inside every effect, the
+  GLSL editor, and the per-stage inspector.
 - Built-in editor with GLSL syntax highlighting, code completion (keywords,
   built-ins, and the injected prelude symbols), live recompile, inline compile
   errors, `⌘/` to comment or uncomment the selected lines, and auto-generated
   parameter controls reflected from your shader's `Params` uniform block.
 - The virtual camera is a modern **CoreMediaIO Camera Extension** (the same
-  mechanism OBS uses); the app renders frames and pushes them into the
-  extension through a sink stream.
+  mechanism OBS uses); the app streams to it automatically as soon as the
+  extension is installed.
 
 ## Requirements
 
@@ -60,46 +65,65 @@ allow developer mode via `systemextensionsctl developer on`). So:
 2. Copy `CameraEffects.app` into `/Applications` and launch it from there.
 3. Click **Install Extension** in the toolbar and approve the extension in
    System Settings → General → Login Items & Extensions.
-4. "Camera Effects" now appears as a camera in any video-call app. Toggle
-   **Virtual Camera** in the toolbar to stream your processed feed to it.
+4. "Camera Effects" now appears as a camera in any video-call app. Streaming
+   starts on its own — the toolbar just reports whether the sink stream is
+   connected.
 
 To remove: `systemextensionsctl uninstall <team-id> studio.polyglot.CameraEffects.Extension`.
 
 > If you fork this project, change the `studio.polyglot` bundle-ID prefix in
 > `project.yml` to your own.
 
-## Writing effects
+## Effects and stages
 
-Effects live in the app's sandbox container at
-`~/Library/Containers/studio.polyglot.CameraEffects/Data/Library/Application Support/CameraEffects/Effects/`,
-one folder per effect containing `shader.frag` (GLSL) and `effect.json`
+An **effect** is a named list of **stages**. Only one effect renders at a
+time: the one that owns the sidebar selection, so clicking an effect (or any
+stage inside it) activates that effect. There is nothing to enable or
+disable — picking an effect *is* turning it on.
+
+Within an effect, stages run top to bottom, each one sampling the previous
+stage's output through `uPrev`. The first stage of every effect sees the
+scaled (and optionally mirrored) camera frame, identical to
+`ceHistory(vUV, 0)`, so nothing carries over from whichever effect was active
+before.
+
+A stage that never samples `uPrev` does not build on its effect's chain — it
+replaces the whole frame. Every stage before it in the same effect is
+therefore invisible, so the app skips those passes entirely and marks them in
+the sidebar. Their vision detectors do not run either.
+
+Use Editor Mode to add, remove, duplicate and reorder stages, and to drag them
+between effects (the duplicate lands right below the original with the same
+shader and parameter values).
+
+## Storage layout
+
+Stages live in the app's sandbox container at
+`~/Library/Containers/studio.polyglot.CameraEffects/Data/Library/Application Support/CameraEffects/Stages/`,
+one folder per stage containing `shader.frag` (GLSL) and `stage.json`
 (name + saved parameter values). You can edit them in the app's editor
 (recompiles as you type) or in an external editor (hot-reloads on save).
 
+Which stages belong to which effect — and in what order — lives in
+`config.json` next to the `Stages` folder.
+
+> Upgrading from an older build: the previous `Effects/` folder (with
+> `effect.json` per shader) is renamed to `Stages/` on first launch, and each
+> saved group becomes an effect containing the same shaders as stages.
+
+## Writing stages
+
 Your shader is a GLSL 450 **fragment shader body**. The app injects a prelude
 that declares the interface, so you only write `main()` plus an optional
-`Params` block. The inspector lists every built-in symbol when editing an effect.
-
-### Effect chain
-
-Enabled effects in enabled groups run top to bottom, each one sampling the
-previous effect's output through `uPrev` (effect 0 sees the scaled/mirrored
-camera frame). Use the sidebar to reorder effects, drag them between groups,
-or duplicate one (the copy lands right below the original with the same shader
-and parameter values).
-
-An effect that never samples `uPrev` does not build on the chain — it replaces
-the whole frame. Everything before such an effect is therefore invisible, so
-the app skips those passes entirely and marks them in the sidebar, even when
-they are enabled. Their vision detectors do not run either.
+`Params` block. The inspector lists every built-in symbol when editing a stage.
 
 ### Built-in interface
 
 | Symbol | Type | Description |
 | --- | --- | --- |
 | `vUV` | `in vec2` | Fullscreen UV coordinates. (0, 0) is top-left; (1, 1) is bottom-right. |
-| `outColor` | `out vec4` | Write the effect output here. |
-| `uPrev` | `sampler2D` | Previous pass output (or the scaled/mirrored camera frame for pass 0). Not sampling it disables every earlier effect — see [Effect chain](#effect-chain). |
+| `outColor` | `out vec4` | Write the stage output here. |
+| `uPrev` | `sampler2D` | Previous stage's output (or the scaled/mirrored camera frame for the first stage of an effect). Not sampling it disables every earlier stage — see [Effects and stages](#effects-and-stages). |
 | `uFrames` | `sampler3D` | Last **N** raw camera frames. The z axis is history — prefer `ceHistory()` over manual z indexing. |
 | `ceHistory(uv, ago)` | `vec4` | Sample the raw frame from `ago` frames ago (0 = newest). Handles ring-buffer wrapping. |
 
@@ -119,10 +143,11 @@ they are enabled. Their vision detectors do not run either.
 Face detection, eye/mouth segmentation, hand pose, hand segmentation, and a
 person matte for background subtraction are available as standard uniforms.
 The underlying detectors (Apple's Vision framework — no extra dependencies)
-**only run while an enabled effect actually uses one of these uniforms**;
+**only run while a stage of the active effect uses one of these uniforms**;
 unused uniforms are dead-code-eliminated at compile time, so referencing none
-of them costs nothing. All coordinates and masks are in vUV space (top-left
-origin, mirroring already applied).
+of them costs nothing. Switching effects re-evaluates what has to run, so the
+cost follows whatever is on screen. All coordinates and masks are in vUV space
+(top-left origin, mirroring already applied).
 
 | Symbol | Type | Description |
 | --- | --- | --- |
@@ -163,10 +188,10 @@ void main() {
 
 | Symbol | Type | Description |
 | --- | --- | --- |
-| `Params` | `std140` block, binding = 3 | Optional effect parameters — become inspector controls. |
+| `Params` | `std140` block, binding = 3 | Optional stage parameters — become inspector controls. |
 | `yourSampler` | `sampler2D`, binding 4–15 | Optional 2D textures assigned from the media library. |
 
-Example effect:
+Example stage:
 
 ```glsl
 layout(std140, binding = 3) uniform Params {
@@ -193,12 +218,14 @@ layout(std140, binding = 3) uniform Params {
     vec3 direction;
     // @metadata(color=true)
     vec3 tint;
+    // @metadata(min=0.0 max=1.0 default=0.5 global)
+    float intensity;
 };
 ```
 
 `min` / `max` update the inspector on every compile. `default` is used only
 when the parameter is first created. Current slider values stay in
-`effect.json` and are clamped into the new range. Float sliders include an
+`stage.json` and are clamped into the new range. Float sliders include an
 editable value field for precise input.
 
 A scalar `min`/`max`/`default` broadcasts to every component. Vector
@@ -211,11 +238,19 @@ reported as a shader error on that `@metadata` line.
 `vec3` / `vec4` use a slider per component. Add `color=true` (or a bare
 `color`) to show a color picker instead.
 
+### Effect-level controls (`global`)
+
+Basic Mode never shows stages, so by default it cannot reach a stage's
+parameters. Add `global` (or `global=true`) to a parameter's `@metadata` and
+its control is listed on the owning **effect** as well as on the stage — which
+is what Basic Mode renders. Effects made of several stages group the borrowed
+controls under each stage's name.
+
 Supported `Params` member types and their generated controls: `float`
 (slider), `int` (slider), `uint` (toggle switch — use this for boolean flags;
 std140 stores them as 0/1), `vec2` / `vec3` / `vec4` (a slider per component;
 `vec3` / `vec4` become a color picker when `color=true`). Parameter values
-and ranges are stored in the effect's `effect.json`.
+and ranges are stored in the stage's `stage.json`.
 
 ## Project layout
 
