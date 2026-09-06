@@ -166,30 +166,45 @@ final class AppState: ObservableObject {
     /// camera frame — nothing carries over between effects.
     func rebuildChain() {
         guard let cache = mediaLibrary.textureCache else { return }
-        let stageIDs = activeEffect?.stageIDs ?? []
-        let runnable = stageIDs.compactMap { stageID -> (stage: Stage, compiled: CompiledStage)? in
-            guard let stage = store.stage(id: stageID), let compiled = stage.compiled else { return nil }
-            return (stage, compiled)
+
+        // Shadowing is scoped to one effect, and Editor Mode lists the stages
+        // of every effect, so resolve the chain for all of them.
+        var rendered = Set<String>()
+        var activeChain: [(stage: Stage, compiled: CompiledStage)] = []
+        for effect in store.effects {
+            let chain = renderedStages(of: effect)
+            rendered.formUnion(chain.map(\.stage.id))
+            if effect.id == activeEffectID {
+                activeChain = chain
+            }
         }
 
-        // A stage that never samples `uPrev` overwrites the whole frame, so
-        // everything before it in the effect is invisible work. Start at the
-        // last such stage and mark the ones it shadows.
-        let start = runnable.lastIndex { !$0.compiled.reflection.samplesPreviousOutput } ?? runnable.startIndex
-        let shadowedIDs = Set(runnable[..<start].map { $0.stage.id })
         for stage in store.stages {
-            let shadowed = shadowedIDs.contains(stage.id)
+            let shadowed = stage.compiled != nil && !rendered.contains(stage.id)
             if stage.isShadowed != shadowed {
                 stage.isShadowed = shadowed
             }
         }
 
-        engine.setStages(runnable[start...].map { entry in
+        engine.setStages(activeChain.map { entry in
             RunningStage(
                 compiled: entry.compiled,
                 textureAssets: StageTextureAssets(bindings: entry.stage.textureBindings, cache: cache)
             )
         })
+    }
+
+    /// The compiled stages of `effect` that reach the output. A stage that
+    /// never samples `uPrev` overwrites the whole frame, so everything before
+    /// it in the same effect is invisible work; the chain starts at the last
+    /// such stage.
+    private func renderedStages(of effect: Effect) -> [(stage: Stage, compiled: CompiledStage)] {
+        let runnable = effect.stageIDs.compactMap { stageID -> (stage: Stage, compiled: CompiledStage)? in
+            guard let stage = store.stage(id: stageID), let compiled = stage.compiled else { return nil }
+            return (stage, compiled)
+        }
+        let start = runnable.lastIndex { !$0.compiled.reflection.samplesPreviousOutput } ?? runnable.startIndex
+        return Array(runnable[start...])
     }
 
     // MARK: Mutations — stages
