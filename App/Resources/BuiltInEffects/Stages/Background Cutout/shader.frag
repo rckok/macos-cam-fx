@@ -1,13 +1,16 @@
 // Background subtraction demo using the person-segmentation luma matte
-// (uPersonMatte). The segmentation model only runs while an effect that
-// samples uPersonMatte is enabled.
+// (uPersonMatte). The segmentation model only runs while a stage of the
+// active effect samples uPersonMatte.
 //
 // Replaces everything outside the detected person with a solid color.
 // `threshold` sets the matte cutoff, `softness` feathers the edge.
 
 layout(std140, binding = 3) uniform Params {
+    // @metadata(color=true default=vec3(0.1, 0.8, 0.2) global)
     vec3 backgroundColor;
+    // @metadata(min=0.0 max=1.0 default=0.5 global)
     float threshold;
+    // @metadata(min=0.0 max=1.0 default=0.25 global)
     float softness;
 };
 

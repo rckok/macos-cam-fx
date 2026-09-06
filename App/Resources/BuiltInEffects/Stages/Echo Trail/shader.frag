@@ -3,9 +3,9 @@
 // trails.
 
 layout(std140, binding = 3) uniform Params {
-    // @metadata(min=0.0 max=1.0 default=0.85)
+    // @metadata(min=0.0 max=1.0 default=0.85 global)
     float decay;
-    // @metadata(min=1 max=120 default=24)
+    // @metadata(min=1 max=120 default=24 global)
     int taps;
 };
 

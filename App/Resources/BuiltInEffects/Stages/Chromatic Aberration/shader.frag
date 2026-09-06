@@ -2,7 +2,7 @@
 // center by an amount that grows with distance.
 
 layout(std140, binding = 3) uniform Params {
-    // @metadata(min=0.0 max=2.0 default=1.0)
+    // @metadata(min=0.0 max=2.0 default=1.0 global)
     float amount;
 };
 

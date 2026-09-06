@@ -1,0 +1,9 @@
+{
+  "effects": [
+    { "name": "Passthrough", "stages": ["Passthrough"] },
+    { "name": "Chromatic Aberration", "stages": ["Chromatic Aberration"] },
+    { "name": "Echo Trail", "stages": ["Echo Trail"] },
+    { "name": "Background Cutout", "stages": ["Background Cutout"] },
+    { "name": "Ghost Aberration", "stages": ["Ghost Echo", "Ghost Shift"] }
+  ]
+}

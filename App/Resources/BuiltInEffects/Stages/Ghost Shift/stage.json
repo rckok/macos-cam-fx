@@ -1,0 +1,7 @@
+{
+  "name": "Ghost Shift",
+  "params": {
+    "split": { "type": "float", "value": [0.35], "min": 0, "max": 1, "global": true },
+    "speed": { "type": "float", "value": [0.4], "min": 0, "max": 2 }
+  }
+}

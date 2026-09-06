@@ -1,0 +1,7 @@
+{
+  "name": "Echo Trail",
+  "params": {
+    "decay": { "type": "float", "value": [0.85], "min": 0, "max": 1, "global": true },
+    "taps": { "type": "int", "value": [10], "min": 1, "max": 120, "global": true }
+  }
+}
