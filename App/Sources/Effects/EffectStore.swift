@@ -425,8 +425,18 @@ final class EffectStore: ObservableObject {
         saveConfig()
     }
 
-    func moveEffects(fromOffsets source: IndexSet, toOffset destination: Int) {
-        effects.move(fromOffsets: source, toOffset: destination)
+    /// Moves an effect above `beforeEffectID`, or to the end when that is nil.
+    func moveEffect(_ effectID: String, before beforeEffectID: String?) {
+        guard beforeEffectID != effectID,
+              let currentIndex = effects.firstIndex(where: { $0.id == effectID })
+        else { return }
+
+        let effect = effects.remove(at: currentIndex)
+        if let beforeEffectID, let anchorIndex = effects.firstIndex(where: { $0.id == beforeEffectID }) {
+            effects.insert(effect, at: anchorIndex)
+        } else {
+            effects.append(effect)
+        }
         reorderStagesFromEffects()
         saveConfig()
     }

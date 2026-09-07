@@ -257,9 +257,10 @@ final class AppState: ObservableObject {
         store.renameEffect(id: effectID, to: name)
     }
 
-    func moveEffects(fromOffsets source: IndexSet, toOffset destination: Int) {
-        store.moveEffects(fromOffsets: source, toOffset: destination)
-        rebuildChain()
+    /// Effect order is presentation only — every effect is its own pipeline —
+    /// so the render chain is unaffected.
+    func moveEffect(_ effectID: String, before beforeEffectID: String?) {
+        store.moveEffect(effectID, before: beforeEffectID)
     }
 
     func removeEffect(_ effect: Effect, deleteStages: Bool, moveStagesTo targetEffectID: String? = nil) {

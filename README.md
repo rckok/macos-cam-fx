@@ -102,6 +102,10 @@ shows where it will land:
   how you drop into a collapsed effect);
 - onto an effect's **Add Stage** row, to go last.
 
+Effects are reordered the same way: drag an effect's header onto another
+effect to go above it, or onto the **Add Effect** bar to go last. Effects and
+stages carry different drag payloads, so neither can land in the other's slot.
+
 ## Storage layout
 
 Stages live in the app's sandbox container at

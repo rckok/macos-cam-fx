@@ -30,5 +30,34 @@
 	<string>Camera Effects captures your camera feed to apply video effects and republish it as a virtual camera.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<!-- Payload types for dragging effects and stages around the sidebar.
+	     Declared so the two never land on each other's drop targets. -->
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>studio.polyglot.CameraEffects.effect</string>
+			<key>UTTypeDescription</key>
+			<string>Camera Effects Effect</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict/>
+		</dict>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>studio.polyglot.CameraEffects.stage</string>
+			<key>UTTypeDescription</key>
+			<string>Camera Effects Stage</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict/>
+		</dict>
+	</array>
 </dict>
 </plist>
