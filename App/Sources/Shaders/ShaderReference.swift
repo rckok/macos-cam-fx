@@ -198,7 +198,7 @@ enum ShaderReference {
             id: "sampler2D",
             name: "yourSampler",
             type: "uniform sampler2D, binding ≥ 4",
-            description: "Optional 2D textures assigned from the shared media library in the stage inspector."
+            description: "Optional 2D textures assigned from the shared media library in the stage inspector. Put `// @metadata(global)` on the line above the declaration to list the picker on the owning effect too, which is the only place Basic Mode can reach it. No other metadata key applies to a sampler."
         ),
     ]
 }

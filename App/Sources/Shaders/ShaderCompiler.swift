@@ -8,6 +8,12 @@ struct ShaderReflection: Codable {
         let mslTexture: Int
         let mslSampler: Int
         let dim: String
+        /// From a preceding `// @metadata(global)` line, if any.
+        var isGlobal: Bool? = nil
+
+        enum CodingKeys: String, CodingKey {
+            case name, binding, mslTexture, mslSampler, dim
+        }
     }
 
     struct BlockMember: Codable {
@@ -239,7 +245,7 @@ enum ShaderCompiler {
     ) -> (ShaderReflection, [ShaderDiagnostic]) {
         let parsed = ParamMetadataParser.parse(from: source)
         var diagnostics = parsed.diagnostics
-        guard !parsed.metadata.isEmpty || !diagnostics.isEmpty else {
+        guard !parsed.metadata.isEmpty || !parsed.samplerMetadata.isEmpty || !diagnostics.isEmpty else {
             return (reflection, diagnostics)
         }
 
@@ -299,10 +305,17 @@ enum ShaderCompiler {
                 members: members
             )
         }
+        let textures = reflection.textures.map { texture -> ShaderReflection.TextureBinding in
+            guard let meta = parsed.samplerMetadata[texture.name] else { return texture }
+            var updated = texture
+            updated.isGlobal = meta.isGlobal
+            return updated
+        }
+
         return (
             ShaderReflection(
                 entryPoint: reflection.entryPoint,
-                textures: reflection.textures,
+                textures: textures,
                 uniformBlocks: blocks
             ),
             diagnostics

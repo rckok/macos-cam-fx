@@ -3,6 +3,7 @@ import Foundation
 /// Inspector hints declared in the shader as a preceding-line decorator:
 /// `// @metadata(min=0.0 max=1000.0 default=1.0 color=true global)`
 /// Vector uniforms accept GLSL constructors: `min=vec3(0) max=vec3(1, 2, 1)`.
+/// A `sampler2D` uniform has no range or components, so only `global` applies.
 struct ParamMetadata: Equatable {
     var minimum: [Double]?
     var maximum: [Double]?
@@ -18,7 +19,10 @@ struct ParamMetadata: Equatable {
 }
 
 struct ParamMetadataParseResult {
+    /// Keyed by `Params` member name.
     var metadata: [String: ParamMetadata]
+    /// Keyed by user `sampler` uniform name.
+    var samplerMetadata: [String: ParamMetadata]
     var diagnostics: [ShaderDiagnostic]
 }
 
@@ -35,16 +39,31 @@ enum ParamMetadataParser {
     private static let memberDecl = try! NSRegularExpression(
         pattern: #"^(?:layout\s*\([^)]*\)\s+)?(float|int|uint|bool|vec[234]|ivec[234]|uvec[234]|bvec[234])\s+(\w+)\s*(?:\[[^\]]*\])?\s*;"#
     )
+    private static let samplerDecl = try! NSRegularExpression(
+        pattern: #"^(?:layout\s*\([^)]*\)\s+)?uniform\s+(sampler\w+)\s+(\w+)\s*;"#
+    )
+
+    private typealias Parsed = (metadata: [String: ParamMetadata], diagnostics: [ShaderDiagnostic])
+
+    /// Collects the decorators that precede `Params` members and the ones that
+    /// precede user sampler uniforms, which live outside any block.
+    static func parse(from source: String) -> ParamMetadataParseResult {
+        let lines = source.components(separatedBy: .newlines)
+        let params = parseParamsBlock(in: lines)
+        let samplers = parseSamplers(in: lines)
+        return ParamMetadataParseResult(
+            metadata: params.metadata,
+            samplerMetadata: samplers.metadata,
+            diagnostics: params.diagnostics + samplers.diagnostics
+        )
+    }
 
     /// Maps `Params` member names to metadata from the decorator on the
     /// preceding non-empty line. Blank lines in between are ignored; any
     /// other comment or code clears a pending decorator. Constructor and
     /// syntax problems are reported as diagnostics on the decorator line.
-    static func parse(from source: String) -> ParamMetadataParseResult {
-        let lines = source.components(separatedBy: .newlines)
-        guard let openIndex = paramsBlockOpenIndex(in: lines) else {
-            return ParamMetadataParseResult(metadata: [:], diagnostics: [])
-        }
+    private static func parseParamsBlock(in lines: [String]) -> Parsed {
+        guard let openIndex = paramsBlockOpenIndex(in: lines) else { return ([:], []) }
 
         var result: [String: ParamMetadata] = [:]
         var diagnostics: [ShaderDiagnostic] = []
@@ -104,7 +123,89 @@ enum ParamMetadataParser {
             index += 1
         }
 
-        return ParamMetadataParseResult(metadata: result, diagnostics: diagnostics)
+        return (result, diagnostics)
+    }
+
+    /// Same rules for sampler uniforms, which are declared at file scope. Lines
+    /// inside a block belong to `parseParamsBlock`, so they are skipped here
+    /// rather than reported twice.
+    private static func parseSamplers(in lines: [String]) -> Parsed {
+        var result: [String: ParamMetadata] = [:]
+        var diagnostics: [ShaderDiagnostic] = []
+        var pending: ParamMetadata?
+        var depth = 0
+
+        for (index, rawLine) in lines.enumerated() {
+            let trimmed = rawLine.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty { continue }
+            let code = strippedCode(trimmed)
+
+            if depth > 0 {
+                depth += braceDelta(code)
+                continue
+            }
+
+            let lineNumber = index + 1
+            switch parseMetadataLine(trimmed, line: lineNumber) {
+            case .parsed(let metadata):
+                pending = metadata
+                continue
+            case .failed(let message):
+                diagnostics.append(ShaderDiagnostic(line: lineNumber, message: message, severity: .error))
+                pending = nil
+                continue
+            case .notMetadata:
+                if matches(metadataPrefix, in: trimmed) {
+                    diagnostics.append(ShaderDiagnostic(
+                        line: lineNumber,
+                        message: "malformed @metadata decorator",
+                        severity: .error
+                    ))
+                    pending = nil
+                    continue
+                }
+            }
+
+            if code.isEmpty {
+                pending = nil
+                continue
+            }
+
+            if let pending, let declaration = samplerDeclaration(in: code) {
+                if let diagnostic = unsupportedSamplerKeys(
+                    pending, type: declaration.type, name: declaration.name
+                ) {
+                    diagnostics.append(diagnostic)
+                } else {
+                    result[declaration.name] = pending
+                }
+            }
+            pending = nil
+            depth += braceDelta(code)
+        }
+
+        return (result, diagnostics)
+    }
+
+    /// A sampler has no range and no components, so everything but `global`
+    /// would silently do nothing.
+    private static func unsupportedSamplerKeys(
+        _ metadata: ParamMetadata,
+        type: String,
+        name: String
+    ) -> ShaderDiagnostic? {
+        var keys: [String] = []
+        if metadata.minimum != nil { keys.append("min") }
+        if metadata.maximum != nil { keys.append("max") }
+        if metadata.defaultValue != nil { keys.append("default") }
+        if metadata.isColor != nil { keys.append("color") }
+        guard !keys.isEmpty else { return nil }
+        return ShaderDiagnostic(
+            line: metadata.line,
+            message: "@metadata \(keys.joined(separator: ", ")) \(keys.count == 1 ? "does" : "do") "
+                + "not apply to \(type) \(name); only global does",
+            severity: .error
+        )
     }
 
     /// Broadcast a scalar or accept an exact component match.
@@ -368,6 +469,13 @@ enum ParamMetadataParser {
 
     private static func memberName(in code: String) -> String? {
         firstCapture(memberDecl, in: code, group: 2)
+    }
+
+    private static func samplerDeclaration(in code: String) -> (type: String, name: String)? {
+        guard let type = firstCapture(samplerDecl, in: code, group: 1),
+              let name = firstCapture(samplerDecl, in: code, group: 2)
+        else { return nil }
+        return (type, name)
     }
 
     private static func strippedCode(_ line: String) -> String {

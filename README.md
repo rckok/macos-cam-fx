@@ -200,7 +200,7 @@ void main() {
 | Symbol | Type | Description |
 | --- | --- | --- |
 | `Params` | `std140` block, binding = 3 | Optional stage parameters — become inspector controls. |
-| `yourSampler` | `sampler2D`, binding 4–15 | Optional 2D textures assigned from the media library. |
+| `yourSampler` | `sampler2D`, binding 4–15 | Optional 2D textures assigned from the media library. Accepts `// @metadata(global)`. |
 
 Example stage:
 
@@ -252,10 +252,19 @@ reported as a shader error on that `@metadata` line.
 ### Effect-level controls (`global`)
 
 Basic Mode never shows stages, so by default it cannot reach a stage's
-parameters. Add `global` (or `global=true`) to a parameter's `@metadata` and
-its control is listed on the owning **effect** as well as on the stage — which
-is what Basic Mode renders. Effects made of several stages group the borrowed
+controls. Add `global` (or `global=true`) to a parameter's `@metadata` and its
+control is listed on the owning **effect** as well as on the stage — which is
+what Basic Mode renders. Effects made of several stages group the borrowed
 controls under each stage's name.
+
+Sampler uniforms take the same decorator, and `global` is the only key they
+accept — a sampler has no range and no components, so `min`, `max`, `default`
+and `color` are reported as errors on that line:
+
+```glsl
+// @metadata(global)
+layout(binding = 4) uniform sampler2D uOverlay;
+```
 
 Supported `Params` member types and their generated controls: `float`
 (slider), `int` (slider), `uint` (toggle switch — use this for boolean flags;

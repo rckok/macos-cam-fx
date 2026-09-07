@@ -220,6 +220,9 @@ struct StageTextureBinding: Identifiable, Equatable {
     let name: String
     /// ID of the asset in the shared media library, if assigned.
     var mediaID: String?
+    /// `@metadata(global)` also lists this picker on the owning effect, so it
+    /// stays reachable in Basic Mode where stages are hidden.
+    var isGlobal: Bool = false
 
     var id: String { name }
 }
@@ -292,6 +295,8 @@ struct StageManifest: Codable {
 
     struct TextureBinding: Codable {
         var media: String?
+        /// Mirrors `@metadata(global)`, as `Param.global` does.
+        var global: Bool?
     }
 
     var name: String
@@ -347,9 +352,17 @@ final class Stage: Identifiable, ObservableObject {
         self.textureBindings = textureBindings
     }
 
-    /// Parameters listed on the owning effect as well as on this stage.
+    /// Controls listed on the owning effect as well as on this stage.
     var globalParameters: [StageParameter] {
         parameters.filter(\.isGlobal)
+    }
+
+    var globalTextureBindings: [StageTextureBinding] {
+        textureBindings.filter(\.isGlobal)
+    }
+
+    var hasGlobalControls: Bool {
+        parameters.contains(where: \.isGlobal) || textureBindings.contains(where: \.isGlobal)
     }
 
     /// Merges reflected `Params` members with existing parameter state,
@@ -382,10 +395,10 @@ final class Stage: Identifiable, ObservableObject {
             $0.dim == "2d" && !Self.reservedTextureNames.contains($0.name)
         }
         textureBindings = bindings.map { binding in
-            if let existing = textureBindings.first(where: { $0.name == binding.name }) {
-                return existing
-            }
-            return StageTextureBinding(name: binding.name, mediaID: nil)
+            var resolved = textureBindings.first { $0.name == binding.name }
+                ?? StageTextureBinding(name: binding.name, mediaID: nil)
+            resolved.isGlobal = binding.isGlobal ?? false
+            return resolved
         }
     }
 
@@ -411,7 +424,10 @@ final class Stage: Identifiable, ObservableObject {
         }
         var textureManifest: [String: StageManifest.TextureBinding] = [:]
         for binding in textureBindings {
-            textureManifest[binding.name] = StageManifest.TextureBinding(media: binding.mediaID)
+            textureManifest[binding.name] = StageManifest.TextureBinding(
+                media: binding.mediaID,
+                global: binding.isGlobal ? true : nil
+            )
         }
         return StageManifest(
             name: name,

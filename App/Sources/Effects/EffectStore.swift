@@ -252,7 +252,8 @@ final class EffectStore: ObservableObject {
             for (samplerName, binding) in manifest.textures ?? [:] {
                 textureBindings.append(StageTextureBinding(
                     name: samplerName,
-                    mediaID: binding.media
+                    mediaID: binding.media,
+                    isGlobal: binding.global ?? false
                 ))
             }
         }

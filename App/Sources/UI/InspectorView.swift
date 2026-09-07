@@ -1,14 +1,14 @@
 import AppKit
 import SwiftUI
 
-/// Effect-level controls: every `@metadata(global)` parameter its stages
-/// declare. This is the only inspector Basic Mode shows.
+/// Effect-level controls: every `@metadata(global)` parameter and sampler its
+/// stages declare. This is the only inspector Basic Mode shows.
 struct EffectInspectorView: View {
     let effect: Effect
     @ObservedObject var store: EffectStore
 
     private var contributors: [Stage] {
-        store.stages(in: effect).filter { !$0.globalParameters.isEmpty }
+        store.stages(in: effect).filter(\.hasGlobalControls)
     }
 
     var body: some View {
@@ -21,12 +21,12 @@ struct EffectInspectorView: View {
                 }
             } else if contributors.count == 1, let stage = contributors.first {
                 Section("Controls") {
-                    GlobalParameterControls(stage: stage)
+                    GlobalControls(stage: stage)
                 }
             } else {
                 ForEach(contributors) { stage in
                     Section(stage.name) {
-                        GlobalParameterControls(stage: stage)
+                        GlobalControls(stage: stage)
                     }
                 }
             }
@@ -38,18 +38,22 @@ struct EffectInspectorView: View {
         if effect.stageIDs.isEmpty {
             return "This effect has no stages yet. Add one in Editor Mode."
         }
-        return "No effect-level controls. Mark a stage parameter with `// @metadata(global)` to surface it here."
+        return "No effect-level controls. Mark a stage parameter or sampler with `// @metadata(global)` to surface it here."
     }
 }
 
-/// The `global` parameters of one stage, edited in place on that stage.
-private struct GlobalParameterControls: View {
+/// The `global` controls of one stage, edited in place on that stage.
+private struct GlobalControls: View {
     @EnvironmentObject private var state: AppState
     @ObservedObject var stage: Stage
 
     var body: some View {
+        ForEach(stage.globalTextureBindings) { binding in
+            TextureBindingRow(stage: stage, binding: textureBinding(for: binding))
+        }
+
         ForEach(stage.globalParameters) { parameter in
-            ParameterControl(parameter: binding(for: parameter)) {
+            ParameterControl(parameter: parameterBinding(for: parameter)) {
                 state.parametersChanged(stage)
             }
             .id("\(stage.id)-\(parameter.name)-\(parameter.type)-\(parameter.values.count)-\(parameter.isColor)")
@@ -58,12 +62,22 @@ private struct GlobalParameterControls: View {
 
     /// Writes straight back into the owning stage, matched by name so a
     /// recompile that reorders `Params` cannot scramble the controls.
-    private func binding(for parameter: StageParameter) -> Binding<StageParameter> {
+    private func parameterBinding(for parameter: StageParameter) -> Binding<StageParameter> {
         Binding(
             get: { stage.parameters.first { $0.name == parameter.name } ?? parameter },
             set: { updated in
                 guard let index = stage.parameters.firstIndex(where: { $0.name == parameter.name }) else { return }
                 stage.parameters[index] = updated
+            }
+        )
+    }
+
+    private func textureBinding(for binding: StageTextureBinding) -> Binding<StageTextureBinding> {
+        Binding(
+            get: { stage.textureBindings.first { $0.name == binding.name } ?? binding },
+            set: { updated in
+                guard let index = stage.textureBindings.firstIndex(where: { $0.name == binding.name }) else { return }
+                stage.textureBindings[index] = updated
             }
         )
     }
