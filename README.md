@@ -111,11 +111,12 @@ one folder per stage containing `shader.frag` (GLSL) and `stage.json`
 (recompiles as you type) or in an external editor (hot-reloads on save).
 
 Which stages belong to which effect — and in what order — lives in
-`config.json` next to the `Stages` folder.
-
-> Upgrading from an older build: the previous `Effects/` folder (with
-> `effect.json` per shader) is renamed to `Stages/` on first launch, and each
-> saved group becomes an effect containing the same shaders as stages.
+`config.json` next to the `Stages` folder. It is the only place that grouping
+exists, so it is written immediately whenever it changes rather than on a
+timer, and a `config.json` the app cannot read is set aside as
+`config.unreadable.json` instead of being overwritten. A stage folder that no
+config claims becomes an effect of its own, named after the folder, so it
+stays reachable.
 
 ## Writing stages
 

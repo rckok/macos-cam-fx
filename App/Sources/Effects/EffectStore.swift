@@ -19,18 +19,15 @@ final class EffectStore: ObservableObject {
 
         enum CodingKeys: String, CodingKey {
             case effects, activeEffectID, viewMode, selectedDeviceID, historyDepth, flipHorizontal
-            // Written before groups-of-effects became effects-of-stages.
-            case groups, order
         }
 
         init() {}
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
-            effects = try container.decodeIfPresent([Effect].self, forKey: .effects) ?? []
-            if effects.isEmpty {
-                effects = Self.decodeLegacyEffects(from: container)
-            }
+            // Required on purpose: a file without it was not written by this
+            // app, and treating it as "no effects" would regroup every stage.
+            effects = try container.decode([Effect].self, forKey: .effects)
             activeEffectID = try container.decodeIfPresent(String.self, forKey: .activeEffectID)
             viewMode = try container.decodeIfPresent(ViewMode.self, forKey: .viewMode) ?? .basic
             selectedDeviceID = try container.decodeIfPresent(String.self, forKey: .selectedDeviceID)
@@ -47,26 +44,6 @@ final class EffectStore: ObservableObject {
             try container.encode(historyDepth, forKey: .historyDepth)
             try container.encode(flipHorizontal, forKey: .flipHorizontal)
         }
-
-        /// A group used to be a chain segment of effects, which is exactly what
-        /// an effect is now, so each group becomes one effect of stages.
-        private struct LegacyGroup: Decodable {
-            var id: String
-            var name: String
-            var effectIDs: [String]?
-        }
-
-        private static func decodeLegacyEffects(
-            from container: KeyedDecodingContainer<CodingKeys>
-        ) -> [Effect] {
-            let groups = (try? container.decodeIfPresent([LegacyGroup].self, forKey: .groups)) ?? nil
-            if let groups, !groups.isEmpty {
-                return groups.map { Effect(id: $0.id, name: $0.name, stageIDs: $0.effectIDs ?? []) }
-            }
-            let order = ((try? container.decodeIfPresent([String].self, forKey: .order)) ?? nil) ?? []
-            guard !order.isEmpty else { return [] }
-            return [Effect(id: UUID().uuidString, name: "General", stageIDs: order)]
-        }
     }
 
     @Published private(set) var stages: [Stage] = []
@@ -81,11 +58,12 @@ final class EffectStore: ObservableObject {
     private let configURL: URL
     private var directoryMonitor: DispatchSourceFileSystemObject?
     private var saveWorkItem: DispatchWorkItem?
+    /// False until a config we could read is on disk. Only then may the store
+    /// invent the built-in effects, which would otherwise regroup real stages.
+    private var hasStoredConfig = false
 
     static let shaderFileName = "shader.frag"
     static let manifestFileName = "stage.json"
-    private static let legacyDirectoryName = "Effects"
-    private static let legacyManifestFileName = "effect.json"
     private static let bundledResourceName = "BuiltInEffects"
 
     init() {
@@ -94,38 +72,17 @@ final class EffectStore: ObservableObject {
         stagesURL = rootURL.appendingPathComponent("Stages", isDirectory: true)
         configURL = rootURL.appendingPathComponent("config.json")
 
-        migrateLegacyLayoutIfNeeded()
         try? FileManager.default.createDirectory(at: stagesURL, withIntermediateDirectories: true)
         seedBuiltInStagesIfNeeded()
         loadConfig()
         loadStages()
+        // Make whatever we just resolved durable, so a launch that ends before
+        // the first edit cannot leave the layout to be guessed again.
+        saveConfig()
         startWatching()
     }
 
     // MARK: Loading
-
-    /// Effects used to be single shaders in `Effects/<name>/effect.json`; they
-    /// are stages now, so move the whole tree across on first launch.
-    private func migrateLegacyLayoutIfNeeded() {
-        let fileManager = FileManager.default
-        let legacyURL = rootURL.appendingPathComponent(Self.legacyDirectoryName, isDirectory: true)
-        guard fileManager.fileExists(atPath: legacyURL.path),
-              !fileManager.fileExists(atPath: stagesURL.path),
-              (try? fileManager.moveItem(at: legacyURL, to: stagesURL)) != nil
-        else { return }
-
-        let folders = (try? fileManager.contentsOfDirectory(
-            at: stagesURL, includingPropertiesForKeys: [.isDirectoryKey]
-        )) ?? []
-        for folder in folders {
-            let legacyManifest = folder.appendingPathComponent(Self.legacyManifestFileName)
-            let manifest = folder.appendingPathComponent(Self.manifestFileName)
-            guard fileManager.fileExists(atPath: legacyManifest.path),
-                  !fileManager.fileExists(atPath: manifest.path)
-            else { continue }
-            try? fileManager.moveItem(at: legacyManifest, to: manifest)
-        }
-    }
 
     private static var bundledRootURL: URL? {
         Bundle.main.url(forResource: bundledResourceName, withExtension: nil)
@@ -177,10 +134,18 @@ final class EffectStore: ObservableObject {
     }
 
     private func loadConfig() {
-        guard let data = try? Data(contentsOf: configURL),
-              let loaded = try? JSONDecoder().decode(AppConfig.self, from: data)
-        else { return }
-        config = loaded
+        guard let data = try? Data(contentsOf: configURL) else { return }
+        do {
+            config = try JSONDecoder().decode(AppConfig.self, from: data)
+            hasStoredConfig = true
+        } catch {
+            // Saving would overwrite a config we could not understand, and with
+            // it which stages belong to which effect. Keep it for recovery.
+            let backupURL = rootURL.appendingPathComponent("config.unreadable.json")
+            try? FileManager.default.removeItem(at: backupURL)
+            try? FileManager.default.moveItem(at: configURL, to: backupURL)
+            NSLog("Could not read config.json (\(error)); kept a copy as \(backupURL.lastPathComponent)")
+        }
     }
 
     private func loadStages() {
@@ -192,9 +157,9 @@ final class EffectStore: ObservableObject {
         stages = loaded
 
         let stageIDs = loaded.map(\.id)
-        effects = config.effects.isEmpty
-            ? Self.builtInEffects(stageIDs: stageIDs)
-            : normalizeEffects(config.effects, stageIDs: stageIDs)
+        effects = hasStoredConfig
+            ? normalizeEffects(config.effects, stageIDs: stageIDs)
+            : Self.builtInEffects(stageIDs: stageIDs)
         reorderStagesFromEffects()
     }
 
@@ -247,7 +212,8 @@ final class EffectStore: ObservableObject {
         effects.first { $0.stageIDs.contains(stageID) }
     }
 
-    private func inferredLegacyType(for param: StageManifest.Param) -> String {
+    /// Manifests written by hand may leave `type` out; guess it from the value.
+    private func inferredType(for param: StageManifest.Param) -> String {
         switch param.value.count {
         case 2: return "vec2"
         case 3: return "vec3"
@@ -270,7 +236,7 @@ final class EffectStore: ObservableObject {
             name = manifest.name
             for (paramName, param) in manifest.params ?? [:] {
                 let type = StageParameter.normalizeReflectionType(
-                    param.type ?? inferredLegacyType(for: param)
+                    param.type ?? inferredType(for: param)
                 )
                 let defaults = StageParameter.makeDefault(name: paramName, type: type)
                 let count = StageParameter.componentCount(for: type)
@@ -329,7 +295,7 @@ final class EffectStore: ObservableObject {
 
         reorderStagesFromEffects()
         persist(stage: stage)
-        saveConfigSoon()
+        saveConfig()
         return stage
     }
 
@@ -372,7 +338,7 @@ final class EffectStore: ObservableObject {
 
         reorderStagesFromEffects()
         persist(stage: copy)
-        saveConfigSoon()
+        saveConfig()
         return copy
     }
 
@@ -405,7 +371,7 @@ final class EffectStore: ObservableObject {
             }
         }
         try? FileManager.default.removeItem(at: stage.folderURL)
-        saveConfigSoon()
+        saveConfig()
     }
 
     /// Moves a stage to `placement` within `targetEffectID`, whether it comes
@@ -434,7 +400,7 @@ final class EffectStore: ObservableObject {
             effect.stageIDs.insert(stageID, at: insertIndex)
         }
         reorderStagesFromEffects()
-        saveConfigSoon()
+        saveConfig()
     }
 
     // MARK: Mutations — effects
@@ -449,20 +415,20 @@ final class EffectStore: ObservableObject {
         }
         let effect = Effect(id: UUID().uuidString, name: name, stageIDs: [])
         effects.append(effect)
-        saveConfigSoon()
+        saveConfig()
         return effect
     }
 
     func renameEffect(id: String, to name: String) {
         guard let index = effects.firstIndex(where: { $0.id == id }) else { return }
         updateEffect(at: index) { $0.name = name }
-        saveConfigSoon()
+        saveConfig()
     }
 
     func moveEffects(fromOffsets source: IndexSet, toOffset destination: Int) {
         effects.move(fromOffsets: source, toOffset: destination)
         reorderStagesFromEffects()
-        saveConfigSoon()
+        saveConfig()
     }
 
     func removeEffect(id: String, deleteStages: Bool, moveStagesTo targetEffectID: String?) {
@@ -488,7 +454,7 @@ final class EffectStore: ObservableObject {
         }
 
         reorderStagesFromEffects()
-        saveConfigSoon()
+        saveConfig()
     }
 
     // MARK: Persistence
@@ -504,19 +470,36 @@ final class EffectStore: ObservableObject {
         }
     }
 
+    /// Coalesces the settings that change while a control is being dragged.
     func saveConfigSoon() {
         config.effects = effects
         saveWorkItem?.cancel()
         let workItem = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            if let data = try? encoder.encode(self.config) {
-                try? data.write(to: self.configURL)
-            }
+            self?.writeConfig()
         }
         saveWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: workItem)
+    }
+
+    /// Writes immediately. Which stages belong to which effect is the one piece
+    /// of state that lives only here, so it is never left on a pending timer.
+    func saveConfig() {
+        saveWorkItem?.cancel()
+        saveWorkItem = nil
+        config.effects = effects
+        writeConfig()
+    }
+
+    private func writeConfig() {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let data = try? encoder.encode(config) else { return }
+        do {
+            try data.write(to: configURL, options: .atomic)
+            hasStoredConfig = true
+        } catch {
+            NSLog("Failed to write config.json: \(error)")
+        }
     }
 
     // MARK: Hot reload
