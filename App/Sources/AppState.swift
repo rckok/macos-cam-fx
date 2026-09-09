@@ -167,15 +167,25 @@ final class AppState: ObservableObject {
     func rebuildChain() {
         guard let cache = mediaLibrary.textureCache else { return }
 
-        // Shadowing is scoped to one effect, and Editor Mode lists the stages
-        // of every effect, so resolve the chain for all of them.
+        // Shadowing and stage-name references are scoped to one effect, and
+        // Editor Mode lists the stages of every effect, so resolve all of them.
         var rendered = Set<String>()
-        var activeChain: [(stage: Stage, compiled: CompiledStage)] = []
+        var activeChain: [ChainEntry] = []
+        var activeStageCount = 0
+        var stageRefs: [String: [Int32]] = [:]
         for effect in store.effects {
             let chain = renderedStages(of: effect)
             rendered.formUnion(chain.map(\.stage.id))
             if effect.id == activeEffectID {
                 activeChain = chain
+                activeStageCount = effect.stageIDs.count
+            }
+            for stage in store.stages(in: effect) {
+                let resolved = resolveStageReferences(of: stage, in: effect)
+                stageRefs[stage.id] = resolved.refs
+                if stage.layoutDiagnostics != resolved.warnings {
+                    stage.layoutDiagnostics = resolved.warnings
+                }
             }
         }
 
@@ -186,25 +196,80 @@ final class AppState: ObservableObject {
             }
         }
 
-        engine.setStages(activeChain.map { entry in
-            RunningStage(
-                compiled: entry.compiled,
-                textureAssets: StageTextureAssets(bindings: entry.stage.textureBindings, cache: cache)
-            )
-        })
+        engine.setStages(
+            activeChain.map { entry in
+                RunningStage(
+                    compiled: entry.compiled,
+                    textureAssets: StageTextureAssets(bindings: entry.stage.textureBindings, cache: cache),
+                    index: entry.index,
+                    stageRefs: stageRefs[entry.stage.id] ?? []
+                )
+            },
+            stageCount: activeStageCount
+        )
     }
 
-    /// The compiled stages of `effect` that reach the output. A stage that
-    /// never samples `uPrev` overwrites the whole frame, so everything before
-    /// it in the same effect is invisible work; the chain starts at the last
-    /// such stage.
-    private func renderedStages(of effect: Effect) -> [(stage: Stage, compiled: CompiledStage)] {
-        let runnable = effect.stageIDs.compactMap { stageID -> (stage: Stage, compiled: CompiledStage)? in
+    private typealias ChainEntry = (index: Int, stage: Stage, compiled: CompiledStage)
+
+    /// The compiled stages of `effect` that reach the output, with their
+    /// position in the effect. Once any stage reads `uStageTextures` every
+    /// stage may be observed (indices can be computed at runtime), so all of
+    /// them render. Otherwise a stage that never samples `uPrev` overwrites
+    /// the whole frame, so everything before it is invisible work and the
+    /// chain starts at the last such stage.
+    private func renderedStages(of effect: Effect) -> [ChainEntry] {
+        let runnable = effect.stageIDs.enumerated().compactMap { index, stageID -> ChainEntry? in
             guard let stage = store.stage(id: stageID), let compiled = stage.compiled else { return nil }
-            return (stage, compiled)
+            return (index, stage, compiled)
+        }
+        if runnable.contains(where: { $0.compiled.reflection.samplesStageTextures }) {
+            return runnable
         }
         let start = runnable.lastIndex { !$0.compiled.reflection.samplesPreviousOutput } ?? runnable.startIndex
         return Array(runnable[start...])
+    }
+
+    /// Maps the names in `ceStageTexture("Name", ...)` calls to positions in
+    /// `effect`, matching the display name first and the folder ID second
+    /// (case-insensitive). Unknown names read as -1, which the prelude turns
+    /// into transparent black, and are reported on the calling line.
+    private func resolveStageReferences(
+        of stage: Stage, in effect: Effect
+    ) -> (refs: [Int32], warnings: [ShaderDiagnostic]) {
+        guard let compiled = stage.compiled, !compiled.stageReferences.isEmpty else { return ([], []) }
+
+        let siblings = effect.stageIDs.enumerated().compactMap { index, id in
+            store.stage(id: id).map { (index: index, stage: $0) }
+        }
+        func matches(_ name: String, _ candidate: String) -> Bool {
+            candidate.trimmingCharacters(in: .whitespaces).caseInsensitiveCompare(name) == .orderedSame
+        }
+
+        var refs = [Int32](repeating: -1, count: compiled.stageReferences.count)
+        var warnings: [ShaderDiagnostic] = []
+        for reference in compiled.stageReferences {
+            var found = siblings.filter { matches(reference.name, $0.stage.name) }
+            if found.isEmpty {
+                found = siblings.filter { matches(reference.name, $0.stage.id) }
+            }
+            if let first = found.first {
+                refs[reference.slot] = Int32(first.index)
+            }
+            if found.isEmpty {
+                warnings.append(ShaderDiagnostic(
+                    line: reference.line,
+                    message: "No stage named \"\(reference.name)\" in \(effect.name); ceStageTexture reads transparent black",
+                    severity: .warning
+                ))
+            } else if found.count > 1 {
+                warnings.append(ShaderDiagnostic(
+                    line: reference.line,
+                    message: "\(found.count) stages in \(effect.name) are named \"\(reference.name)\"; using the first (index \(found[0].index))",
+                    severity: .warning
+                ))
+            }
+        }
+        return (refs, warnings)
     }
 
     // MARK: Mutations — stages

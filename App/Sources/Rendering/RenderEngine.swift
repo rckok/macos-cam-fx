@@ -41,6 +41,8 @@ final class RenderEngine {
 
     // Protected by `lock`:
     private var stages: [RunningStage] = []
+    /// Stages in the active effect, rendered or not; sizes `uStageTextures`.
+    private var stageCount: Int = 0
     private var historyDepth: Int = 16
     private var flipHorizontal: Bool = true
     private var visionFeatures: VisionFeatures = []
@@ -56,7 +58,17 @@ final class RenderEngine {
     private var personMatteTexture: MTLTexture?
     private var personMatteValid = false
     private var handMaskTexture: MTLTexture?
-    private var pingPong: [MTLTexture] = []
+    /// Every stage renders here, then the result is copied into its slice of
+    /// `stageTextures`, so no pass ever reads the texture it writes.
+    private var scratchTexture: MTLTexture?
+    /// `uStageTextures`: one slice per stage of the active effect. Sized to
+    /// that effect alone and released when it has no stages, so GPU memory
+    /// never accumulates for inactive effects.
+    private var stageTextures: MTLTexture?
+    /// 2D views of each slice, for `uPrev`, the output copy and the preview.
+    private var stageSliceViews: [MTLTexture] = []
+    private var allocatedStageCount = 0
+    private var stageTexturesNeedClear = false
     private var allocatedDepth = 0
     private var head = -1
     private var filledSlices = 0
@@ -138,7 +150,9 @@ final class RenderEngine {
 
     // MARK: Configuration (called from the main thread)
 
-    func setStages(_ newStages: [RunningStage]) {
+    /// `stageCount` is the number of stages in the active effect, including
+    /// ones that are skipped; it fixes the slice numbering of `uStageTextures`.
+    func setStages(_ newStages: [RunningStage], stageCount newStageCount: Int) {
         // Vision algorithms only run while a stage of the active effect
         // actually uses their uniforms (per shader reflection).
         let features = newStages.reduce(into: VisionFeatures()) { result, running in
@@ -146,6 +160,7 @@ final class RenderEngine {
         }
         lock.lock()
         stages = newStages
+        stageCount = max(newStageCount, newStages.map { $0.index + 1 }.max() ?? 0)
         visionFeatures = features
         lock.unlock()
         visionProcessor.setFeatures(features)
@@ -214,6 +229,7 @@ final class RenderEngine {
     ) {
         lock.lock()
         let currentStages = stages
+        let currentStageCount = stageCount
         let depth = historyDepth
         let activeVision = visionFeatures
         lock.unlock()
@@ -221,9 +237,25 @@ final class RenderEngine {
         guard let frameTexture = makeTexture(from: pixelBuffer) else { return }
 
         ensureResources(depth: depth)
+        ensureStageTextures(count: currentStageCount)
         guard let historyTexture, let workingTexture, let outputPool else { return }
 
         guard let commandBuffer = commandQueue.makeCommandBuffer() else { return }
+
+        // Freshly allocated stage slices read as transparent black until their
+        // stage has run once, so feedback and forward references are defined.
+        if stageTexturesNeedClear, let stageTextures {
+            for slice in 0..<stageTextures.arrayLength {
+                let pass = MTLRenderPassDescriptor()
+                pass.colorAttachments[0].texture = stageTextures
+                pass.colorAttachments[0].slice = slice
+                pass.colorAttachments[0].loadAction = .clear
+                pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+                pass.colorAttachments[0].storeAction = .store
+                commandBuffer.makeRenderCommandEncoder(descriptor: pass)?.endEncoding()
+            }
+            stageTexturesNeedClear = false
+        }
 
         // 1. Scale (+ optional mirror) the capture frame into the fixed working
         //    resolution that matches the virtual camera.
@@ -286,20 +318,26 @@ final class RenderEngine {
         lastFrameTime = now
         frameNumber &+= 1
 
-        // 5. Run the active effect's stages, ping-ponging between offscreen
-        //    textures. Stage 0 samples the camera frame through `uPrev`, so
-        //    nothing carries over from whichever effect ran before.
+        // 5. Run the active effect's stages. Each renders into the scratch
+        //    texture and is then copied into its slice of `uStageTextures`, so
+        //    a stage reading its own slice sees its previous frame (feedback)
+        //    and later stages see this frame's result. The first rendered stage
+        //    samples the camera frame through `uPrev`, so nothing carries over
+        //    from whichever effect ran before.
         var currentInput: MTLTexture = workingTexture
-        var pingPongIndex = 0
         for running in currentStages {
+            guard let scratchTexture, let stageTextures,
+                  stageSliceViews.indices.contains(running.index)
+            else { continue }
             running.textureAssets.advanceVideoFrames()
 
             let stage = running.compiled
-            let target = pingPong[pingPongIndex]
-            pingPongIndex = 1 - pingPongIndex
+            let stagesUniforms = Self.stagesUniformBytes(
+                index: running.index, count: currentStageCount, refs: running.stageRefs
+            )
 
             let pass = MTLRenderPassDescriptor()
-            pass.colorAttachments[0].texture = target
+            pass.colorAttachments[0].texture = scratchTexture
             pass.colorAttachments[0].loadAction = .dontCare
             pass.colorAttachments[0].storeAction = .store
 
@@ -309,8 +347,9 @@ final class RenderEngine {
             for texture in stage.reflection.textures {
                 let source: MTLTexture?
                 switch texture.name {
-                case "uPrev": source = currentInput
+                case ShaderReflection.previousOutputSampler: source = currentInput
                 case "uFrames": source = historyTexture
+                case ShaderReflection.stageTexturesSampler: source = stageTextures
                 case VisionUniforms.personMatteSampler:
                     source = (personMatteValid ? personMatteTexture : nil) ?? fallbackMaskTexture
                 case VisionUniforms.faceMaskSampler:
@@ -338,6 +377,10 @@ final class RenderEngine {
                     if let paramsBuffer = stage.paramsBuffer {
                         encoder.setFragmentBuffer(paramsBuffer, offset: 0, index: block.mslBuffer)
                     }
+                case ShaderReflection.stagesBlock:
+                    stagesUniforms.withUnsafeBytes { bytes in
+                        Self.setFragmentBytes(encoder, bytes: bytes, index: block.mslBuffer, requiredLength: requiredLength)
+                    }
                 case VisionUniforms.faceBlock:
                     faceSlots.withUnsafeBytes { bytes in
                         Self.setFragmentBytes(encoder, bytes: bytes, index: block.mslBuffer, requiredLength: requiredLength)
@@ -357,7 +400,18 @@ final class RenderEngine {
 
             encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
             encoder.endEncoding()
-            currentInput = target
+
+            if let blit = commandBuffer.makeBlitCommandEncoder() {
+                blit.copy(
+                    from: scratchTexture, sourceSlice: 0, sourceLevel: 0,
+                    sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
+                    sourceSize: MTLSize(width: outputWidth, height: outputHeight, depth: 1),
+                    to: stageTextures, destinationSlice: running.index, destinationLevel: 0,
+                    destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0)
+                )
+                blit.endEncoding()
+            }
+            currentInput = stageSliceViews[running.index]
         }
 
         // 6. Copy the final image into a fresh IOSurface-backed pixel buffer
@@ -446,8 +500,62 @@ final class RenderEngine {
         return CVMetalTextureGetTexture(cvTexture)
     }
 
+    /// std140 bytes of the `CEStages` block: two ints (padded to 16 bytes),
+    /// then the `ivec4 uStageRefs[]` array, whose ivec4s pack tightly.
+    private static func stagesUniformBytes(index: Int, count: Int, refs: [Int32]) -> [Int32] {
+        let arrayBase = 4 // Int32 slots: the array starts at byte offset 16
+        var words = [Int32](repeating: -1, count: arrayBase + ShaderCompiler.maxStageReferences)
+        words[0] = Int32(index)
+        words[1] = Int32(count)
+        words[2] = 0
+        words[3] = 0
+        for (slot, ref) in refs.prefix(ShaderCompiler.maxStageReferences).enumerated() {
+            words[arrayBase + slot] = ref
+        }
+        return words
+    }
+
+    /// Sizes `uStageTextures` to the active effect. Only that effect's stages
+    /// ever occupy GPU memory; switching effects reallocates, and an effect
+    /// without stages holds nothing.
+    private func ensureStageTextures(count: Int) {
+        guard count != allocatedStageCount || (count > 0 && (stageTextures == nil || scratchTexture == nil)) else {
+            return
+        }
+        allocatedStageCount = count
+        stageSliceViews = []
+        stageTextures = nil
+        scratchTexture = nil
+        stageTexturesNeedClear = false
+        guard count > 0 else { return }
+
+        let scratchDescriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .bgra8Unorm, width: outputWidth, height: outputHeight, mipmapped: false
+        )
+        scratchDescriptor.usage = [.renderTarget, .shaderRead]
+        scratchDescriptor.storageMode = .private
+        scratchTexture = device.makeTexture(descriptor: scratchDescriptor)
+
+        let arrayDescriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .bgra8Unorm, width: outputWidth, height: outputHeight, mipmapped: false
+        )
+        arrayDescriptor.textureType = .type2DArray
+        arrayDescriptor.arrayLength = count
+        // Render-target usage is only needed for the one-time clear.
+        arrayDescriptor.usage = [.renderTarget, .shaderRead]
+        arrayDescriptor.storageMode = .private
+        guard let array = device.makeTexture(descriptor: arrayDescriptor) else { return }
+        stageTextures = array
+        stageSliceViews = (0..<count).compactMap { slice in
+            array.makeTextureView(
+                pixelFormat: .bgra8Unorm, textureType: .type2D, levels: 0..<1, slices: slice..<(slice + 1)
+            )
+        }
+        stageTexturesNeedClear = true
+    }
+
     private func ensureResources(depth: Int) {
-        guard depth != allocatedDepth || historyTexture == nil || workingTexture == nil || pingPong.count != 2 || outputPool == nil else {
+        guard depth != allocatedDepth || historyTexture == nil || workingTexture == nil || outputPool == nil else {
             return
         }
 
@@ -482,16 +590,6 @@ final class RenderEngine {
             personMatteValid = false
             handMaskTexture = device.makeTexture(descriptor: maskDescriptor)
         }
-
-        let pingPongDescriptor = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .bgra8Unorm, width: outputWidth, height: outputHeight, mipmapped: false
-        )
-        pingPongDescriptor.usage = [.renderTarget, .shaderRead]
-        pingPongDescriptor.storageMode = .private
-        pingPong = [
-            device.makeTexture(descriptor: pingPongDescriptor)!,
-            device.makeTexture(descriptor: pingPongDescriptor)!,
-        ]
 
         let poolAttributes: [String: Any] = [
             kCVPixelBufferWidthKey as String: outputWidth,
