@@ -17,6 +17,8 @@ enum GLSLSyntaxHighlighter {
         /// Built-in variables and constants: `gl_*`, prelude uniforms, `CE_*`.
         case builtinSymbol
         case number
+        /// `"Stage Name"` inside ceStageTexture(); GLSL has no strings otherwise.
+        case string
     }
 
     struct Token {
@@ -52,6 +54,7 @@ enum GLSLSyntaxHighlighter {
         case .builtinFunction: builtinFunctionColor
         case .builtinSymbol: builtinSymbolColor
         case .number: numberColor
+        case .string: stringColor
         }
     }
 
@@ -63,6 +66,7 @@ enum GLSLSyntaxHighlighter {
     private static let builtinFunctionColor = dynamic(light: srgb(0x3E, 0x80, 0x87), dark: srgb(0x67, 0xB7, 0xA4))
     private static let builtinSymbolColor = dynamic(light: srgb(0x0F, 0x68, 0xA0), dark: srgb(0x41, 0xA1, 0xC0))
     private static let numberColor = dynamic(light: srgb(0x1C, 0x00, 0xCF), dark: srgb(0xD0, 0xBF, 0x69))
+    private static let stringColor = dynamic(light: srgb(0xC4, 0x1A, 0x16), dark: srgb(0xFC, 0x6A, 0x5D))
 
     private static func srgb(_ red: Int, _ green: Int, _ blue: Int) -> NSColor {
         NSColor(srgbRed: CGFloat(red) / 255, green: CGFloat(green) / 255, blue: CGFloat(blue) / 255, alpha: 1)
@@ -131,7 +135,7 @@ enum GLSLSyntaxHighlighter {
         "bitfieldExtract", "bitfieldInsert", "bitfieldReverse", "bitCount",
         "findLSB", "findMSB",
         // Injected by the prelude
-        "ceHistory", "ceHandJoint",
+        "ceHistory", "ceHandJoint", "ceStageTexture", "ceSelfTexture",
     ]
 
     /// Variables and constants visible to every stage shader: GLSL built-ins
@@ -139,7 +143,9 @@ enum GLSLSyntaxHighlighter {
     static let builtinSymbols: Set<String> = [
         "gl_FragCoord", "gl_FrontFacing", "gl_PointCoord", "gl_FragDepth",
         // Prelude I/O and textures
-        "vUV", "outColor", "uPrev", "uFrames",
+        "vUV", "outColor", "uPrev", "uFrames", "uStageTextures",
+        // CEStages members
+        "uStageIndex", "uStageCount", "uStageRefs",
         // CEContext members
         "uResolution", "uTime", "uTimeDelta", "uFrameCount", "uHeadIndex", "uFrameNumber",
         // Vision data
@@ -148,7 +154,7 @@ enum GLSLSyntaxHighlighter {
         "uFaceLeftEye", "uFaceRightEye", "uFaceMouth",
         "uHandCount", "uHandInfo", "uHandJoints",
         // Prelude #defines
-        "CE_MAX_FACES", "CE_MAX_HANDS", "CE_HAND_JOINTS",
+        "CE_MAX_FACES", "CE_MAX_HANDS", "CE_HAND_JOINTS", "CE_MAX_STAGE_REFS",
         "CE_WRIST",
         "CE_THUMB_CMC", "CE_THUMB_MP", "CE_THUMB_IP", "CE_THUMB_TIP",
         "CE_INDEX_MCP", "CE_INDEX_PIP", "CE_INDEX_DIP", "CE_INDEX_TIP",
@@ -194,6 +200,18 @@ enum GLSLSyntaxHighlighter {
                     appendComment(NSRange(location: start, length: i - start), in: text, to: &tokens)
                     continue
                 }
+            }
+
+            if c == Self.doubleQuote {
+                // String literals end at the closing quote or the end of the line.
+                let start = i
+                i += 1
+                while i < length, !isNewline(text.character(at: i)) {
+                    i += 1
+                    if text.character(at: i - 1) == Self.doubleQuote { break }
+                }
+                tokens.append(Token(range: NSRange(location: start, length: i - start), kind: .string))
+                continue
             }
 
             if c == Self.hash {
@@ -334,6 +352,7 @@ enum GLSLSyntaxHighlighter {
     private static let slash = unichar(UInt8(ascii: "/"))
     private static let star = unichar(UInt8(ascii: "*"))
     private static let hash = unichar(UInt8(ascii: "#"))
+    private static let doubleQuote = unichar(UInt8(ascii: "\""))
     private static let dot = unichar(UInt8(ascii: "."))
     private static let plus = unichar(UInt8(ascii: "+"))
     private static let minus = unichar(UInt8(ascii: "-"))

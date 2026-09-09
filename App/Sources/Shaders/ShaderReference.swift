@@ -27,6 +27,12 @@ enum ShaderReference {
         Category(id: "io", title: "Inputs / outputs", symbols: io),
         Category(id: "textures", title: "Textures", symbols: textures),
         Category(
+            id: "stages",
+            title: "Stage textures (bindings 22–23)",
+            footer: "Every stage of the active effect owns one slice of uStageTextures. Stages before this one have already rendered this frame; this stage and the ones after it still hold their previous frame, which is what makes feedback loops work. Slices start out transparent black.",
+            symbols: stages
+        ),
+        Category(
             id: "context",
             title: "CEContext (binding = 2)",
             footer: "Members of the injected CEContext uniform block:",
@@ -69,6 +75,39 @@ enum ShaderReference {
             name: "uFrames",
             type: "uniform sampler3D",
             description: "A ring buffer of the last N raw camera frames. The z axis is history: slice 0 is the oldest retained frame, slice N − 1 is the newest. Prefer ceHistory() over manual z indexing."
+        ),
+    ]
+
+    static let stages: [Symbol] = [
+        Symbol(
+            id: "ceStageTexture",
+            name: "ceStageTexture(index, uv)",
+            type: "vec4",
+            description: "Output of the stage at `index` (the number shown next to it in the sidebar). Also accepts the stage's name as a string literal — ceStageTexture(\"Trail Buffer\", vUV) — which the app resolves against the effect, so reordering stages does not break it. Out-of-range indices and unknown names read transparent black."
+        ),
+        Symbol(
+            id: "ceSelfTexture",
+            name: "ceSelfTexture(uv)",
+            type: "vec4",
+            description: "This stage's own output from the previous frame — a feedback buffer. Same as ceStageTexture(uStageIndex, uv)."
+        ),
+        Symbol(
+            id: "uStageTextures",
+            name: "uStageTextures",
+            type: "uniform sampler2DArray",
+            description: "The stage outputs as a texture array, one slice per stage: texture(uStageTextures, vec3(uv, float(index))). Prefer ceStageTexture(), which range-checks the index."
+        ),
+        Symbol(
+            id: "uStageIndex",
+            name: "uStageIndex",
+            type: "int (CEStages, binding = 23)",
+            description: "This stage's position in the effect, 0-based."
+        ),
+        Symbol(
+            id: "uStageCount",
+            name: "uStageCount",
+            type: "int (CEStages, binding = 23)",
+            description: "Number of stages in the effect, i.e. slices in uStageTextures."
         ),
     ]
 

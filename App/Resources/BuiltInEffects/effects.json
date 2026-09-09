@@ -4,6 +4,7 @@
     { "name": "Chromatic Aberration", "stages": ["Chromatic Aberration"] },
     { "name": "Echo Trail", "stages": ["Echo Trail"] },
     { "name": "Background Cutout", "stages": ["Background Cutout"] },
-    { "name": "Ghost Aberration", "stages": ["Ghost Echo", "Ghost Shift"] }
+    { "name": "Ghost Aberration", "stages": ["Ghost Echo", "Ghost Shift"] },
+    { "name": "Light Trails", "stages": ["Trail Buffer", "Trail Composite"] }
   ]
 }

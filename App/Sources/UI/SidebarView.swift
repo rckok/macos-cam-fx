@@ -300,9 +300,10 @@ private struct EditorSidebar: View {
         )
 
         if !isCollapsed(effect) {
-            ForEach(store.stages(in: effect)) { stage in
+            ForEach(Array(store.stages(in: effect).enumerated()), id: \.element.id) { index, stage in
                 StageRow(
                     stage: stage,
+                    index: index,
                     onDuplicate: { state.duplicateStage(stage) },
                     onDelete: { state.removeStage(stage) }
                 )
@@ -542,8 +543,15 @@ private struct EffectHeaderRow: View {
 
 private struct StageRow: View {
     @ObservedObject var stage: Stage
+    /// Position in the effect: the value of `uStageIndex` and the argument
+    /// `ceStageTexture(index, uv)` takes to read this stage.
+    let index: Int
     let onDuplicate: () -> Void
     let onDelete: () -> Void
+
+    private var hasErrors: Bool {
+        stage.allDiagnostics.contains { $0.severity == .error }
+    }
 
     var body: some View {
         HStack(spacing: 6) {
@@ -551,6 +559,11 @@ private struct StageRow: View {
                 .font(.caption)
                 .foregroundStyle(.tertiary)
                 .help("Drag to reorder, or to move this stage to another effect")
+
+            Text("\(index)")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .help("Stage index: read this stage with ceStageTexture(\(index), uv)")
 
             Text(stage.name)
                 .lineLimit(1)
@@ -564,10 +577,10 @@ private struct StageRow: View {
                     .help(Stage.shadowedExplanation)
             }
 
-            if !stage.diagnostics.isEmpty {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.yellow)
-                    .help("Shader has compile errors")
+            if !stage.allDiagnostics.isEmpty {
+                Image(systemName: hasErrors ? "xmark.octagon.fill" : "exclamationmark.triangle.fill")
+                    .foregroundStyle(hasErrors ? .red : .yellow)
+                    .help(hasErrors ? "Shader has compile errors" : "Shader has warnings")
             }
 
             Button(action: onDuplicate) {

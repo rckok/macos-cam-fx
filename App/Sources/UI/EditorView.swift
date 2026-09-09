@@ -8,11 +8,11 @@ struct EditorView: View {
     @State private var revealNonce = 0
 
     private var errorCount: Int {
-        stage.diagnostics.filter { $0.severity == .error }.count
+        stage.allDiagnostics.filter { $0.severity == .error }.count
     }
 
     private var warningCount: Int {
-        stage.diagnostics.filter { $0.severity == .warning }.count
+        stage.allDiagnostics.filter { $0.severity == .warning }.count
     }
 
     var body: some View {
@@ -23,6 +23,8 @@ struct EditorView: View {
                     .font(.headline)
                     .onSubmit {
                         state.store.persist(stage: stage)
+                        // Other stages may reference this one by name.
+                        state.rebuildChain()
                     }
                 Spacer()
                 if stage.isShadowed {
@@ -43,18 +45,18 @@ struct EditorView: View {
                 .overlay {
                     ShaderSourceEditor(
                         text: stage.source,
-                        diagnostics: stage.diagnostics,
+                        diagnostics: stage.allDiagnostics,
                         revealLine: revealLine,
                         revealNonce: revealNonce,
                         onChange: handleEditorChange
                     )
                 }
 
-            if !stage.diagnostics.isEmpty {
+            if !stage.allDiagnostics.isEmpty {
                 Divider()
                 ScrollView {
                     VStack(alignment: .leading, spacing: 2) {
-                        ForEach(stage.diagnostics) { diagnostic in
+                        ForEach(stage.allDiagnostics) { diagnostic in
                             Button {
                                 guard let line = diagnostic.line else { return }
                                 revealLine = line

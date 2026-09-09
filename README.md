@@ -87,10 +87,17 @@ scaled (and optionally mirrored) camera frame, identical to
 `ceHistory(vUV, 0)`, so nothing carries over from whichever effect was active
 before.
 
+Every stage also keeps its output in its own texture, which any stage of the
+effect can read with `ceStageTexture()` — by index (shown next to each stage
+in the sidebar) or by name. A stage reading its own texture gets its previous
+frame, which is how feedback effects are built. See
+[Stage textures and feedback](#stage-textures-and-feedback).
+
 A stage that never samples `uPrev` does not build on its effect's chain — it
 replaces the whole frame. Every stage before it in the same effect is
-therefore invisible, so the app skips those passes entirely and marks them in
-the sidebar. Their vision detectors do not run either.
+therefore invisible — unless some stage of the effect reads stage textures —
+so the app skips those passes entirely and marks them in the sidebar. Their
+vision detectors do not run either.
 
 Use Editor Mode to add, remove and duplicate stages (the duplicate lands right
 below the original with the same shader and parameter values). Drag a stage by
@@ -137,6 +144,61 @@ that declares the interface, so you only write `main()` plus an optional
 | `uPrev` | `sampler2D` | Previous stage's output (or the scaled/mirrored camera frame for the first stage of an effect). Not sampling it disables every earlier stage — see [Effects and stages](#effects-and-stages). |
 | `uFrames` | `sampler3D` | Last **N** raw camera frames. The z axis is history — prefer `ceHistory()` over manual z indexing. |
 | `ceHistory(uv, ago)` | `vec4` | Sample the raw frame from `ago` frames ago (0 = newest). Handles ring-buffer wrapping. |
+
+### Stage textures and feedback
+
+Each stage of the active effect owns one slice of `uStageTextures`, a
+`sampler2DArray` indexed by the stage's position in the effect (the number
+shown next to it in the sidebar). After a stage has rendered, its result is
+copied into its slice, so:
+
+- stages **before** the current one hold **this frame's** output;
+- the current stage and every stage **after** it still hold the **previous
+  frame's** output.
+
+Reading your own slice therefore gives you a feedback buffer with no extra
+setup — there is nothing to configure or toggle. Slices start out transparent
+black, and only the active effect's stages occupy GPU memory.
+
+| Symbol | Type | Description |
+| --- | --- | --- |
+| `ceStageTexture(index, uv)` | `vec4` | Output of stage `index`. Also accepts the stage's **name** as a string literal: `ceStageTexture("Trail Buffer", vUV)`. Out-of-range indices and unknown names read transparent black. |
+| `ceSelfTexture(uv)` | `vec4` | This stage's own output from the previous frame. Same as `ceStageTexture(uStageIndex, uv)`. |
+| `uStageTextures` | `sampler2DArray` | The raw texture array; `texture(uStageTextures, vec3(uv, float(index)))`. Prefer `ceStageTexture()`, which range-checks. |
+| `uStageIndex` | `int` (`CEStages`, binding = 23) | This stage's position in the effect, 0-based. |
+| `uStageCount` | `int` (`CEStages`) | Number of stages in the effect. |
+
+GLSL has no strings, so the name form is rewritten by the app before
+compiling: each distinct name takes one of `CE_MAX_STAGE_REFS` (8) slots that
+the app fills with the stage's current index whenever the effect's layout
+changes. Names match a stage's display name first and its folder name second,
+case-insensitively. Reordering or renaming never requires a recompile; a name
+that matches no stage of the effect (or several) is reported as a warning on
+that line and reads transparent black until fixed.
+
+Example — a feedback buffer (`Light Trails` → `Trail Buffer`):
+
+```glsl
+void main() {
+    vec4 camera = texture(uPrev, vUV);
+    outColor = max(ceSelfTexture(vUV) * 0.92, camera);
+}
+```
+
+Example — compositing two stages by name (`Light Trails` → `Trail Composite`):
+
+```glsl
+void main() {
+    vec4 camera = ceHistory(vUV, 0);
+    vec4 trails = ceStageTexture("Trail Buffer", vUV);
+    outColor = vec4(camera.rgb + trails.rgb, camera.a);
+}
+```
+
+The composite never samples `uPrev`, which on its own would make the buffer
+stage dead work; reading it through `ceStageTexture()` keeps it rendering.
+Because stage indices can be computed at runtime, an effect in which any stage
+reads stage textures renders all of its stages.
 
 ### CEContext uniform block (binding = 2)
 
