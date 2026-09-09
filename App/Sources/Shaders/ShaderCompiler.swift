@@ -50,14 +50,39 @@ struct ShaderReflection: Codable {
 
     /// Prelude sampler carrying the previous pass' output.
     static let previousOutputSampler = "uPrev"
+    /// Prelude array texture holding every stage's output (slice = stage index).
+    static let stageTexturesSampler = "uStageTextures"
+    /// Prelude block carrying the per-stage index, count, and resolved name refs.
+    static let stagesBlock = "CEStages"
 
     /// True when the shader reads `uPrev`, i.e. it builds on the output of the
     /// stages before it. A prelude uniform the user source never references is
     /// dead-code-eliminated by the transpiler and reported with a negative
     /// Metal resource index, so it does not count.
     var samplesPreviousOutput: Bool {
-        textures.contains { $0.name == Self.previousOutputSampler && $0.mslTexture >= 0 }
+        samples(Self.previousOutputSampler)
     }
+
+    /// True when the shader reads other stages' outputs (or its own previous
+    /// frame) through `ceStageTexture` / `ceSelfTexture`.
+    var samplesStageTextures: Bool {
+        samples(Self.stageTexturesSampler)
+    }
+
+    private func samples(_ name: String) -> Bool {
+        textures.contains { $0.name == name && $0.mslTexture >= 0 }
+    }
+}
+
+/// A `ceStageTexture("Name", ...)` call in user source, rewritten to read the
+/// stage index from `uStageRefs[slot]`. The app resolves the name against the
+/// owning effect whenever its layout changes, so no recompile is needed.
+struct StageReference: Equatable {
+    let name: String
+    /// Index into `uStageRefs`.
+    let slot: Int
+    /// 1-based line in user source of the first call using this name.
+    let line: Int
 }
 
 struct ShaderCompileOutput {
@@ -65,6 +90,7 @@ struct ShaderCompileOutput {
     let reflection: ShaderReflection
     /// Warnings that did not fail the compile.
     let diagnostics: [ShaderDiagnostic]
+    let stageReferences: [StageReference]
 }
 
 struct ShaderDiagnostic: Identifiable, Equatable, Error {
@@ -97,6 +123,10 @@ enum ShaderCompiler {
     /// bindings 4-15. Bindings 16-21 carry the vision data (segmentation
     /// mattes, face/hand observations); the underlying detectors only run
     /// while a stage of the active effect actually uses one of those uniforms.
+    /// Bindings 22-23 expose every stage's output texture and the per-stage
+    /// index data behind `ceStageTexture`.
+    static let maxStageReferences = 8
+
     static let prelude = """
     #version 450
 
@@ -143,9 +173,22 @@ enum ShaderCompiler {
         vec4 uHandJoints[42]; // 21 joints per hand: xy = vUV position, z = confidence
     };
 
+    // Stage outputs. Slice i holds the output of stage i of the active effect:
+    // this frame's output for stages before the current one, the previous
+    // frame's output for the current stage itself and every stage after it.
+    layout(binding = 22) uniform sampler2DArray uStageTextures;
+
+    layout(std140, binding = 23) uniform CEStages {
+        int uStageIndex;       // position of this stage in the effect (0-based)
+        int uStageCount;       // stages in the effect (= slices in uStageTextures)
+        // Indices behind ceStageTexture("Name", ...) calls, four per vector.
+        ivec4 uStageRefs[\(maxStageReferences / 4)];
+    };
+
     #define CE_MAX_FACES 4
     #define CE_MAX_HANDS 2
     #define CE_HAND_JOINTS 21
+    #define CE_MAX_STAGE_REFS \(maxStageReferences)
 
     // Joint indices into uHandJoints (per hand), wrist to fingertips:
     #define CE_WRIST      0
@@ -181,6 +224,18 @@ enum ShaderCompiler {
         return uHandJoints[hand * CE_HAND_JOINTS + joint];
     }
 
+    // Output of stage `index`. Out-of-range indices (including the -1 the app
+    // uses for a name it could not resolve) read as transparent black.
+    vec4 ceStageTexture(int index, vec2 uv) {
+        if (index < 0 || index >= uStageCount) { return vec4(0.0); }
+        return texture(uStageTextures, vec3(uv, float(index)));
+    }
+
+    // This stage's own output from the previous frame (feedback buffer).
+    vec4 ceSelfTexture(vec2 uv) {
+        return ceStageTexture(uStageIndex, uv);
+    }
+
     """
 
     private static let preludeLineCount = prelude.components(separatedBy: "\n").count - 1
@@ -211,6 +266,9 @@ enum ShaderCompiler {
             _ = strippedVersionLine
         }
 
+        let rewrite = rewritingStageNames(in: source)
+        source = rewrite.source
+
         let fullSource = prelude + source
 
         var mslOut: UnsafeMutablePointer<CChar>?
@@ -225,7 +283,7 @@ enum ShaderCompiler {
         }
 
         let log = logOut.map { String(cString: $0) } ?? ""
-        var diagnostics = parseDiagnostics(log: log)
+        var diagnostics = parseDiagnostics(log: log) + rewrite.diagnostics
 
         guard status == 0, let mslOut, let reflectionOut else {
             diagnostics.append(contentsOf: ParamMetadataParser.parse(from: userSource).diagnostics)
@@ -245,8 +303,67 @@ enum ShaderCompiler {
         return ShaderCompileOutput(
             msl: msl,
             reflection: reflection,
-            diagnostics: diagnostics.filter { $0.severity == .warning }
+            diagnostics: diagnostics.filter { $0.severity == .warning },
+            stageReferences: rewrite.references
         )
+    }
+
+    private static let stageNameCall = try! NSRegularExpression(
+        pattern: #"\bceStageTexture\s*\(\s*"([^"\n]*)"\s*,"#
+    )
+
+    /// GLSL has no strings, so `ceStageTexture("Name", uv)` is rewritten to
+    /// `ceStageTexture(uStageRefs[k / 4][k % 4], uv)` before compiling. Each
+    /// distinct name gets one slot; the app fills the slot with the stage's
+    /// current index. The rewrite stays on the same line, so diagnostics keep
+    /// their lines.
+    static func rewritingStageNames(
+        in source: String
+    ) -> (source: String, references: [StageReference], diagnostics: [ShaderDiagnostic]) {
+        var references: [StageReference] = []
+        var diagnostics: [ShaderDiagnostic] = []
+        var rewritten: [String] = []
+
+        for (index, line) in source.components(separatedBy: "\n").enumerated() {
+            let lineNumber = index + 1
+            let nsLine = line as NSString
+            let matches = stageNameCall.matches(in: line, range: NSRange(location: 0, length: nsLine.length))
+            guard !matches.isEmpty else {
+                rewritten.append(line)
+                continue
+            }
+
+            var output = line
+            for match in matches.reversed() {
+                let name = nsLine.substring(with: match.range(at: 1)).trimmingCharacters(in: .whitespaces)
+                let slot: Int
+                if let existing = references.first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
+                    slot = existing.slot
+                } else if references.count < maxStageReferences {
+                    slot = references.count
+                    references.append(StageReference(name: name, slot: slot, line: lineNumber))
+                } else {
+                    diagnostics.append(ShaderDiagnostic(
+                        line: lineNumber,
+                        message: "ceStageTexture references more than \(maxStageReferences) distinct stage names",
+                        severity: .error
+                    ))
+                    continue
+                }
+                if name.isEmpty {
+                    diagnostics.append(ShaderDiagnostic(
+                        line: lineNumber,
+                        message: "ceStageTexture stage name is empty",
+                        severity: .error
+                    ))
+                }
+                let replacement = "ceStageTexture(uStageRefs[\(slot / 4)][\(slot % 4)],"
+                output = (output as NSString).replacingCharacters(in: match.range, with: replacement)
+            }
+            rewritten.append(output)
+        }
+
+        return (rewritten.joined(separator: "\n"), references, diagnostics)
     }
 
     private static func applyingParamMetadata(

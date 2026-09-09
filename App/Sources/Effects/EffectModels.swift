@@ -314,7 +314,12 @@ final class Stage: Identifiable, ObservableObject {
     @Published var source: String
     @Published var parameters: [StageParameter]
     @Published var textureBindings: [StageTextureBinding]
+    /// From the last compile: errors, or warnings when it succeeded.
     @Published var diagnostics: [ShaderDiagnostic] = []
+    /// From the owning effect's layout: `ceStageTexture("Name", ...)` calls
+    /// whose name matches no stage (or several). Recomputed on every chain
+    /// rebuild rather than on compile, so they follow renames and moves.
+    @Published var layoutDiagnostics: [ShaderDiagnostic] = []
     /// Dropped from the effect's chain because a later stage of the same
     /// effect never samples `uPrev` and therefore discards this one's output.
     @Published var isShadowed = false
@@ -322,15 +327,21 @@ final class Stage: Identifiable, ObservableObject {
     /// Set after a successful compile; consumed by the render engine.
     var compiled: CompiledStage?
 
+    /// Everything the editor and sidebar should surface for this stage.
+    var allDiagnostics: [ShaderDiagnostic] {
+        diagnostics + layoutDiagnostics
+    }
+
     /// Shown next to stages whose `isShadowed` flag is set.
     static let shadowedExplanation = """
     Not rendered: a later stage of this effect never samples uPrev, so it \
-    replaces everything this stage would contribute.
+    replaces everything this stage would contribute. Reading this stage with \
+    ceStageTexture() from any stage of the effect would keep it rendering.
     """
 
     /// Prelude-provided samplers that must not appear as media-library pickers.
     static let reservedTextureNames: Set<String> = [
-        "uPrev", "uFrames",
+        ShaderReflection.previousOutputSampler, "uFrames", ShaderReflection.stageTexturesSampler,
         VisionUniforms.personMatteSampler,
         VisionUniforms.faceMaskSampler,
         VisionUniforms.handMaskSampler,

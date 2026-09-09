@@ -8,6 +8,9 @@ final class CompiledStage {
     let reflection: ShaderReflection
     /// Warnings from GLSL compile that did not fail the build.
     let warnings: [ShaderDiagnostic]
+    /// Stage names used in `ceStageTexture("Name", ...)` calls, resolved to
+    /// indices by the app whenever the owning effect's layout changes.
+    let stageReferences: [StageReference]
     /// Buffer backing the user's `Params` block; nil when the shader has none.
     let paramsBuffer: MTLBuffer?
     /// Metal constant-buffer lengths keyed by MSL buffer index. SPIR-V
@@ -18,6 +21,7 @@ final class CompiledStage {
     init(device: MTLDevice, vertexFunction: MTLFunction, output: ShaderCompileOutput) throws {
         self.reflection = output.reflection
         self.warnings = output.diagnostics
+        self.stageReferences = output.stageReferences
 
         let library: MTLLibrary
         do {
