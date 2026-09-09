@@ -149,7 +149,7 @@ final class VisionProcessor {
         guard features != requestFeatures else { return }
         requestFeatures = features
 
-        if features.contains(.faceMask) {
+        if features.needsFaceLandmarks {
             faceRequest = VNDetectFaceLandmarksRequest()
         } else if features.contains(.faceRects) {
             faceRequest = VNDetectFaceRectanglesRequest()
@@ -183,15 +183,22 @@ final class VisionProcessor {
             .prefix(VisionUniforms.maxFaces)
             .map { convert(rect: $0.boundingBox, mirrored: mirrored) }
 
-        if features.contains(.faceMask) {
+        if features.needsFaceLandmarks {
             let imageSize = CGSize(
                 width: CVPixelBufferGetWidth(pixelBuffer),
                 height: CVPixelBufferGetHeight(pixelBuffer)
             )
-            let regions = faceObservations.map { face in
-                faceRegions(for: face, imageSize: imageSize, mirrored: mirrored)
+            if features.contains(.faceMask) {
+                let regions = faceObservations.map { face in
+                    faceRegions(for: face, imageSize: imageSize, mirrored: mirrored)
+                }
+                snapshot.faceMask = faceMaskRasterizer.rasterize(faces: regions, device: device)
             }
-            snapshot.faceMask = faceMaskRasterizer.rasterize(faces: regions, device: device)
+            if features.contains(.facePoints) {
+                snapshot.facePoints = faceObservations
+                    .prefix(VisionUniforms.maxFaces)
+                    .map { facePoints(for: $0, imageSize: imageSize, mirrored: mirrored) }
+            }
         }
 
         if let handRequest {
@@ -245,17 +252,27 @@ final class VisionProcessor {
         return VisionHand(chirality: chirality, confidence: Float(observation.confidence), joints: joints)
     }
 
+    /// Landmark region points in vUV space.
+    private func convert(
+        region: VNFaceLandmarkRegion2D?,
+        imageSize: CGSize,
+        mirrored: Bool
+    ) -> [SIMD2<Float>] {
+        guard let region else { return [] }
+        return region.pointsInImage(imageSize: imageSize).map { point in
+            let normalized = CGPoint(x: point.x / imageSize.width, y: point.y / imageSize.height)
+            return convert(point: normalized, mirrored: mirrored)
+        }
+    }
+
     private func faceRegions(
         for face: VNFaceObservation,
         imageSize: CGSize,
         mirrored: Bool
     ) -> FaceMaskRasterizer.FaceRegions {
         func polygon(_ region: VNFaceLandmarkRegion2D?) -> [CGPoint] {
-            guard let region else { return [] }
-            return region.pointsInImage(imageSize: imageSize).map { point in
-                let normalized = CGPoint(x: point.x / imageSize.width, y: point.y / imageSize.height)
-                let uv = convert(point: normalized, mirrored: mirrored)
-                return CGPoint(x: CGFloat(uv.x), y: CGFloat(uv.y))
+            convert(region: region, imageSize: imageSize, mirrored: mirrored).map { uv in
+                CGPoint(x: CGFloat(uv.x), y: CGFloat(uv.y))
             }
         }
         return FaceMaskRasterizer.FaceRegions(
@@ -263,6 +280,49 @@ final class VisionProcessor {
             rightEye: polygon(face.landmarks?.rightEye),
             mouth: polygon(face.landmarks?.outerLips)
         )
+    }
+
+    private func facePoints(
+        for face: VNFaceObservation,
+        imageSize: CGSize,
+        mirrored: Bool
+    ) -> VisionFacePoints {
+        func points(_ region: VNFaceLandmarkRegion2D?) -> [SIMD2<Float>] {
+            convert(region: region, imageSize: imageSize, mirrored: mirrored)
+        }
+        let landmarks = face.landmarks
+        return VisionFacePoints(
+            leftEye: Self.center(contour: points(landmarks?.leftEye), anchor: points(landmarks?.leftPupil)),
+            rightEye: Self.center(contour: points(landmarks?.rightEye), anchor: points(landmarks?.rightPupil)),
+            mouth: Self.center(contour: points(landmarks?.outerLips), anchor: [])
+        )
+    }
+
+    /// Reduces a landmark region to xy = center, z = 1 when located, w = half
+    /// the contour's width (same units as `uFaceRects.z`). `anchor` (the pupil,
+    /// for eyes) is a better center than the contour centroid when Vision's
+    /// landmark constellation provides it.
+    private static func center(contour: [SIMD2<Float>], anchor: [SIMD2<Float>]) -> SIMD4<Float> {
+        var minimumX = Float.greatestFiniteMagnitude
+        var maximumX = -Float.greatestFiniteMagnitude
+        var sum = SIMD2<Float>.zero
+        for point in contour {
+            sum += point
+            minimumX = min(minimumX, point.x)
+            maximumX = max(maximumX, point.x)
+        }
+
+        let position: SIMD2<Float>
+        if let anchor = anchor.first {
+            position = anchor
+        } else if !contour.isEmpty {
+            position = sum / Float(contour.count)
+        } else {
+            return .zero
+        }
+
+        let halfWidth = contour.isEmpty ? 0 : (maximumX - minimumX) / 2
+        return SIMD4<Float>(position.x, position.y, 1, halfWidth)
     }
 
     // MARK: Person matte import
