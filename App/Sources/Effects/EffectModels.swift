@@ -204,6 +204,31 @@ struct Effect: Identifiable, Codable, Equatable {
         self.name = name
         self.stageIDs = stageIDs
     }
+
+    /// Built-in effects and stages ship inside the app bundle and carry this
+    /// prefix; user stage IDs are folder names, which never contain ":".
+    static let builtInIDPrefix = "builtin:"
+
+    /// Shipped with the app: viewable and usable, but its shader sources,
+    /// names and stage layout cannot be edited. Duplicate it to customize.
+    var isBuiltIn: Bool {
+        id.hasPrefix(Self.builtInIDPrefix)
+    }
+}
+
+/// Which group of effects the sidebar lists.
+enum EffectsSource: String, CaseIterable, Identifiable {
+    case builtIn
+    case custom
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .builtIn: return "Built-in"
+        case .custom: return "Custom"
+        }
+    }
 }
 
 /// Where a stage lands when it is dragged into an effect.
@@ -306,9 +331,15 @@ struct StageManifest: Codable {
 
 /// One stage of an effect: a GLSL shader on disk plus runtime compile state.
 final class Stage: Identifiable, ObservableObject {
-    /// Folder name; doubles as the stable identifier.
+    /// Folder name; doubles as the stable identifier. Built-in stages are
+    /// prefixed with `Effect.builtInIDPrefix`.
     let id: String
+    /// The stage folder: in Application Support for user stages, inside the
+    /// app bundle for built-in ones.
     let folderURL: URL
+    /// Shipped with the app. The shader and name are read-only; parameter and
+    /// media choices still apply and are persisted in config.json.
+    let isBuiltIn: Bool
 
     @Published var name: String
     @Published var source: String
@@ -353,10 +384,12 @@ final class Stage: Identifiable, ObservableObject {
         name: String,
         source: String,
         parameters: [StageParameter],
-        textureBindings: [StageTextureBinding] = []
+        textureBindings: [StageTextureBinding] = [],
+        isBuiltIn: Bool = false
     ) {
         self.id = id
         self.folderURL = folderURL
+        self.isBuiltIn = isBuiltIn
         self.name = name
         self.source = source
         self.parameters = parameters
@@ -419,6 +452,25 @@ final class Stage: Identifiable, ObservableObject {
         for parameter in parameters {
             let type = StageParameter.normalizeReflectionType(parameter.type)
             compiled.writeParam(name: parameter.name, type: type, values: parameter.values)
+        }
+    }
+
+    /// Overlays saved parameter values and media picks onto this stage,
+    /// keeping the shader-defined ranges. Used for built-in stages, whose
+    /// bundled stage.json is never rewritten.
+    func applyManifestValues(_ manifest: StageManifest) {
+        for (name, param) in manifest.params ?? [:] {
+            guard let index = parameters.firstIndex(where: { $0.name == name }),
+                  parameters[index].values.count == param.value.count
+            else { continue }
+            parameters[index].values = param.value
+        }
+        for (name, binding) in manifest.textures ?? [:] {
+            if let index = textureBindings.firstIndex(where: { $0.name == name }) {
+                textureBindings[index].mediaID = binding.media
+            } else {
+                textureBindings.append(StageTextureBinding(name: name, mediaID: binding.media))
+            }
         }
     }
 

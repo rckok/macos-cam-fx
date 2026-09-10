@@ -22,6 +22,9 @@ final class AppState: ObservableObject {
     let engine: RenderEngine
 
     @Published private(set) var selection: EffectSelection?
+    /// Which group the sidebar lists. Follows the selection, so activating an
+    /// effect from either group switches the list to it.
+    @Published var effectsSource: EffectsSource = .builtIn
     @Published var viewMode: ViewMode = .basic {
         didSet {
             guard viewMode != oldValue else { return }
@@ -124,11 +127,12 @@ final class AppState: ObservableObject {
             }
             .store(in: &cancellables)
 
-        let restored = store.config.activeEffectID.flatMap { store.effect(id: $0) } ?? store.effects.first
+        let restored = store.config.activeEffectID.flatMap { store.effect(id: $0) } ?? store.allEffects.first
         selection = restored.map { .effect($0.id) }
+        effectsSource = restored?.isBuiltIn == false ? .custom : .builtIn
         capture.start()
 
-        for stage in store.stages {
+        for stage in store.allStages {
             scheduleCompile(stage, debounce: false)
         }
     }
@@ -139,6 +143,9 @@ final class AppState: ObservableObject {
         guard selection != newSelection else { return }
         let previousEffectID = activeEffectID
         selection = newSelection
+        if let effect = activeEffect {
+            effectsSource = effect.isBuiltIn ? .builtIn : .custom
+        }
         guard activeEffectID != previousEffectID else { return }
         store.config.activeEffectID = activeEffectID
         store.saveConfigSoon()
@@ -154,7 +161,7 @@ final class AppState: ObservableObject {
         case .stage(let id) where store.stage(id: id) != nil && store.effect(containing: id) != nil:
             return
         default:
-            selection = store.effects.first.map { .effect($0.id) }
+            selection = (store.effects.first ?? store.allEffects.first).map { .effect($0.id) }
             store.config.activeEffectID = activeEffectID
             store.saveConfigSoon()
         }
@@ -173,7 +180,7 @@ final class AppState: ObservableObject {
         var activeChain: [ChainEntry] = []
         var activeStageCount = 0
         var stageRefs: [String: [Int32]] = [:]
-        for effect in store.effects {
+        for effect in store.allEffects {
             let chain = renderedStages(of: effect)
             rendered.formUnion(chain.map(\.stage.id))
             if effect.id == activeEffectID {
@@ -189,7 +196,7 @@ final class AppState: ObservableObject {
             }
         }
 
-        for stage in store.stages {
+        for stage in store.allStages {
             let shadowed = stage.compiled != nil && !rendered.contains(stage.id)
             if stage.isShadowed != shadowed {
                 stage.isShadowed = shadowed
@@ -275,7 +282,8 @@ final class AppState: ObservableObject {
     // MARK: Mutations — stages
 
     func addStage(toEffect effectID: String? = nil) {
-        guard let target = effectID ?? activeEffectID ?? store.effects.first?.id,
+        let activeCustomID = activeEffect.flatMap { $0.isBuiltIn ? nil : $0.id }
+        guard let target = effectID ?? activeCustomID ?? store.effects.first?.id,
               let stage = store.addStage(named: "New Stage", toEffect: target)
         else { return }
         select(.stage(stage.id))
@@ -289,6 +297,7 @@ final class AppState: ObservableObject {
     }
 
     func removeStage(_ stage: Stage) {
+        guard !stage.isBuiltIn else { return }
         compileTasks[stage.id]?.cancel()
         compileTasks[stage.id] = nil
         let owner = store.effect(containing: stage.id)
@@ -316,6 +325,16 @@ final class AppState: ObservableObject {
         } else {
             select(.effect(effect.id))
         }
+    }
+
+    /// Copies an effect into the custom group and selects the copy. The only
+    /// way to edit a built-in effect.
+    func duplicateEffect(_ effect: Effect) {
+        guard let copy = store.duplicateEffect(effect) else { return }
+        for stage in store.stages(in: copy) {
+            scheduleCompile(stage, debounce: false)
+        }
+        select(.effect(copy.id))
     }
 
     func renameEffect(_ effectID: String, to name: String) {
@@ -361,7 +380,7 @@ final class AppState: ObservableObject {
     }
 
     func removeMediaAsset(id: String) {
-        for stage in store.stages {
+        for stage in store.allStages {
             var changed = false
             for index in stage.textureBindings.indices where stage.textureBindings[index].mediaID == id {
                 stage.textureBindings[index].mediaID = nil

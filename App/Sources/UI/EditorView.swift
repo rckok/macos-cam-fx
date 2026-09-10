@@ -18,14 +18,30 @@ struct EditorView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                TextField("Stage name", text: $stage.name)
-                    .textFieldStyle(.plain)
-                    .font(.headline)
-                    .onSubmit {
-                        state.store.persist(stage: stage)
-                        // Other stages may reference this one by name.
-                        state.rebuildChain()
+                if stage.isBuiltIn {
+                    Text(stage.name)
+                        .font(.headline)
+                    Label("Built-in", systemImage: "lock.fill")
+                        .foregroundStyle(.secondary)
+                        .font(.caption)
+                        .help("Built-in stages are read-only. Duplicate the effect to Custom to edit a copy.")
+                    if let effect = state.store.effect(containing: stage.id) {
+                        Button("Duplicate to Custom") {
+                            state.duplicateEffect(effect)
+                        }
+                        .controlSize(.small)
+                        .help("Copy \"\(effect.name)\" and its stages into Custom effects, where they can be edited")
                     }
+                } else {
+                    TextField("Stage name", text: $stage.name)
+                        .textFieldStyle(.plain)
+                        .font(.headline)
+                        .onSubmit {
+                            state.store.persist(stage: stage)
+                            // Other stages may reference this one by name.
+                            state.rebuildChain()
+                        }
+                }
                 Spacer()
                 if stage.isShadowed {
                     Label("Not rendered", systemImage: "eye.slash")
@@ -48,6 +64,7 @@ struct EditorView: View {
                         diagnostics: stage.allDiagnostics,
                         revealLine: revealLine,
                         revealNonce: revealNonce,
+                        isEditable: !stage.isBuiltIn,
                         onChange: handleEditorChange
                     )
                 }
@@ -113,7 +130,7 @@ struct EditorView: View {
 
     private func handleEditorChange(_ newText: String) {
         DispatchQueue.main.async {
-            guard stage.source != newText else { return }
+            guard !stage.isBuiltIn, stage.source != newText else { return }
             stage.source = newText
             state.scheduleCompile(stage, debounce: true)
         }

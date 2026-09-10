@@ -81,6 +81,17 @@ time: the one that owns the sidebar selection, so clicking an effect (or any
 stage inside it) activates that effect. There is nothing to enable or
 disable — picking an effect *is* turning it on.
 
+The sidebar lists two groups, switched with the **Built-in / Custom** control:
+
+- **Built-in** effects ship inside the app and are loaded straight from the
+  bundle, so the list always matches the installed version. They can be
+  activated and their controls adjusted (values are remembered), and in Editor
+  Mode their stages and GLSL can be read — but not edited, renamed, reordered
+  or deleted. Use **Duplicate to Custom** (on the effect row, its context menu,
+  or the editor header) to get an editable copy of the effect and its stages.
+- **Custom** effects are yours: everything below about adding, editing and
+  moving stages applies to them.
+
 Within an effect, stages run top to bottom, each one sampling the previous
 stage's output through `uPrev`. The first stage of every effect sees the
 scaled (and optionally mirrored) camera frame, identical to
@@ -128,6 +139,13 @@ timer, and a `config.json` the app cannot read is set aside as
 `config.unreadable.json` instead of being overwritten. A stage folder that no
 config claims becomes an effect of its own, named after the folder, so it
 stays reachable.
+
+Built-in effects are never copied there. They are read from the app bundle
+(`BuiltInEffects/effects.json` plus one folder per stage) on every launch, and
+only the parameter values and media picks you change on them are saved, under
+`builtInStageOverrides` in `config.json`. Earlier versions seeded copies of the
+built-in stages into the `Stages` folder; those copies simply remain as custom
+effects.
 
 ## Writing stages
 

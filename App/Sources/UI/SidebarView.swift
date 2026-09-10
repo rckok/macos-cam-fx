@@ -45,6 +45,29 @@ private struct CameraSourceSection: View {
     }
 }
 
+/// Header of the effects section: switches the list between the effects that
+/// ship with the app and the user's own.
+private struct EffectsSectionHeader: View {
+    @EnvironmentObject private var state: AppState
+
+    var body: some View {
+        HStack {
+            Text("Effects")
+            Spacer()
+            Picker("Effects", selection: $state.effectsSource) {
+                ForEach(EffectsSource.allCases) { source in
+                    Text(source.title).tag(source)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .controlSize(.small)
+            .frame(width: 140)
+            .help("Built-in effects ship with the app and are read-only; Custom effects are yours to edit.")
+        }
+    }
+}
+
 // MARK: - Basic Mode
 
 private struct BasicSidebar: View {
@@ -69,13 +92,16 @@ private struct BasicSidebar: View {
         List(selection: activeEffectSelection) {
             CameraSourceSection(capture: capture)
 
-            Section("Effects") {
-                if store.effects.isEmpty {
-                    Text("No effects yet. Switch to Editor Mode to build one.")
+            Section {
+                let effects = store.effects(in: state.effectsSource)
+                if effects.isEmpty {
+                    Text(state.effectsSource == .custom
+                         ? "No custom effects yet. Switch to Editor Mode to build one, or duplicate a built-in effect."
+                         : "This build ships no effects.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
-                    ForEach(store.effects) { effect in
+                    ForEach(effects) { effect in
                         BasicEffectRow(
                             effect: effect,
                             isActive: state.activeEffectID == effect.id
@@ -83,6 +109,8 @@ private struct BasicSidebar: View {
                         .tag(effect.id)
                     }
                 }
+            } header: {
+                EffectsSectionHeader()
             }
         }
     }
@@ -231,20 +259,39 @@ private struct EditorSidebar: View {
         List(selection: selection) {
             CameraSourceSection(capture: capture)
 
-            Section("Effects") {
-                ForEach(store.effects) { effect in
-                    rows(for: effect)
+            Section {
+                if state.effectsSource == .builtIn {
+                    ForEach(store.builtInEffects) { effect in
+                        builtInRows(for: effect)
+                    }
+                } else {
+                    if store.effects.isEmpty {
+                        Text("No custom effects yet. Add one below, or duplicate a built-in effect.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(store.effects) { effect in
+                        rows(for: effect)
+                    }
                 }
+            } header: {
+                EffectsSectionHeader()
             }
         }
         .safeAreaInset(edge: .bottom) {
             HStack {
-                Button {
-                    state.addEffect()
-                } label: {
-                    Label("Add Effect", systemImage: "plus")
+                if state.effectsSource == .builtIn {
+                    Text("Built-in effects are read-only. Duplicate one to edit a copy in Custom.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Button {
+                        state.addEffect()
+                    } label: {
+                        Label("Add Effect", systemImage: "plus")
+                    }
+                    .buttonStyle(.borderless)
                 }
-                .buttonStyle(.borderless)
 
                 Spacer()
             }
@@ -279,12 +326,14 @@ private struct EditorSidebar: View {
             isExpanded: !isCollapsed(effect),
             isActive: state.activeEffectID == effect.id,
             isEditing: editingEffectID == effect.id,
+            isReadOnly: false,
             editingName: $editingEffectName,
             onToggleExpanded: { toggleCollapsed(effect.id) },
             onStartEditing: { startEditing(effect) },
             onCommitEditing: { commitEditing(effect) },
             onCancelEditing: { cancelEditing() },
             onDelete: { requestDeleteEffect(effect) },
+            onDuplicate: { state.duplicateEffect(effect) },
             focusedEffectID: $focusedEffectID
         )
         .tag(EffectSelection.effect(effect.id))
@@ -304,6 +353,7 @@ private struct EditorSidebar: View {
                 StageRow(
                     stage: stage,
                     index: index,
+                    isReadOnly: false,
                     onDuplicate: { state.duplicateStage(stage) },
                     onDelete: { state.removeStage(stage) }
                 )
@@ -327,6 +377,42 @@ private struct EditorSidebar: View {
             .foregroundStyle(.secondary)
             .padding(.leading, stageIndent)
             .stageDropZone(.end(effectID: effect.id), current: $stageDropTarget, perform: moveStage)
+        }
+    }
+
+    /// A built-in effect: selectable and expandable like a custom one, but with
+    /// no drag, rename, delete or stage editing. "Duplicate" is the way in.
+    @ViewBuilder
+    private func builtInRows(for effect: Effect) -> some View {
+        EffectHeaderRow(
+            effect: effect,
+            isExpanded: !isCollapsed(effect),
+            isActive: state.activeEffectID == effect.id,
+            isEditing: false,
+            isReadOnly: true,
+            editingName: $editingEffectName,
+            onToggleExpanded: { toggleCollapsed(effect.id) },
+            onStartEditing: {},
+            onCommitEditing: {},
+            onCancelEditing: {},
+            onDelete: {},
+            onDuplicate: { state.duplicateEffect(effect) },
+            focusedEffectID: $focusedEffectID
+        )
+        .tag(EffectSelection.effect(effect.id))
+
+        if !isCollapsed(effect) {
+            ForEach(Array(store.stages(in: effect).enumerated()), id: \.element.id) { index, stage in
+                StageRow(
+                    stage: stage,
+                    index: index,
+                    isReadOnly: true,
+                    onDuplicate: {},
+                    onDelete: {}
+                )
+                .tag(EffectSelection.stage(stage.id))
+                .padding(.leading, stageIndent)
+            }
         }
     }
 
@@ -477,12 +563,15 @@ private struct EffectHeaderRow: View {
     let isExpanded: Bool
     let isActive: Bool
     let isEditing: Bool
+    /// Built-in effects: no rename or delete; duplicating is the only action.
+    let isReadOnly: Bool
     @Binding var editingName: String
     let onToggleExpanded: () -> Void
     let onStartEditing: () -> Void
     let onCommitEditing: () -> Void
     let onCancelEditing: () -> Void
     let onDelete: () -> Void
+    let onDuplicate: () -> Void
     var focusedEffectID: FocusState<String?>.Binding
 
     var body: some View {
@@ -517,26 +606,40 @@ private struct EffectHeaderRow: View {
 
             Spacer()
 
-            if !isEditing {
-                Button(action: onStartEditing) {
-                    Image(systemName: "pencil")
+            if isReadOnly {
+                Button(action: onDuplicate) {
+                    Image(systemName: "plus.square.on.square")
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
-                .help("Rename effect")
-            }
+                .help("Duplicate to Custom effects, where the copy can be edited")
+            } else {
+                if !isEditing {
+                    Button(action: onStartEditing) {
+                        Image(systemName: "pencil")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Rename effect")
+                }
 
-            Button(action: onDelete) {
-                Image(systemName: "trash")
-                    .foregroundStyle(.secondary)
+                Button(action: onDelete) {
+                    Image(systemName: "trash")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Delete effect")
             }
-            .buttonStyle(.plain)
-            .help("Delete effect")
         }
         .padding(.vertical, 3)
         .contextMenu {
-            Button("Rename", action: onStartEditing)
-            Button("Delete", role: .destructive, action: onDelete)
+            if isReadOnly {
+                Button("Duplicate to Custom", action: onDuplicate)
+            } else {
+                Button("Rename", action: onStartEditing)
+                Button("Duplicate", action: onDuplicate)
+                Button("Delete", role: .destructive, action: onDelete)
+            }
         }
     }
 }
@@ -546,6 +649,8 @@ private struct StageRow: View {
     /// Position in the effect: the value of `uStageIndex` and the argument
     /// `ceStageTexture(index, uv)` takes to read this stage.
     let index: Int
+    /// Built-in stages: no drag handle, duplicate or remove.
+    let isReadOnly: Bool
     let onDuplicate: () -> Void
     let onDelete: () -> Void
 
@@ -555,10 +660,12 @@ private struct StageRow: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Image(systemName: "line.3.horizontal")
+            Image(systemName: isReadOnly ? "lock" : "line.3.horizontal")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
-                .help("Drag to reorder, or to move this stage to another effect")
+                .help(isReadOnly
+                      ? "Built-in stage: read-only"
+                      : "Drag to reorder, or to move this stage to another effect")
 
             Text("\(index)")
                 .font(.caption.monospacedDigit())
@@ -583,24 +690,28 @@ private struct StageRow: View {
                     .help(hasErrors ? "Shader has compile errors" : "Shader has warnings")
             }
 
-            Button(action: onDuplicate) {
-                Image(systemName: "plus.square.on.square")
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .help("Duplicate stage")
+            if !isReadOnly {
+                Button(action: onDuplicate) {
+                    Image(systemName: "plus.square.on.square")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Duplicate stage")
 
-            Button(action: onDelete) {
-                Image(systemName: "minus.circle")
-                    .foregroundStyle(.secondary)
+                Button(action: onDelete) {
+                    Image(systemName: "minus.circle")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Remove stage")
             }
-            .buttonStyle(.plain)
-            .help("Remove stage")
         }
         .padding(.vertical, 3)
         .contextMenu {
-            Button("Duplicate", action: onDuplicate)
-            Button("Remove", action: onDelete)
+            if !isReadOnly {
+                Button("Duplicate", action: onDuplicate)
+                Button("Remove", action: onDelete)
+            }
         }
     }
 }
