@@ -81,16 +81,34 @@ time: the one that owns the sidebar selection, so clicking an effect (or any
 stage inside it) activates that effect. There is nothing to enable or
 disable — picking an effect *is* turning it on.
 
+The sidebar lists two groups, switched with the **Built-in / Custom** control:
+
+- **Built-in** effects ship inside the app and are loaded straight from the
+  bundle, so the list always matches the installed version. They can be
+  activated and their controls adjusted (values are remembered), and in Editor
+  Mode their stages and GLSL can be read — but not edited, renamed, reordered
+  or deleted. Use **Duplicate to Custom** (on the effect row, its context menu,
+  or the editor header) to get an editable copy of the effect and its stages.
+- **Custom** effects are yours: everything below about adding, editing and
+  moving stages applies to them.
+
 Within an effect, stages run top to bottom, each one sampling the previous
 stage's output through `uPrev`. The first stage of every effect sees the
 scaled (and optionally mirrored) camera frame, identical to
 `ceHistory(vUV, 0)`, so nothing carries over from whichever effect was active
 before.
 
+Every stage also keeps its output in its own texture, which any stage of the
+effect can read with `ceStageTexture()` — by index (shown next to each stage
+in the sidebar) or by name. A stage reading its own texture gets its previous
+frame, which is how feedback effects are built. See
+[Stage textures and feedback](#stage-textures-and-feedback).
+
 A stage that never samples `uPrev` does not build on its effect's chain — it
 replaces the whole frame. Every stage before it in the same effect is
-therefore invisible, so the app skips those passes entirely and marks them in
-the sidebar. Their vision detectors do not run either.
+therefore invisible — unless some stage of the effect reads stage textures —
+so the app skips those passes entirely and marks them in the sidebar. Their
+vision detectors do not run either.
 
 Use Editor Mode to add, remove and duplicate stages (the duplicate lands right
 below the original with the same shader and parameter values). Drag a stage by
@@ -122,6 +140,13 @@ timer, and a `config.json` the app cannot read is set aside as
 config claims becomes an effect of its own, named after the folder, so it
 stays reachable.
 
+Built-in effects are never copied there. They are read from the app bundle
+(`BuiltInEffects/effects.json` plus one folder per stage) on every launch, and
+only the parameter values and media picks you change on them are saved, under
+`builtInStageOverrides` in `config.json`. Earlier versions seeded copies of the
+built-in stages into the `Stages` folder; those copies simply remain as custom
+effects.
+
 ## Writing stages
 
 Your shader is a GLSL 450 **fragment shader body**. The app injects a prelude
@@ -137,6 +162,82 @@ that declares the interface, so you only write `main()` plus an optional
 | `uPrev` | `sampler2D` | Previous stage's output (or the scaled/mirrored camera frame for the first stage of an effect). Not sampling it disables every earlier stage — see [Effects and stages](#effects-and-stages). |
 | `uFrames` | `sampler3D` | Last **N** raw camera frames. The z axis is history — prefer `ceHistory()` over manual z indexing. |
 | `ceHistory(uv, ago)` | `vec4` | Sample the raw frame from `ago` frames ago (0 = newest). Handles ring-buffer wrapping. |
+
+### Blur helpers
+
+| Symbol | Type | Description |
+| --- | --- | --- |
+| `ceDiscBlur(tex, uv, radius, taps, falloff)` | `vec4` | Single-pass disc blur of any `sampler2D`. `radius` in pixels; `taps` is quality and cost (16–32 is plenty); `falloff` 0.0 = flat bokeh disc, 1.0 = soft Gaussian-like. Samples sit on a golden-angle spiral rotated per pixel, so few taps read as fine grain, not rings. |
+| `ceGauss3x3(tex, uv, spread)` | `vec4` | Exact 3×3 Gaussian from four bilinear reads at half-texel offsets. `spread` = 1.0 is one texel; larger values widen it at the same cost. |
+| `ceNoise(pixel)` | `float` | Per-pixel noise in [0, 1) with no visible pattern. Pass `vUV * uResolution`. |
+
+```glsl
+void main() {
+    outColor = ceDiscBlur(uPrev, vUV, 12.0, 24, 1.0);
+}
+```
+
+A single pass costs `taps` reads per pixel however wide the blur is, which is
+the right trade for moderate radii. For a large, accurate Gaussian, use two
+stages instead — one blurring horizontally, the next vertically through
+`uPrev` — which needs 2N reads rather than N². And for a very wide, cheap blur
+that may take a few frames to settle (backgrounds, glows), feed the result
+back: `mix(ceSelfTexture(vUV), ceDiscBlur(uPrev, vUV, 6.0, 8, 1.0), 0.3)`.
+
+### Stage textures and feedback
+
+Each stage of the active effect owns one slice of `uStageTextures`, a
+`sampler2DArray` indexed by the stage's position in the effect (the number
+shown next to it in the sidebar). After a stage has rendered, its result is
+copied into its slice, so:
+
+- stages **before** the current one hold **this frame's** output;
+- the current stage and every stage **after** it still hold the **previous
+  frame's** output.
+
+Reading your own slice therefore gives you a feedback buffer with no extra
+setup — there is nothing to configure or toggle. Slices start out transparent
+black, and only the active effect's stages occupy GPU memory.
+
+| Symbol | Type | Description |
+| --- | --- | --- |
+| `ceStageTexture(index, uv)` | `vec4` | Output of stage `index`. Also accepts the stage's **name** as a string literal: `ceStageTexture("Trail Buffer", vUV)`. Out-of-range indices and unknown names read transparent black. |
+| `ceSelfTexture(uv)` | `vec4` | This stage's own output from the previous frame. Same as `ceStageTexture(uStageIndex, uv)`. |
+| `uStageTextures` | `sampler2DArray` | The raw texture array; `texture(uStageTextures, vec3(uv, float(index)))`. Prefer `ceStageTexture()`, which range-checks. |
+| `uStageIndex` | `int` (`CEStages`, binding = 23) | This stage's position in the effect, 0-based. |
+| `uStageCount` | `int` (`CEStages`) | Number of stages in the effect. |
+
+GLSL has no strings, so the name form is rewritten by the app before
+compiling: each distinct name takes one of `CE_MAX_STAGE_REFS` (8) slots that
+the app fills with the stage's current index whenever the effect's layout
+changes. Names match a stage's display name first and its folder name second,
+case-insensitively. Reordering or renaming never requires a recompile; a name
+that matches no stage of the effect (or several) is reported as a warning on
+that line and reads transparent black until fixed.
+
+Example — a feedback buffer (`Light Trails` → `Trail Buffer`):
+
+```glsl
+void main() {
+    vec4 camera = texture(uPrev, vUV);
+    outColor = max(ceSelfTexture(vUV) * 0.92, camera);
+}
+```
+
+Example — compositing two stages by name (`Light Trails` → `Trail Composite`):
+
+```glsl
+void main() {
+    vec4 camera = ceHistory(vUV, 0);
+    vec4 trails = ceStageTexture("Trail Buffer", vUV);
+    outColor = vec4(camera.rgb + trails.rgb, camera.a);
+}
+```
+
+The composite never samples `uPrev`, which on its own would make the buffer
+stage dead work; reading it through `ceStageTexture()` keeps it rendering.
+Because stage indices can be computed at runtime, an effect in which any stage
+reads stage textures renders all of its stages.
 
 ### CEContext uniform block (binding = 2)
 

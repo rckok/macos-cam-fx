@@ -8,6 +8,9 @@ struct ShaderSourceEditor: NSViewRepresentable {
     var diagnostics: [ShaderDiagnostic]
     var revealLine: Int?
     var revealNonce: Int
+    /// False for built-in stages: the source can be browsed, selected and
+    /// copied, but not typed into. Custom key handling checks the same flag.
+    var isEditable = true
     var onChange: (String) -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -20,6 +23,7 @@ struct ShaderSourceEditor: NSViewRepresentable {
         context.coordinator.onChange = onChange
         host.setSource(text)
         host.setDiagnostics(diagnostics)
+        host.textView.isEditable = isEditable
         host.textView.delegate = context.coordinator
         return host
     }
@@ -28,6 +32,7 @@ struct ShaderSourceEditor: NSViewRepresentable {
         context.coordinator.onChange = onChange
         context.coordinator.host = host
         context.coordinator.applyExternalTextIfNeeded(text)
+        host.textView.isEditable = isEditable
         host.setDiagnostics(diagnostics)
         context.coordinator.revealLineIfNeeded(revealLine, nonce: revealNonce)
     }
@@ -347,6 +352,10 @@ final class ShaderTextView: NSTextView {
     }
 
     override func doCommand(by selector: Selector) {
+        guard isEditable else {
+            super.doCommand(by: selector)
+            return
+        }
         switch selector {
         case #selector(insertNewline(_:)):
             insertNewlinePreservingIndent()

@@ -16,9 +16,13 @@ final class EffectStore: ObservableObject {
         var historyDepth: Int = 16
         /// Mirror the incoming camera feed horizontally (default on, like FaceTime).
         var flipHorizontal: Bool = true
+        /// Parameter values and media picks the user made on built-in stages,
+        /// keyed by stage ID. The bundle itself is never written to.
+        var builtInStageOverrides: [String: StageManifest] = [:]
 
         enum CodingKeys: String, CodingKey {
             case effects, activeEffectID, viewMode, selectedDeviceID, historyDepth, flipHorizontal
+            case builtInStageOverrides
         }
 
         init() {}
@@ -33,6 +37,9 @@ final class EffectStore: ObservableObject {
             selectedDeviceID = try container.decodeIfPresent(String.self, forKey: .selectedDeviceID)
             historyDepth = try container.decodeIfPresent(Int.self, forKey: .historyDepth) ?? 16
             flipHorizontal = try container.decodeIfPresent(Bool.self, forKey: .flipHorizontal) ?? true
+            builtInStageOverrides = try container.decodeIfPresent(
+                [String: StageManifest].self, forKey: .builtInStageOverrides
+            ) ?? [:]
         }
 
         func encode(to encoder: Encoder) throws {
@@ -43,12 +50,24 @@ final class EffectStore: ObservableObject {
             try container.encodeIfPresent(selectedDeviceID, forKey: .selectedDeviceID)
             try container.encode(historyDepth, forKey: .historyDepth)
             try container.encode(flipHorizontal, forKey: .flipHorizontal)
+            if !builtInStageOverrides.isEmpty {
+                try container.encode(builtInStageOverrides, forKey: .builtInStageOverrides)
+            }
         }
     }
 
+    /// User stages and effects, stored in Application Support and editable.
     @Published private(set) var stages: [Stage] = []
     @Published private(set) var effects: [Effect] = []
+    /// Effects shipped in the app bundle, loaded in place. Read-only apart
+    /// from parameter values; see `AppConfig.builtInStageOverrides`.
+    @Published private(set) var builtInStages: [Stage] = []
+    @Published private(set) var builtInEffects: [Effect] = []
     @Published var config = AppConfig()
+
+    /// Built-in first, then custom — the order the sidebar's groups appear in.
+    var allEffects: [Effect] { builtInEffects + effects }
+    var allStages: [Stage] { builtInStages + stages }
 
     /// Fired when a stage's shader changed on disk (external editor).
     let externalChange = PassthroughSubject<Stage, Never>()
@@ -73,8 +92,8 @@ final class EffectStore: ObservableObject {
         configURL = rootURL.appendingPathComponent("config.json")
 
         try? FileManager.default.createDirectory(at: stagesURL, withIntermediateDirectories: true)
-        seedBuiltInStagesIfNeeded()
         loadConfig()
+        loadBuiltIns()
         loadStages()
         // Make whatever we just resolved durable, so a launch that ends before
         // the first edit cannot leave the layout to be guessed again.
@@ -88,20 +107,6 @@ final class EffectStore: ObservableObject {
         Bundle.main.url(forResource: bundledResourceName, withExtension: nil)
     }
 
-    private func seedBuiltInStagesIfNeeded() {
-        let existing = (try? FileManager.default.contentsOfDirectory(atPath: stagesURL.path)) ?? []
-        guard existing.isEmpty, let bundled = Self.bundledRootURL else { return }
-
-        let bundledStages = bundled.appendingPathComponent("Stages", isDirectory: true)
-        let folders = (try? FileManager.default.contentsOfDirectory(
-            at: bundledStages, includingPropertiesForKeys: [.isDirectoryKey]
-        )) ?? []
-        for folder in folders {
-            let destination = stagesURL.appendingPathComponent(folder.lastPathComponent)
-            try? FileManager.default.copyItem(at: folder, to: destination)
-        }
-    }
-
     /// Effects shipped with the app, described by `BuiltInEffects/effects.json`.
     private struct BuiltInLayout: Decodable {
         struct Entry: Decodable {
@@ -112,25 +117,47 @@ final class EffectStore: ObservableObject {
         var effects: [Entry]
     }
 
-    private static func builtInEffects(stageIDs: [String]) -> [Effect] {
-        let known = Set(stageIDs)
-        var assigned = Set<String>()
-        var effects: [Effect] = []
+    /// Loads the bundled stages in place — nothing is copied to disk — so the
+    /// list always reflects what this version of the app ships, and applies
+    /// any saved parameter overrides. Bundled folders that `effects.json`
+    /// leaves out become effects of their own so they stay reachable.
+    private func loadBuiltIns() {
+        guard let root = Self.bundledRootURL else { return }
+        let bundledStages = root.appendingPathComponent("Stages", isDirectory: true)
+        let folders = (try? FileManager.default.contentsOfDirectory(
+            at: bundledStages, includingPropertiesForKeys: [.isDirectoryKey]
+        ))?.filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true } ?? []
 
-        if let root = bundledRootURL,
-           let data = try? Data(contentsOf: root.appendingPathComponent("effects.json")),
+        var stagesByFolder: [String: Stage] = [:]
+        for folder in folders {
+            let id = Effect.builtInIDPrefix + folder.lastPathComponent
+            guard let stage = loadStage(from: folder, id: id, isBuiltIn: true) else { continue }
+            if let overrides = config.builtInStageOverrides[id] {
+                stage.applyManifestValues(overrides)
+            }
+            stagesByFolder[folder.lastPathComponent] = stage
+        }
+
+        var effects: [Effect] = []
+        var assigned = Set<String>()
+        if let data = try? Data(contentsOf: root.appendingPathComponent("effects.json")),
            let layout = try? JSONDecoder().decode(BuiltInLayout.self, from: data) {
             for entry in layout.effects {
-                let stages = entry.stages.filter { known.contains($0) && assigned.insert($0).inserted }
-                guard !stages.isEmpty else { continue }
-                effects.append(Effect(id: UUID().uuidString, name: entry.name, stageIDs: stages))
+                let stageIDs = entry.stages.compactMap { folder -> String? in
+                    guard let stage = stagesByFolder[folder], assigned.insert(stage.id).inserted else { return nil }
+                    return stage.id
+                }
+                guard !stageIDs.isEmpty else { continue }
+                effects.append(Effect(id: Effect.builtInIDPrefix + entry.name, name: entry.name, stageIDs: stageIDs))
             }
         }
-
-        for stageID in stageIDs where !assigned.contains(stageID) {
-            effects.append(Effect(id: UUID().uuidString, name: stageID, stageIDs: [stageID]))
+        for folder in folders.map(\.lastPathComponent).sorted() {
+            guard let stage = stagesByFolder[folder], !assigned.contains(stage.id) else { continue }
+            effects.append(Effect(id: Effect.builtInIDPrefix + folder, name: stage.name, stageIDs: [stage.id]))
         }
-        return effects
+
+        builtInStages = effects.flatMap(\.stageIDs).compactMap { id in stagesByFolder.values.first { $0.id == id } }
+        builtInEffects = effects
     }
 
     private func loadConfig() {
@@ -153,13 +180,12 @@ final class EffectStore: ObservableObject {
             at: stagesURL, includingPropertiesForKeys: [.isDirectoryKey]
         ))?.filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true } ?? []
 
-        let loaded: [Stage] = folders.compactMap(loadStage(from:))
+        let loaded: [Stage] = folders.compactMap { loadStage(from: $0) }
         stages = loaded
 
-        let stageIDs = loaded.map(\.id)
-        effects = hasStoredConfig
-            ? normalizeEffects(config.effects, stageIDs: stageIDs)
-            : Self.builtInEffects(stageIDs: stageIDs)
+        // Without a readable config every stage folder becomes its own effect;
+        // built-in effects live in the bundle and need no seeding here.
+        effects = normalizeEffects(hasStoredConfig ? config.effects : [], stageIDs: loaded.map(\.id))
         reorderStagesFromEffects()
     }
 
@@ -190,8 +216,9 @@ final class EffectStore: ObservableObject {
         effects[index] = effect
     }
 
+    /// Lookups span both groups: the active effect can come from either.
     func stage(id: String) -> Stage? {
-        stages.first { $0.id == id }
+        (id.hasPrefix(Effect.builtInIDPrefix) ? builtInStages : stages).first { $0.id == id }
     }
 
     /// Republishes without touching the arrays, for changes inside a stage
@@ -205,11 +232,15 @@ final class EffectStore: ObservableObject {
     }
 
     func effect(id: String) -> Effect? {
-        effects.first { $0.id == id }
+        (id.hasPrefix(Effect.builtInIDPrefix) ? builtInEffects : effects).first { $0.id == id }
     }
 
     func effect(containing stageID: String) -> Effect? {
-        effects.first { $0.stageIDs.contains(stageID) }
+        (stageID.hasPrefix(Effect.builtInIDPrefix) ? builtInEffects : effects).first { $0.stageIDs.contains(stageID) }
+    }
+
+    func effects(in source: EffectsSource) -> [Effect] {
+        source == .builtIn ? builtInEffects : effects
     }
 
     /// Manifests written by hand may leave `type` out; guess it from the value.
@@ -222,7 +253,7 @@ final class EffectStore: ObservableObject {
         }
     }
 
-    private func loadStage(from folder: URL) -> Stage? {
+    private func loadStage(from folder: URL, id: String? = nil, isBuiltIn: Bool = false) -> Stage? {
         let shaderURL = folder.appendingPathComponent(Self.shaderFileName)
         guard let source = try? String(contentsOf: shaderURL, encoding: .utf8) else { return nil }
 
@@ -259,12 +290,13 @@ final class EffectStore: ObservableObject {
         }
 
         return Stage(
-            id: folder.lastPathComponent,
+            id: id ?? folder.lastPathComponent,
             folderURL: folder,
             name: name,
             source: source,
             parameters: parameters,
-            textureBindings: textureBindings
+            textureBindings: textureBindings,
+            isBuiltIn: isBuiltIn
         )
     }
 
@@ -303,27 +335,9 @@ final class EffectStore: ObservableObject {
     /// Copies a stage's folder (shader, manifest and any extra files) and
     /// places the copy directly after the original in the same effect.
     func duplicateStage(_ stage: Stage) -> Stage? {
-        let folderName = uniqueFolderName(preferring: "\(stage.name) Copy")
-        let folder = stagesURL.appendingPathComponent(folderName, isDirectory: true)
-        do {
-            if FileManager.default.fileExists(atPath: stage.folderURL.path) {
-                try FileManager.default.copyItem(at: stage.folderURL, to: folder)
-            } else {
-                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            }
-        } catch {
+        guard !stage.isBuiltIn, let copy = copyStage(stage, preferringName: "\(stage.name) Copy", name: nil) else {
             return nil
         }
-
-        let copy = Stage(
-            id: folderName,
-            folderURL: folder,
-            name: folderName,
-            source: stage.source,
-            parameters: stage.parameters,
-            textureBindings: stage.textureBindings
-        )
-        stages.append(copy)
 
         if let effectIndex = effects.firstIndex(where: { $0.stageIDs.contains(stage.id) }) {
             updateEffect(at: effectIndex) { effect in
@@ -340,6 +354,66 @@ final class EffectStore: ObservableObject {
         reorderStagesFromEffects()
         persist(stage: copy)
         saveConfig()
+        return copy
+    }
+
+    /// Copies an effect and all of its stages into the custom group. This is
+    /// how a built-in effect becomes editable; it works for custom effects too.
+    /// Copied stages keep their display names so `ceStageTexture("Name")`
+    /// references between them keep resolving inside the new effect.
+    func duplicateEffect(_ effect: Effect) -> Effect? {
+        let sourceStages = stages(in: effect)
+        var copies: [Stage] = []
+        for stage in sourceStages {
+            let preferred = effect.isBuiltIn ? stage.name : "\(stage.name) Copy"
+            guard let copy = copyStage(stage, preferringName: preferred, name: stage.name) else { continue }
+            copies.append(copy)
+        }
+
+        var name = effect.name
+        var counter = 2
+        while effects.contains(where: { $0.name == name }) {
+            name = "\(effect.name) \(counter)"
+            counter += 1
+        }
+        let copy = Effect(id: UUID().uuidString, name: name, stageIDs: copies.map(\.id))
+        effects.append(copy)
+
+        reorderStagesFromEffects()
+        for stage in copies {
+            persist(stage: stage)
+        }
+        saveConfig()
+        return copy
+    }
+
+    /// Copies a stage folder — from Application Support or the app bundle —
+    /// into a new user stage. `name` overrides the copy's display name; nil
+    /// uses the folder name, as `duplicateStage` always has.
+    private func copyStage(_ stage: Stage, preferringName requestedName: String, name: String?) -> Stage? {
+        let folderName = uniqueFolderName(preferring: requestedName)
+        let folder = stagesURL.appendingPathComponent(folderName, isDirectory: true)
+        do {
+            if FileManager.default.fileExists(atPath: stage.folderURL.path) {
+                try FileManager.default.copyItem(at: stage.folderURL, to: folder)
+                // Bundle resources may be read-only; the copy must be writable.
+                try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: folder.path)
+            } else {
+                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            }
+        } catch {
+            return nil
+        }
+
+        let copy = Stage(
+            id: folderName,
+            folderURL: folder,
+            name: name ?? folderName,
+            source: stage.source,
+            parameters: stage.parameters,
+            textureBindings: stage.textureBindings
+        )
+        stages.append(copy)
         return copy
     }
 
@@ -365,6 +439,7 @@ final class EffectStore: ObservableObject {
     }
 
     func removeStage(_ stage: Stage) {
+        guard !stage.isBuiltIn else { return }
         stages.removeAll { $0.id == stage.id }
         for index in effects.indices {
             updateEffect(at: index) { effect in
@@ -378,7 +453,9 @@ final class EffectStore: ObservableObject {
     /// Moves a stage to `placement` within `targetEffectID`, whether it comes
     /// from that same effect (a reorder) or another one.
     func moveStage(_ stageID: String, toEffect targetEffectID: String, placement: StagePlacement) {
-        guard stage(id: stageID) != nil,
+        // Built-in stages stay where the bundle puts them, and `effects` holds
+        // only custom effects, so a built-in target is rejected here too.
+        guard let moving = stage(id: stageID), !moving.isBuiltIn,
               let targetIndex = effects.firstIndex(where: { $0.id == targetEffectID })
         else { return }
         // Dropping a stage onto itself would otherwise send it to the end,
@@ -471,6 +548,12 @@ final class EffectStore: ObservableObject {
     // MARK: Persistence
 
     func persist(stage: Stage) {
+        if stage.isBuiltIn {
+            // The bundle is read-only; only the user's values are remembered.
+            config.builtInStageOverrides[stage.id] = stage.manifest
+            saveConfigSoon()
+            return
+        }
         let shaderURL = stage.folderURL.appendingPathComponent(Self.shaderFileName)
         try? stage.source.write(to: shaderURL, atomically: true, encoding: .utf8)
 
