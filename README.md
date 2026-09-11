@@ -163,6 +163,27 @@ that declares the interface, so you only write `main()` plus an optional
 | `uFrames` | `sampler3D` | Last **N** raw camera frames. The z axis is history — prefer `ceHistory()` over manual z indexing. |
 | `ceHistory(uv, ago)` | `vec4` | Sample the raw frame from `ago` frames ago (0 = newest). Handles ring-buffer wrapping. |
 
+### Blur helpers
+
+| Symbol | Type | Description |
+| --- | --- | --- |
+| `ceDiscBlur(tex, uv, radius, taps, falloff)` | `vec4` | Single-pass disc blur of any `sampler2D`. `radius` in pixels; `taps` is quality and cost (16–32 is plenty); `falloff` 0.0 = flat bokeh disc, 1.0 = soft Gaussian-like. Samples sit on a golden-angle spiral rotated per pixel, so few taps read as fine grain, not rings. |
+| `ceGauss3x3(tex, uv, spread)` | `vec4` | Exact 3×3 Gaussian from four bilinear reads at half-texel offsets. `spread` = 1.0 is one texel; larger values widen it at the same cost. |
+| `ceNoise(pixel)` | `float` | Per-pixel noise in [0, 1) with no visible pattern. Pass `vUV * uResolution`. |
+
+```glsl
+void main() {
+    outColor = ceDiscBlur(uPrev, vUV, 12.0, 24, 1.0);
+}
+```
+
+A single pass costs `taps` reads per pixel however wide the blur is, which is
+the right trade for moderate radii. For a large, accurate Gaussian, use two
+stages instead — one blurring horizontally, the next vertically through
+`uPrev` — which needs 2N reads rather than N². And for a very wide, cheap blur
+that may take a few frames to settle (backgrounds, glows), feed the result
+back: `mix(ceSelfTexture(vUV), ceDiscBlur(uPrev, vUV, 6.0, 8, 1.0), 0.3)`.
+
 ### Stage textures and feedback
 
 Each stage of the active effect owns one slice of `uStageTextures`, a

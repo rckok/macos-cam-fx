@@ -236,6 +236,44 @@ enum ShaderCompiler {
         return ceStageTexture(uStageIndex, uv);
     }
 
+    // Interleaved gradient noise (Jimenez 2014): a cheap, stable per-pixel
+    // value in [0, 1) with no visible pattern. Pass vUV * uResolution.
+    float ceNoise(vec2 pixel) {
+        return fract(52.9829189 * fract(dot(pixel, vec2(0.06711056, 0.00583715))));
+    }
+
+    // Single-pass disc blur: `taps` samples on a golden-angle spiral, rotated
+    // per pixel so undersampling reads as fine grain rather than rings.
+    // `radius` is in pixels; 16-32 taps is plenty. falloff 0.0 gives a flat
+    // disc (bokeh), 1.0 a soft, roughly Gaussian look. Cost = taps reads.
+    vec4 ceDiscBlur(sampler2D tex, vec2 uv, float radius, int taps, float falloff) {
+        const float goldenAngle = 2.39996323;
+        float rotation = ceNoise(uv * uResolution) * 6.28318531;
+        vec2 scale = radius / uResolution;
+        vec4 sum = vec4(0.0);
+        float total = 0.0;
+        for (int i = 0; i < 128; i++) {
+            if (i >= taps) { break; }
+            float r = sqrt((float(i) + 0.5) / float(taps));
+            float a = float(i) * goldenAngle + rotation;
+            float w = 1.0 - falloff * r * r;
+            sum += texture(tex, uv + vec2(cos(a), sin(a)) * r * scale) * w;
+            total += w;
+        }
+        return sum / max(total, 0.0001);
+    }
+
+    // Exact 3x3 Gaussian ([1 2 1] x [1 2 1] / 16) from four bilinear reads at
+    // half-texel offsets. `spread` = 1.0 for one texel; larger values widen
+    // the kernel (with some undersampling) at the same cost.
+    vec4 ceGauss3x3(sampler2D tex, vec2 uv, float spread) {
+        vec2 h = 0.5 * spread / uResolution;
+        return 0.25 * (
+            texture(tex, uv + vec2(-h.x, -h.y)) + texture(tex, uv + vec2(h.x, -h.y)) +
+            texture(tex, uv + vec2(-h.x,  h.y)) + texture(tex, uv + vec2(h.x,  h.y))
+        );
+    }
+
     """
 
     private static let preludeLineCount = prelude.components(separatedBy: "\n").count - 1

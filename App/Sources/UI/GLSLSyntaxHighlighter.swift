@@ -136,6 +136,7 @@ enum GLSLSyntaxHighlighter {
         "findLSB", "findMSB",
         // Injected by the prelude
         "ceHistory", "ceHandJoint", "ceStageTexture", "ceSelfTexture",
+        "ceDiscBlur", "ceGauss3x3", "ceNoise",
     ]
 
     /// Variables and constants visible to every stage shader: GLSL built-ins
