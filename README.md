@@ -20,11 +20,14 @@ system-wide **virtual camera** you can pick in Zoom, Meet, FaceTime, etc.
 - The virtual camera is a modern **CoreMediaIO Camera Extension** (the same
   mechanism OBS uses); the app streams to it automatically as soon as the
   extension is installed.
+- The UI adopts **Liquid Glass** on macOS 26 and falls back to the standard
+  materials on older releases — see [Liquid Glass](#liquid-glass).
 
 ## Requirements
 
 - macOS 14+ (Apple silicon or Intel)
-- Xcode 15+ (full Xcode, not just Command Line Tools)
+- Xcode 15+ (full Xcode, not just Command Line Tools). Xcode 26 or newer for
+  the Liquid Glass look; older Xcode builds the same app with the pre-26 UI.
 - [XcodeGen](https://github.com/yonaskolb/XcodeGen) and CMake
   (`brew install xcodegen cmake`)
 - A **paid Apple Developer account** (system extensions cannot be signed with
@@ -73,6 +76,37 @@ To remove: `systemextensionsctl uninstall <team-id> studio.polyglot.CameraEffect
 
 > If you fork this project, change the `studio.polyglot` bundle-ID prefix in
 > `project.yml` to your own.
+
+## Liquid Glass
+
+Built with Xcode 26 or newer, the app picks up macOS 26's Liquid Glass: the
+toolbar, popovers, lists and every standard control are restyled by the system
+without any code. On top of that the app opts in explicitly for the chrome it
+draws itself:
+
+- the whole window is one `GlassEffectContainer`, so its glass surfaces blend
+  with each other and render in one pass instead of sampling each other;
+- the sidebar's **Add Effect** bar and the inspector header are glass strips
+  that the list and the controls scroll *under*, rather than rows above a
+  divider;
+- the editor header is a glass strip too, and the diagnostics list below the
+  code tints its glass red or yellow — the tint is what carries the compile
+  status, replacing the old color wash;
+- the toolbar's mode switch sits in its own glass group, separated from the
+  tool buttons by a `ToolbarSpacer`;
+- the Dock icon is an Icon Composer package (`App/Resources/AppIcon.icon`).
+
+The three columns are an `HSplitView`, not a `NavigationSplitView`, so the
+system does not give the effect list the glass sidebar treatment it gives a
+real sidebar. That would mean rebuilding the window's layout — the columns are
+resized and prioritised by hand here — so it is left alone.
+
+None of this raises the macOS 14 deployment target. Every use is behind
+`#if compiler(>=6.2)` (the Liquid Glass symbols only exist in the macOS 26
+SDK, which ships with Swift 6.2) and `#available(macOS 26.0, *)`. Both checks
+live in `App/Sources/UI/LiquidGlass.swift` — which is also where the pre-26
+fallbacks are — except for the one `ToolbarSpacer` in `ContentView.swift`. On
+macOS 14 and 15 the same chrome renders with the `.bar` material as before.
 
 ## Effects and stages
 

@@ -278,7 +278,7 @@ private struct EditorSidebar: View {
                 EffectsSectionHeader()
             }
         }
-        .safeAreaInset(edge: .bottom) {
+        .safeAreaInset(edge: .bottom, spacing: 0) {
             HStack {
                 if state.effectsSource == .builtIn {
                     Text("Built-in effects are read-only. Duplicate one to edit a copy in Custom.")
@@ -290,13 +290,14 @@ private struct EditorSidebar: View {
                     } label: {
                         Label("Add Effect", systemImage: "plus")
                     }
-                    .buttonStyle(.borderless)
+                    .glassChromeButton()
                 }
 
                 Spacer()
             }
             .padding(8)
-            .background(.bar)
+            .frame(maxWidth: .infinity)
+            .glassChrome()
             .effectDropZone(.end, current: $effectDropTarget, perform: moveEffect)
         }
         .sheet(item: $effectToDelete) { effect in

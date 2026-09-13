@@ -12,77 +12,102 @@ struct ContentView: View {
     private let inspectorWidth: CGFloat = 260
 
     var body: some View {
-        HSplitView {
-            SidebarView(store: state.store, capture: state.capture)
-                .frame(minWidth: 180, idealWidth: sidebarWidth, maxWidth: 320)
-                .layoutPriority(0)
-
-            centerPane
-                .frame(minWidth: 200)
-                .layoutPriority(1)
-
-            if showInspector {
-                InspectorColumn(store: state.store)
-                    .frame(minWidth: 220, idealWidth: inspectorWidth, maxWidth: 400)
+        // One container for the window, so the glass chrome inside the columns
+        // blends as a whole rather than each strip sampling its neighbours.
+        GlassGroup {
+            HSplitView {
+                SidebarView(store: state.store, capture: state.capture)
+                    .frame(minWidth: 180, idealWidth: sidebarWidth, maxWidth: 320)
                     .layoutPriority(0)
+
+                centerPane
+                    .frame(minWidth: 200)
+                    .layoutPriority(1)
+
+                if showInspector {
+                    InspectorColumn(store: state.store)
+                        .frame(minWidth: 220, idealWidth: inspectorWidth, maxWidth: 400)
+                        .layoutPriority(0)
+                }
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .toolbar {
             ToolbarItemGroup(placement: .navigation) {
-                Picker("View Mode", selection: $state.viewMode) {
-                    ForEach(ViewMode.allCases) { mode in
-                        Text(mode.title).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(width: 150)
-                .help("Basic Mode plays effects; Editor Mode edits their stages.")
+                modePicker
+            }
 
-                if state.viewMode == .editor {
-                    Button {
-                        showUniforms.toggle()
-                    } label: {
-                        Label("Uniforms", systemImage: "curlybraces")
-                    }
-                    .help("Built-in shader uniforms")
-                    .popover(isPresented: $showUniforms) {
-                        ShaderGlobalsView()
-                    }
+            // macOS 26 draws each toolbar group as its own glass capsule, so
+            // the spacer is what keeps the mode switch from sharing one with
+            // the tools next to it.
+            #if compiler(>=6.2)
+            if #available(macOS 26.0, *) {
+                ToolbarSpacer(.fixed, placement: .navigation)
+            }
+            #endif
 
-                    Button {
-                        showMediaLibrary.toggle()
-                    } label: {
-                        Label("Media", systemImage: "photo.on.rectangle.angled")
-                    }
-                    .help("Open the shared media library")
-                    .popover(isPresented: $showMediaLibrary) {
-                        MediaLibraryView()
-                            .environmentObject(state)
-                    }
-                }
-
-                Button {
-                    showSettings.toggle()
-                } label: {
-                    Label("Settings", systemImage: "gearshape")
-                }
-                .popover(isPresented: $showSettings) {
-                    SettingsPopover()
-                }
-
-                Button {
-                    showInspector.toggle()
-                } label: {
-                    Label("Inspector", systemImage: "slider.horizontal.3")
-                }
-                .help("Show or hide the inspector")
+            ToolbarItemGroup(placement: .navigation) {
+                tools
             }
 
             ToolbarItem(placement: .primaryAction) {
                 VirtualCameraToolbar(extensionManager: state.extensionManager, sink: state.sink)
             }
         }
+    }
+
+    private var modePicker: some View {
+        Picker("View Mode", selection: $state.viewMode) {
+            ForEach(ViewMode.allCases) { mode in
+                Text(mode.title).tag(mode)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .frame(width: 150)
+        .help("Basic Mode plays effects; Editor Mode edits their stages.")
+    }
+
+    @ViewBuilder
+    private var tools: some View {
+        if state.viewMode == .editor {
+            Button {
+                showUniforms.toggle()
+            } label: {
+                Label("Uniforms", systemImage: "curlybraces")
+            }
+            .help("Built-in shader uniforms")
+            .popover(isPresented: $showUniforms) {
+                ShaderGlobalsView()
+            }
+
+            Button {
+                showMediaLibrary.toggle()
+            } label: {
+                Label("Media", systemImage: "photo.on.rectangle.angled")
+            }
+            .help("Open the shared media library")
+            .popover(isPresented: $showMediaLibrary) {
+                MediaLibraryView()
+                    .environmentObject(state)
+            }
+        }
+
+        Button {
+            showSettings.toggle()
+        } label: {
+            Label("Settings", systemImage: "gearshape")
+        }
+        .popover(isPresented: $showSettings) {
+            SettingsPopover()
+        }
+
+        Button {
+            showInspector.toggle()
+        } label: {
+            Label("Inspector", systemImage: "slider.horizontal.3")
+        }
+        .help("Show or hide the inspector")
     }
 
     /// Basic Mode is preview-only; Editor Mode splits it with the GLSL editor.

@@ -53,8 +53,8 @@ struct EditorView: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
-
-            Divider()
+            .frame(maxWidth: .infinity)
+            .glassChrome()
 
             Color(nsColor: .textBackgroundColor)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -70,7 +70,6 @@ struct EditorView: View {
                 }
 
             if !stage.allDiagnostics.isEmpty {
-                Divider()
                 ScrollView {
                     VStack(alignment: .leading, spacing: 2) {
                         ForEach(stage.allDiagnostics) { diagnostic in
@@ -105,7 +104,9 @@ struct EditorView: View {
                     .padding(8)
                 }
                 .frame(maxHeight: 100)
-                .background((errorCount > 0 ? Color.red : Color.yellow).opacity(0.06))
+                // The tint is the status: glass carries it without covering
+                // the list in a wash of color.
+                .glassChrome(tint: errorCount > 0 ? .red : .yellow)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
