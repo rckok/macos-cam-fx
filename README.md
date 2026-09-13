@@ -99,13 +99,14 @@ draws itself:
 - the Dock icon is an Icon Composer package (`App/Resources/AppIcon.icon`).
 
 Basic Mode is built around glass: the window has no title bar or toolbar of
-its own, the camera runs edge to edge (cropped to fill, so the preview may
-show a little less than the virtual camera sends), and everything else floats
-over it as interactive glass — circular camera, controls and Editor Mode
-buttons, the effect menu, the controls pane, and the extension status, which
-only appears while the virtual camera needs installing, approving or is still
-connecting. The camera menu also holds the **Mirror** toggle; frame history
-stays in Editor Mode's settings.
+its own, the camera runs edge to edge, and everything else floats over it as
+interactive glass — circular camera, controls and Editor Mode buttons, the
+effect menu, the controls pane, and the extension status, which only appears
+while the virtual camera needs installing, approving or is still connecting.
+The camera menu also holds two view settings: **Mirror**, and **Fill Window**
+(on by default), which crops the frame to cover the window — turn it off to
+letterbox it and see everything the virtual camera sends. Both are remembered.
+Frame history stays in Editor Mode's settings.
 
 Editor Mode's three columns are an `HSplitView`, not a `NavigationSplitView`,
 so the system does not give the effect list the glass sidebar treatment it

@@ -49,6 +49,13 @@ final class AppState: ObservableObject {
             store.saveConfigSoon()
         }
     }
+    /// Basic Mode preview: cropped to fill the window, or letterboxed.
+    @Published var previewFillsWindow: Bool {
+        didSet {
+            store.config.previewFillsWindow = previewFillsWindow
+            store.saveConfigSoon()
+        }
+    }
 
     private var compileTasks: [String: Task<Void, Never>] = [:]
     private var cancellables = Set<AnyCancellable>()
@@ -84,11 +91,13 @@ final class AppState: ObservableObject {
         self.sink = VirtualCameraSink()
         self.historyDepth = 16
         self.flipHorizontal = true
+        self.previewFillsWindow = true
 
         mediaLibrary.reloadGPUCache(device: engine.device)
 
         historyDepth = store.config.historyDepth
         flipHorizontal = store.config.flipHorizontal
+        previewFillsWindow = store.config.previewFillsWindow
         viewMode = store.config.viewMode
         // Property observers do not fire for assignments inside an initializer.
         engine.setHistoryDepth(historyDepth)

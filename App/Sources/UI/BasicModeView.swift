@@ -15,7 +15,7 @@ struct BasicModeView: View {
     private let controlSize: CGFloat = 40
 
     var body: some View {
-        PreviewView(engine: state.engine, contentMode: .fill)
+        PreviewView(engine: state.engine, contentMode: state.previewFillsWindow ? .fill : .fit)
             .ignoresSafeArea()
             .overlay(alignment: .bottom) {
                 VStack(alignment: .trailing, spacing: 12) {
@@ -55,8 +55,10 @@ struct BasicModeView: View {
         }
     }
 
-    /// Camera picker plus the one camera setting that matters while watching
-    /// the feed. Frame history stays in Editor Mode's settings.
+    /// Camera picker plus the two settings that matter while watching the
+    /// feed: mirroring, and whether the preview crops to fill the window or
+    /// letterboxes to show the whole frame. Frame history stays in Editor
+    /// Mode's settings.
     private var cameraMenu: some View {
         Menu {
             if capture.devices.isEmpty {
@@ -70,6 +72,7 @@ struct BasicModeView: View {
             }
             Divider()
             Toggle("Mirror", isOn: $state.flipHorizontal)
+            Toggle("Fill Window", isOn: $state.previewFillsWindow)
         } label: {
             Image(systemName: "camera")
                 .font(.system(size: 15, weight: .medium))
