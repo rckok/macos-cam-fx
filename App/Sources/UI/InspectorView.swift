@@ -2,20 +2,20 @@ import AppKit
 import SwiftUI
 
 /// Effect-level controls: every `@metadata(global)` parameter and sampler its
-/// stages declare. This is the only inspector Basic Mode shows.
+/// stages declare, as the Editor Mode inspector shows them.
 struct EffectInspectorView: View {
     let effect: Effect
     @ObservedObject var store: EffectStore
 
     private var contributors: [Stage] {
-        store.stages(in: effect).filter(\.hasGlobalControls)
+        store.controlStages(in: effect)
     }
 
     var body: some View {
         Form {
             if contributors.isEmpty {
                 Section("Controls") {
-                    Text(emptyMessage)
+                    Text(EffectControls.emptyMessage(for: effect))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -33,8 +33,38 @@ struct EffectInspectorView: View {
         }
         .formStyle(.grouped)
     }
+}
 
-    private var emptyMessage: String {
+/// The same controls as a plain stack, for Basic Mode's floating pane, where
+/// a grouped form's own scrolling and backgrounds would fight the glass.
+struct EffectControls: View {
+    let effect: Effect
+    @ObservedObject var store: EffectStore
+
+    private var contributors: [Stage] {
+        store.controlStages(in: effect)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if contributors.isEmpty {
+                Text(Self.emptyMessage(for: effect))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(contributors) { stage in
+                    if contributors.count > 1 {
+                        Text(stage.name)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    GlobalControls(stage: stage)
+                }
+            }
+        }
+    }
+
+    static func emptyMessage(for effect: Effect) -> String {
         if effect.stageIDs.isEmpty {
             return "This effect has no stages yet. Add one in Editor Mode."
         }

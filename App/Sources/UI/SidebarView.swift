@@ -1,29 +1,14 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Effect list. Basic Mode shows only the effects; Editor Mode adds their
-/// stages plus the controls to create, reorder and delete both.
+/// Editor Mode's left column: the camera source, then every effect with its
+/// stages and the controls to create, reorder and delete both.
 struct SidebarView: View {
-    @EnvironmentObject private var state: AppState
     @ObservedObject var store: EffectStore
     @ObservedObject var capture: CaptureManager
 
     var body: some View {
-        Group {
-            if state.viewMode == .basic {
-                BasicSidebar(store: store, capture: capture)
-            } else {
-                EditorSidebar(store: store, capture: capture)
-            }
-        }
-        .alert(
-            "Camera access denied",
-            isPresented: .constant(capture.authorizationDenied)
-        ) {
-            Button("OK") {}
-        } message: {
-            Text("Enable camera access for Camera Effects in System Settings → Privacy & Security → Camera.")
-        }
+        EditorSidebar(store: store, capture: capture)
     }
 }
 
@@ -65,70 +50,6 @@ private struct EffectsSectionHeader: View {
             .frame(width: 140)
             .help("Built-in effects ship with the app and are read-only; Custom effects are yours to edit.")
         }
-    }
-}
-
-// MARK: - Basic Mode
-
-private struct BasicSidebar: View {
-    @EnvironmentObject private var state: AppState
-    @ObservedObject var store: EffectStore
-    @ObservedObject var capture: CaptureManager
-
-    /// Selecting a row is what activates an effect, so the list selection is
-    /// the active effect.
-    private var activeEffectSelection: Binding<String?> {
-        Binding(
-            get: { state.activeEffectID },
-            set: { newValue in
-                // Clicking past the last row should not turn every effect off.
-                guard let newValue else { return }
-                state.select(.effect(newValue))
-            }
-        )
-    }
-
-    var body: some View {
-        List(selection: activeEffectSelection) {
-            CameraSourceSection(capture: capture)
-
-            Section {
-                let effects = store.effects(in: state.effectsSource)
-                if effects.isEmpty {
-                    Text(state.effectsSource == .custom
-                         ? "No custom effects yet. Switch to Editor Mode to build one, or duplicate a built-in effect."
-                         : "This build ships no effects.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(effects) { effect in
-                        BasicEffectRow(
-                            effect: effect,
-                            isActive: state.activeEffectID == effect.id
-                        )
-                        .tag(effect.id)
-                    }
-                }
-            } header: {
-                EffectsSectionHeader()
-            }
-        }
-    }
-}
-
-private struct BasicEffectRow: View {
-    let effect: Effect
-    let isActive: Bool
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: isActive ? "largecircle.fill.circle" : "circle")
-                .foregroundStyle(isActive ? Color.accentColor : Color.secondary)
-            Text(effect.name)
-                .lineLimit(1)
-            Spacer()
-        }
-        .padding(.vertical, 4)
     }
 }
 

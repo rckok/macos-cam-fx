@@ -43,6 +43,38 @@ extension View {
     func glassChromeButton() -> some View {
         modifier(GlassChromeButton())
     }
+
+    /// A free-floating glass element over content — the controls that sit on
+    /// the camera view in Basic Mode. `interactive` gives a control the lift
+    /// and stretch of a glass button on hover and press; leave it off for
+    /// panes. Falls back to a plain material with a soft shadow.
+    func glassSurface(in shape: some Shape, interactive: Bool = false) -> some View {
+        modifier(GlassSurface(shape: shape, interactive: interactive))
+    }
+}
+
+private struct GlassSurface<S: Shape>: ViewModifier {
+    let shape: S
+    let interactive: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        #if compiler(>=6.2)
+        if #available(macOS 26.0, *) {
+            content.glassEffect(.regular.interactive(interactive), in: shape)
+        } else {
+            legacy(content)
+        }
+        #else
+        legacy(content)
+        #endif
+    }
+
+    private func legacy(_ content: Content) -> some View {
+        content
+            .background(.regularMaterial, in: shape)
+            .shadow(color: .black.opacity(0.25), radius: 10, y: 4)
+    }
 }
 
 private struct GlassChrome: ViewModifier {

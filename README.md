@@ -10,9 +10,11 @@ system-wide **virtual camera** you can pick in Zoom, Meet, FaceTime, etc.
   (glslang → SPIR-V → SPIRV-Cross → MSL).
 - Every stage gets the last **N frames** of the raw feed as a **3D texture**
   (`sampler3D uFrames`), with N configurable in the app.
-- **Basic Mode** (the default) is just the effect list plus the controls each
-  effect exposes. **Editor Mode** adds the stages inside every effect, the
-  GLSL editor, and the per-stage inspector.
+- **Basic Mode** (the default) is the camera filling the window, with four
+  glass controls floating over it: a camera picker, the effect menu, the
+  effect's controls in a pane that unfolds from its button, and the way into
+  Editor Mode. **Editor Mode** is the full three-column UI: every effect with
+  its stages, the GLSL editor, and the per-stage inspector.
 - Built-in editor with GLSL syntax highlighting, code completion (keywords,
   built-ins, and the injected prelude symbols), live recompile, inline compile
   errors, `⌘/` to comment or uncomment the selected lines, and auto-generated
@@ -96,10 +98,19 @@ draws itself:
   tool buttons by a `ToolbarSpacer`;
 - the Dock icon is an Icon Composer package (`App/Resources/AppIcon.icon`).
 
-The three columns are an `HSplitView`, not a `NavigationSplitView`, so the
-system does not give the effect list the glass sidebar treatment it gives a
-real sidebar. That would mean rebuilding the window's layout — the columns are
-resized and prioritised by hand here — so it is left alone.
+Basic Mode is built around glass: the window has no title bar or toolbar of
+its own, the camera runs edge to edge (cropped to fill, so the preview may
+show a little less than the virtual camera sends), and everything else floats
+over it as interactive glass — circular camera, controls and Editor Mode
+buttons, the effect menu, the controls pane, and the extension status, which
+only appears while the virtual camera needs installing, approving or is still
+connecting. The camera menu also holds the **Mirror** toggle; frame history
+stays in Editor Mode's settings.
+
+Editor Mode's three columns are an `HSplitView`, not a `NavigationSplitView`,
+so the system does not give the effect list the glass sidebar treatment it
+gives a real sidebar. That would mean rebuilding the window's layout — the
+columns are resized and prioritised by hand here — so it is left alone.
 
 None of this raises the macOS 14 deployment target. Every use is behind
 `#if compiler(>=6.2)` (the Liquid Glass symbols only exist in the macOS 26
@@ -115,7 +126,8 @@ time: the one that owns the sidebar selection, so clicking an effect (or any
 stage inside it) activates that effect. There is nothing to enable or
 disable — picking an effect *is* turning it on.
 
-The sidebar lists two groups, switched with the **Built-in / Custom** control:
+Basic Mode's effect menu lists both groups of effects; Editor Mode's sidebar
+switches between them with the **Built-in / Custom** control:
 
 - **Built-in** effects ship inside the app and are loaded straight from the
   bundle, so the list always matches the installed version. They can be
@@ -416,8 +428,9 @@ reported as a shader error on that `@metadata` line.
 Basic Mode never shows stages, so by default it cannot reach a stage's
 controls. Add `global` (or `global=true`) to a parameter's `@metadata` and its
 control is listed on the owning **effect** as well as on the stage — which is
-what Basic Mode renders. Effects made of several stages group the borrowed
-controls under each stage's name.
+what Basic Mode's controls pane (and the effect's inspector in Editor Mode)
+shows. Effects made of several stages group the borrowed controls under each
+stage's name.
 
 Sampler uniforms take the same decorator, and `global` is the only key they
 accept — a sampler has no range and no components, so `min`, `max`, `default`

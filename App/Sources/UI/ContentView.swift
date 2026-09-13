@@ -12,26 +12,25 @@ struct ContentView: View {
     private let inspectorWidth: CGFloat = 260
 
     var body: some View {
-        // One container for the window, so the glass chrome inside the columns
-        // blends as a whole rather than each strip sampling its neighbours.
+        // One container for the window, so the glass inside it blends as a
+        // whole rather than each piece sampling its neighbours.
         GlassGroup {
-            HSplitView {
-                SidebarView(store: state.store, capture: state.capture)
-                    .frame(minWidth: 180, idealWidth: sidebarWidth, maxWidth: 320)
-                    .layoutPriority(0)
-
-                centerPane
-                    .frame(minWidth: 200)
-                    .layoutPriority(1)
-
-                if showInspector {
-                    InspectorColumn(store: state.store)
-                        .frame(minWidth: 220, idealWidth: inspectorWidth, maxWidth: 400)
-                        .layoutPriority(0)
-                }
+            if state.viewMode == .basic {
+                BasicModeView(
+                    store: state.store,
+                    capture: state.capture,
+                    extensionManager: state.extensionManager,
+                    sink: state.sink
+                )
+            } else {
+                editorLayout
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Basic Mode is the camera and nothing else; its controls float over
+        // the feed, so the window toolbar goes away with the columns.
+        .toolbar(state.viewMode == .basic ? .hidden : .visible, for: .windowToolbar)
+        .modifier(CameraAccessAlert(capture: state.capture))
         .toolbar {
             ToolbarItemGroup(placement: .navigation) {
                 modePicker
@@ -52,6 +51,26 @@ struct ContentView: View {
 
             ToolbarItem(placement: .primaryAction) {
                 VirtualCameraToolbar(extensionManager: state.extensionManager, sink: state.sink)
+            }
+        }
+    }
+
+    /// Editor Mode: effects and stages on the left, preview over the GLSL
+    /// editor in the middle, the inspector on the right.
+    private var editorLayout: some View {
+        HSplitView {
+            SidebarView(store: state.store, capture: state.capture)
+                .frame(minWidth: 180, idealWidth: sidebarWidth, maxWidth: 320)
+                .layoutPriority(0)
+
+            centerPane
+                .frame(minWidth: 200)
+                .layoutPriority(1)
+
+            if showInspector {
+                InspectorColumn(store: state.store)
+                    .frame(minWidth: 220, idealWidth: inspectorWidth, maxWidth: 400)
+                    .layoutPriority(0)
             }
         }
     }
@@ -110,35 +129,29 @@ struct ContentView: View {
         .help("Show or hide the inspector")
     }
 
-    /// Basic Mode is preview-only; Editor Mode splits it with the GLSL editor.
-    @ViewBuilder
+    /// The preview over the GLSL editor.
     private var centerPane: some View {
-        if state.viewMode == .basic {
-            PreviewView(engine: state.engine)
-                .frame(minWidth: 200, minHeight: 160)
-        } else {
-            GeometryReader { geo in
-                let halfHeight = editorDefaultHeight ?? max(geo.size.height * 0.5, 140)
-                VSplitView {
-                    PreviewView(engine: state.engine)
-                        .frame(minWidth: 200, minHeight: 160, idealHeight: halfHeight)
+        GeometryReader { geo in
+            let halfHeight = editorDefaultHeight ?? max(geo.size.height * 0.5, 140)
+            VSplitView {
+                PreviewView(engine: state.engine)
+                    .frame(minWidth: 200, minHeight: 160, idealHeight: halfHeight)
 
-                    if let stage = state.selectedStage {
-                        EditorView(stage: stage)
-                            .frame(minWidth: 200, minHeight: 140, idealHeight: halfHeight, maxHeight: .infinity)
-                    } else {
-                        ContentUnavailableView(
-                            "No Stage Selected",
-                            systemImage: "wand.and.stars",
-                            description: Text("Select a stage in the sidebar, or add one to the active effect.")
-                        )
-                        .frame(maxWidth: .infinity, minHeight: 140, idealHeight: halfHeight)
-                    }
+                if let stage = state.selectedStage {
+                    EditorView(stage: stage)
+                        .frame(minWidth: 200, minHeight: 140, idealHeight: halfHeight, maxHeight: .infinity)
+                } else {
+                    ContentUnavailableView(
+                        "No Stage Selected",
+                        systemImage: "wand.and.stars",
+                        description: Text("Select a stage in the sidebar, or add one to the active effect.")
+                    )
+                    .frame(maxWidth: .infinity, minHeight: 140, idealHeight: halfHeight)
                 }
-                .onAppear { captureEditorDefaultHeight(geo.size.height) }
-                .onChange(of: geo.size.height) { _, height in
-                    captureEditorDefaultHeight(height)
-                }
+            }
+            .onAppear { captureEditorDefaultHeight(geo.size.height) }
+            .onChange(of: geo.size.height) { _, height in
+                captureEditorDefaultHeight(height)
             }
         }
     }
@@ -146,6 +159,23 @@ struct ContentView: View {
     private func captureEditorDefaultHeight(_ totalHeight: CGFloat) {
         guard editorDefaultHeight == nil, totalHeight > 0 else { return }
         editorDefaultHeight = totalHeight * 0.5
+    }
+}
+
+/// Shown in both modes, so it observes the capture manager itself rather than
+/// living in the Editor Mode sidebar.
+private struct CameraAccessAlert: ViewModifier {
+    @ObservedObject var capture: CaptureManager
+
+    func body(content: Content) -> some View {
+        content.alert(
+            "Camera access denied",
+            isPresented: .constant(capture.authorizationDenied)
+        ) {
+            Button("OK") {}
+        } message: {
+            Text("Enable camera access for Camera Effects in System Settings → Privacy & Security → Camera.")
+        }
     }
 }
 

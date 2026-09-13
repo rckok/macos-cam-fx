@@ -231,16 +231,17 @@ final class EffectStore: ObservableObject {
         effect.stageIDs.compactMap { stage(id: $0) }
     }
 
+    /// The stages whose `global` controls make up the effect's own controls.
+    func controlStages(in effect: Effect) -> [Stage] {
+        stages(in: effect).filter(\.hasGlobalControls)
+    }
+
     func effect(id: String) -> Effect? {
         (id.hasPrefix(Effect.builtInIDPrefix) ? builtInEffects : effects).first { $0.id == id }
     }
 
     func effect(containing stageID: String) -> Effect? {
         (stageID.hasPrefix(Effect.builtInIDPrefix) ? builtInEffects : effects).first { $0.stageIDs.contains(stageID) }
-    }
-
-    func effects(in source: EffectsSource) -> [Effect] {
-        source == .builtIn ? builtInEffects : effects
     }
 
     /// Manifests written by hand may leave `type` out; guess it from the value.
