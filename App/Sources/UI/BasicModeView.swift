@@ -36,6 +36,14 @@ struct BasicModeView: View {
                         .padding(20)
                 }
             }
+            // Glass takes its light or dark tone from the camera feed behind
+            // it, not from the system appearance, and over video that is
+            // dark. SwiftUI text and symbols on glass follow along through
+            // vibrancy, but the pane's sliders, switches, fields and popups
+            // are AppKit controls that draw for the window's appearance —
+            // black on dark glass in light mode. Pinning the whole HUD to
+            // dark keeps every part of it agreeing with the glass.
+            .environment(\.colorScheme, .dark)
             .animation(.snappy(duration: 0.3), value: showControls)
     }
 

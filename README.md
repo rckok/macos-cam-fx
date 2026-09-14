@@ -106,7 +106,10 @@ while the virtual camera needs installing, approving or is still connecting.
 The camera menu also holds two view settings: **Mirror**, and **Fill Window**
 (on by default), which crops the frame to cover the window — turn it off to
 letterbox it and see everything the virtual camera sends. Both are remembered.
-Frame history stays in Editor Mode's settings.
+Frame history stays in Editor Mode's settings. The floating UI is pinned to
+the dark appearance whatever the system is set to: glass takes its tone from
+the video behind it rather than from the system, and the pane's native
+controls can only be made to match it by fixing their appearance.
 
 Editor Mode's three columns are an `HSplitView`, not a `NavigationSplitView`,
 so the system does not give the effect list the glass sidebar treatment it
