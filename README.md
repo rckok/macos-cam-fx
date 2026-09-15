@@ -100,9 +100,15 @@ draws itself:
 
 Basic Mode is built around glass: the window has no title bar or toolbar of
 its own, the camera runs edge to edge, and everything else floats over it as
-interactive glass — circular camera, controls and Editor Mode buttons, the
-effect menu, the controls pane, and the extension status, which only appears
-while the virtual camera needs installing, approving or is still connecting.
+interactive *clear* glass — the style meant for controls over photos and
+video, which shows far more of the feed than the frosted `regular` glass the
+app's chrome uses. The floating elements are the circular camera, controls and
+Editor Mode buttons, the effect menu, the controls pane, and the extension
+status, which only appears while the virtual camera needs installing,
+approving or is still connecting. Clear glass leaves legibility to the app, so
+each surface carries a scrim between the glass and its contents, sized to how
+fine that content is — a hint under the control bar, more under the pane's
+sliders (the `dim` argument of `glassSurface`).
 The camera menu also holds two view settings: **Mirror**, and **Fill Window**
 (on by default), which crops the frame to cover the window — turn it off to
 letterbox it and see everything the virtual camera sends. Both are remembered.
