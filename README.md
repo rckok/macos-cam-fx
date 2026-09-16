@@ -15,7 +15,8 @@ system-wide **virtual camera** you can pick in Zoom, Meet, FaceTime, etc.
   effect's controls in a pane that unfolds from its button, and the editor
   switch. **Editor Mode** slides an editor panel in under the camera — the
   active effect's stages, the GLSL editor, and the selected stage's controls
-  — and leaves everything above it in place.
+  — and leaves everything above it in place. The effect menu unfolds into a
+  glass list there, where effects can also be added, reordered and removed.
 - Built-in editor with GLSL syntax highlighting, code completion (keywords,
   built-ins, and the injected prelude symbols), live recompile, inline compile
   errors, `⌘/` to comment or uncomment the selected lines, and auto-generated
@@ -136,20 +137,24 @@ time: the one picked in the effect menu, which is also the one the editor
 panel edits. There is nothing to enable or disable — picking an effect *is*
 turning it on.
 
-The effect menu lists both groups of effects:
+The effect menu lists both groups of effects. In Basic Mode it is a plain
+menu; while the editor panel is open the same button unfolds a glass list laid
+out like that menu, with the room to manage the effects as well as pick one:
 
 - **Built-in** effects ship inside the app and are loaded straight from the
   bundle, so the list always matches the installed version. They can be
   activated and their controls adjusted (values are remembered), and in Editor
   Mode their stages and GLSL can be read — but not edited, renamed, reordered
-  or deleted. Use **Duplicate to Custom** (in the stage list's header menu,
-  its footer, or the editor header) to get an editable copy of the effect and
-  its stages.
+  or deleted. Use **Duplicate to Custom** (the row's context menu in the
+  effect list, the stage list's footer, or the editor header) to get an
+  editable copy of the effect and its stages.
 - **Custom** effects are yours: everything below about adding, editing and
-  moving stages applies to them. The stage list's header menu also holds the
-  effect's own actions: **Rename**, **Duplicate**, **Move Up** / **Move Down**
-  (the order the effect menu lists them in), **Delete Effect** and **New
-  Effect**.
+  moving stages applies to them. In the unfolded effect list each one has a
+  drag handle to reorder it and a **−** button to delete it (an effect with
+  stages asks whether to delete them or move them to another effect), the
+  row's context menu duplicates it, and **Add Effect** at the bottom creates
+  a new one. Renaming is done in the stage list's header, with the pencil
+  next to the effect's name.
 
 Within an effect, stages run top to bottom, each one sampling the previous
 stage's output through `uPrev`. The first stage of every effect sees the
