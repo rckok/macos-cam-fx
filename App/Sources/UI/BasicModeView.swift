@@ -95,7 +95,7 @@ struct BasicModeView: View {
             Toggle("Mirror", isOn: $state.flipHorizontal)
             Toggle("Fill Window", isOn: $state.previewFillsWindow)
         } label: {
-            Image(systemName: "camera")
+            Image(systemName: "video")
                 .font(.system(size: 15, weight: .medium))
                 .frame(width: controlSize, height: controlSize)
                 .contentShape(Circle())
