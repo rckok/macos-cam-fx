@@ -45,23 +45,36 @@ extension View {
     }
 
     /// A free-floating glass element over content — the controls that sit on
-    /// the camera view in Basic Mode. `interactive` gives a control the lift
-    /// and stretch of a glass button on hover and press; leave it off for
-    /// panes. Falls back to a plain material with a soft shadow.
-    func glassSurface(in shape: some Shape, interactive: Bool = false) -> some View {
-        modifier(GlassSurface(shape: shape, interactive: interactive))
+    /// the camera view in Basic Mode.
+    ///
+    /// This is the *clear* glass style, not the frosted `regular` one used for
+    /// app chrome: it is the style meant for controls over photos and video,
+    /// and it lets far more of the feed through. Clear glass does no work to
+    /// keep what sits on it legible, so a surface carrying small text or
+    /// controls should pass a `dim` — a scrim between the glass and the
+    /// content, which is how Apple's own media controls stay readable over a
+    /// bright frame.
+    ///
+    /// `interactive` gives a control the lift and stretch of a glass button on
+    /// hover and press; leave it off for panes and labels.
+    func glassSurface(in shape: some Shape, interactive: Bool = false, dim: Double = 0) -> some View {
+        modifier(GlassSurface(shape: shape, interactive: interactive, dim: dim))
     }
 }
 
 private struct GlassSurface<S: Shape>: ViewModifier {
     let shape: S
     let interactive: Bool
+    let dim: Double
 
     @ViewBuilder
     func body(content: Content) -> some View {
         #if compiler(>=6.2)
         if #available(macOS 26.0, *) {
-            content.glassEffect(.regular.interactive(interactive), in: shape)
+            // The scrim goes on before the glass, so it lands between the
+            // glass and the content rather than over either.
+            dimmed(content)
+                .glassEffect(.clear.interactive(interactive), in: shape)
         } else {
             legacy(content)
         }
@@ -70,9 +83,16 @@ private struct GlassSurface<S: Shape>: ViewModifier {
         #endif
     }
 
+    private func dimmed(_ content: Content) -> some View {
+        content.background(Color.black.opacity(dim), in: shape)
+    }
+
+    /// `.ultraThinMaterial` is the closest the pre-26 materials get to clear
+    /// glass; the shadow stands in for the lensing that separates glass from
+    /// the content behind it.
     private func legacy(_ content: Content) -> some View {
-        content
-            .background(.regularMaterial, in: shape)
+        dimmed(content)
+            .background(.ultraThinMaterial, in: shape)
             .shadow(color: .black.opacity(0.25), radius: 10, y: 4)
     }
 }

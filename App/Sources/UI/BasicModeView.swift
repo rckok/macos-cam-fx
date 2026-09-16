@@ -13,6 +13,9 @@ struct BasicModeView: View {
     @State private var showControls = false
 
     private let controlSize: CGFloat = 40
+    /// Clear glass leaves legibility to the caller. The bar's symbols and its
+    /// one label need only a hint of a scrim; the controls pane needs more.
+    private let controlDim = 0.12
 
     var body: some View {
         PreviewView(engine: state.engine, contentMode: state.previewFillsWindow ? .fill : .fit)
@@ -32,10 +35,18 @@ struct BasicModeView: View {
                     VirtualCameraToolbar(extensionManager: extensionManager, sink: sink)
                         .padding(.horizontal, 14)
                         .frame(height: controlSize)
-                        .glassSurface(in: Capsule())
+                        .glassSurface(in: Capsule(), dim: 0.12)
                         .padding(20)
                 }
             }
+            // Glass takes its light or dark tone from the camera feed behind
+            // it, not from the system appearance, and over video that is
+            // dark. SwiftUI text and symbols on glass follow along through
+            // vibrancy, but the pane's sliders, switches, fields and popups
+            // are AppKit controls that draw for the window's appearance —
+            // black on dark glass in light mode. Pinning the whole HUD to
+            // dark keeps every part of it agreeing with the glass.
+            .environment(\.colorScheme, .dark)
             .animation(.snappy(duration: 0.3), value: showControls)
     }
 
@@ -79,7 +90,7 @@ struct BasicModeView: View {
                 .frame(width: controlSize, height: controlSize)
                 .contentShape(Circle())
         }
-        .glassMenu(in: Circle())
+        .glassMenu(in: Circle(), dim: controlDim)
         .help("Camera")
     }
 
@@ -102,7 +113,7 @@ struct BasicModeView: View {
             .frame(height: controlSize)
             .contentShape(Capsule())
         }
-        .glassMenu(in: Capsule())
+        .glassMenu(in: Capsule(), dim: controlDim)
         .help("Effect")
     }
 
@@ -128,7 +139,7 @@ struct BasicModeView: View {
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .glassSurface(in: Circle(), interactive: true)
+        .glassSurface(in: Circle(), interactive: true, dim: controlDim)
         .help(help)
     }
 
@@ -154,7 +165,9 @@ struct BasicModeView: View {
         }
         .frame(width: 320)
         .frame(maxHeight: 440)
-        .glassSurface(in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        // Sliders and their labels are fine detail over a moving frame, so
+        // this is the one surface that needs a scrim behind it.
+        .glassSurface(in: RoundedRectangle(cornerRadius: 20, style: .continuous), dim: 0.2)
     }
 
     @ViewBuilder
@@ -185,11 +198,11 @@ struct BasicModeView: View {
 private extension View {
     /// A `Menu` drawn as one of the floating controls: no system border or
     /// indicator, just its label on glass.
-    func glassMenu(in shape: some Shape) -> some View {
+    func glassMenu(in shape: some Shape, dim: Double) -> some View {
         self
             .menuStyle(.button)
             .buttonStyle(.plain)
             .menuIndicator(.hidden)
-            .glassSurface(in: shape, interactive: true)
+            .glassSurface(in: shape, interactive: true, dim: dim)
     }
 }
