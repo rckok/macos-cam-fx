@@ -1,10 +1,11 @@
 import MetalKit
 import SwiftUI
 
-/// Realtime preview of the render engine's latest output texture,
-/// letterboxed to preserve aspect ratio.
+/// Realtime preview of the render engine's latest output texture. `.fit`
+/// letterboxes to preserve aspect ratio; `.fill` covers the view and crops.
 struct PreviewView: NSViewRepresentable {
     let engine: RenderEngine
+    var contentMode: ContentMode = .fit
 
     func makeCoordinator() -> Coordinator {
         Coordinator(engine: engine)
@@ -21,11 +22,16 @@ struct PreviewView: NSViewRepresentable {
         return view
     }
 
-    func updateNSView(_ nsView: MTKView, context: Context) {}
+    func updateNSView(_ nsView: MTKView, context: Context) {
+        context.coordinator.contentMode = contentMode
+    }
 
     final class Coordinator: NSObject, MTKViewDelegate {
         private let engine: RenderEngine
         private let commandQueue: MTLCommandQueue
+        /// Read on the MTKView's draw callback, written from SwiftUI updates;
+        /// both happen on the main thread.
+        var contentMode: ContentMode = .fit
 
         init(engine: RenderEngine) {
             self.engine = engine
@@ -43,18 +49,21 @@ struct PreviewView: NSViewRepresentable {
 
             guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: passDescriptor) else { return }
 
-            // Aspect-fit viewport.
+            // The viewport is the frame's rectangle centered on the drawable:
+            // inside it for .fit (letterboxed), spilling past its edges for
+            // .fill (cropped). Metal clips whatever falls outside the drawable.
             let drawableWidth = Double(drawable.texture.width)
             let drawableHeight = Double(drawable.texture.height)
             let textureAspect = Double(texture.width) / Double(texture.height)
             let drawableAspect = drawableWidth / drawableHeight
+            let fitWidth = textureAspect > drawableAspect ? contentMode == .fit : contentMode == .fill
 
             var viewport = MTLViewport(
                 originX: 0, originY: 0,
                 width: drawableWidth, height: drawableHeight,
                 znear: 0, zfar: 1
             )
-            if textureAspect > drawableAspect {
+            if fitWidth {
                 let height = drawableWidth / textureAspect
                 viewport.originY = (drawableHeight - height) / 2
                 viewport.height = height

@@ -6,7 +6,13 @@ struct InspectorPanel<Content: View>: View {
     @ViewBuilder let content: () -> Content
 
     var body: some View {
-        VStack(spacing: 0) {
+        ScrollView {
+            content()
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        // An inset rather than a row above the scroll view, so the controls
+        // travel under the glass instead of stopping at a hard edge.
+        .safeAreaInset(edge: .top, spacing: 0) {
             HStack {
                 Text(title)
                     .font(.headline)
@@ -15,13 +21,8 @@ struct InspectorPanel<Content: View>: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
-
-            Divider()
-
-            ScrollView {
-                content()
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
+            .frame(maxWidth: .infinity)
+            .glassChrome()
         }
         .background(Color(nsColor: .windowBackgroundColor))
     }

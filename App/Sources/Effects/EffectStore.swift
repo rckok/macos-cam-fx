@@ -16,13 +16,16 @@ final class EffectStore: ObservableObject {
         var historyDepth: Int = 16
         /// Mirror the incoming camera feed horizontally (default on, like FaceTime).
         var flipHorizontal: Bool = true
+        /// Basic Mode preview: crop the camera to fill the window (default),
+        /// or letterbox it so the whole frame is visible.
+        var previewFillsWindow: Bool = true
         /// Parameter values and media picks the user made on built-in stages,
         /// keyed by stage ID. The bundle itself is never written to.
         var builtInStageOverrides: [String: StageManifest] = [:]
 
         enum CodingKeys: String, CodingKey {
             case effects, activeEffectID, viewMode, selectedDeviceID, historyDepth, flipHorizontal
-            case builtInStageOverrides
+            case previewFillsWindow, builtInStageOverrides
         }
 
         init() {}
@@ -37,6 +40,7 @@ final class EffectStore: ObservableObject {
             selectedDeviceID = try container.decodeIfPresent(String.self, forKey: .selectedDeviceID)
             historyDepth = try container.decodeIfPresent(Int.self, forKey: .historyDepth) ?? 16
             flipHorizontal = try container.decodeIfPresent(Bool.self, forKey: .flipHorizontal) ?? true
+            previewFillsWindow = try container.decodeIfPresent(Bool.self, forKey: .previewFillsWindow) ?? true
             builtInStageOverrides = try container.decodeIfPresent(
                 [String: StageManifest].self, forKey: .builtInStageOverrides
             ) ?? [:]
@@ -50,6 +54,7 @@ final class EffectStore: ObservableObject {
             try container.encodeIfPresent(selectedDeviceID, forKey: .selectedDeviceID)
             try container.encode(historyDepth, forKey: .historyDepth)
             try container.encode(flipHorizontal, forKey: .flipHorizontal)
+            try container.encode(previewFillsWindow, forKey: .previewFillsWindow)
             if !builtInStageOverrides.isEmpty {
                 try container.encode(builtInStageOverrides, forKey: .builtInStageOverrides)
             }
@@ -231,16 +236,17 @@ final class EffectStore: ObservableObject {
         effect.stageIDs.compactMap { stage(id: $0) }
     }
 
+    /// The stages whose `global` controls make up the effect's own controls.
+    func controlStages(in effect: Effect) -> [Stage] {
+        stages(in: effect).filter(\.hasGlobalControls)
+    }
+
     func effect(id: String) -> Effect? {
         (id.hasPrefix(Effect.builtInIDPrefix) ? builtInEffects : effects).first { $0.id == id }
     }
 
     func effect(containing stageID: String) -> Effect? {
         (stageID.hasPrefix(Effect.builtInIDPrefix) ? builtInEffects : effects).first { $0.stageIDs.contains(stageID) }
-    }
-
-    func effects(in source: EffectsSource) -> [Effect] {
-        source == .builtIn ? builtInEffects : effects
     }
 
     /// Manifests written by hand may leave `type` out; guess it from the value.
