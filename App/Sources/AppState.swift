@@ -23,9 +23,8 @@ final class AppState: ObservableObject {
 
     @Published private(set) var selection: EffectSelection?
     /// Whether the editor panel is open under the camera. Closing it hands
-    /// the selection back to the effect, so the controls pane shows the
-    /// effect's controls again; opening it lands on the effect's first stage
-    /// so there is something to edit right away.
+    /// the selection back to the effect; opening it lands on the effect's
+    /// first stage so there is something to edit right away.
     @Published var viewMode: ViewMode = .basic {
         didSet {
             guard viewMode != oldValue else { return }

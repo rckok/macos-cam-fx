@@ -6,7 +6,7 @@ enum ViewMode: String, Codable, CaseIterable, Identifiable {
     /// (`global`) controls.
     case basic
     /// The same, plus the editor panel under the camera: the active effect's
-    /// stages, the GLSL editor, and every control of the stage being edited.
+    /// stages, the GLSL editor, and the selected stage's controls.
     case editor
 
     var id: String { rawValue }

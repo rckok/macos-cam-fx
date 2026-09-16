@@ -14,8 +14,8 @@ system-wide **virtual camera** you can pick in Zoom, Meet, FaceTime, etc.
   glass controls floating over it: a camera picker, the effect menu, the
   effect's controls in a pane that unfolds from its button, and the editor
   switch. **Editor Mode** slides an editor panel in under the camera — the
-  active effect's stages beside the GLSL editor — and leaves everything above
-  it in place; the controls pane then shows the selected stage's controls.
+  active effect's stages, the GLSL editor, and the selected stage's controls
+  — and leaves everything above it in place.
 - Built-in editor with GLSL syntax highlighting, code completion (keywords,
   built-ins, and the injected prelude symbols), live recompile, inline compile
   errors, `⌘/` to comment or uncomment the selected lines, and auto-generated
@@ -378,14 +378,14 @@ void main() {
 
 | Symbol | Type | Description |
 | --- | --- | --- |
-| `Params` | `std140` block, binding = 3 | Optional stage parameters — become controls in the controls pane. |
+| `Params` | `std140` block, binding = 3 | Optional stage parameters — become controls in the editor panel's stage controls column. |
 | `yourSampler` | `sampler2D`, binding 4–15 | Optional 2D textures assigned from the media library. Accepts `// @metadata(global)`. |
 
 Example stage:
 
 ```glsl
 layout(std140, binding = 3) uniform Params {
-    float amount;   // becomes a slider in the controls pane
+    float amount;   // becomes a slider in the stage controls column
 };
 
 void main() {
@@ -430,12 +430,11 @@ reported as a shader error on that `@metadata` line.
 
 ### Effect-level controls (`global`)
 
-The controls pane shows a stage's controls only while that stage is selected
-in the editor panel; in Basic Mode it shows the **effect's**. Add `global` (or
-`global=true`) to a parameter's `@metadata` and its control is listed on the
-owning effect as well as on the stage, which is what puts it in reach of
-Basic Mode. Effects made of several stages group the borrowed controls under
-each stage's name.
+A stage's controls live in the editor panel, so Basic Mode cannot reach them.
+Add `global` (or `global=true`) to a parameter's `@metadata` and its control
+is listed on the owning **effect** as well as on the stage — which is what the
+floating controls pane shows, in both modes. Effects made of several stages
+group the borrowed controls under each stage's name.
 
 Sampler uniforms take the same decorator, and `global` is the only key they
 accept — a sampler has no range and no components, so `min`, `max`, `default`

@@ -41,8 +41,7 @@ struct EffectControls: View {
 }
 
 /// Every control of one stage — its samplers and all of its parameters,
-/// `global` or not — which is what the controls pane shows for the stage
-/// being edited.
+/// `global` or not — for the editor panel's stage controls column.
 struct StageControls: View {
     @EnvironmentObject private var state: AppState
     @ObservedObject var stage: Stage

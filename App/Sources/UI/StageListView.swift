@@ -85,9 +85,7 @@ struct StageListView: View {
 
     // MARK: Header
 
-    /// The effect's name, which selects the effect itself — the way to get
-    /// its effect-level controls back into the controls pane while editing —
-    /// and the menu of actions on the effect.
+    /// The effect's name and the menu of actions on the effect.
     private var header: some View {
         HStack(spacing: 8) {
             if isRenaming {
@@ -98,25 +96,15 @@ struct StageListView: View {
                     .onSubmit(commitRename)
                     .onExitCommand(perform: cancelRename)
             } else {
-                Button {
-                    state.select(.effect(effect.id))
-                } label: {
-                    HStack(spacing: 6) {
-                        Text(effect.name)
-                            .font(.headline)
-                            .lineLimit(1)
-                        if effect.isBuiltIn {
-                            Image(systemName: "lock.fill")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .contentShape(Rectangle())
+                Text(effect.name)
+                    .font(.headline)
+                    .lineLimit(1)
+                if effect.isBuiltIn {
+                    Image(systemName: "lock.fill")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .help("Built-in effect: read-only")
                 }
-                .buttonStyle(.plain)
-                .help(effect.isBuiltIn
-                      ? "Built-in effect: read-only. Click to show its effect-level controls."
-                      : "Click to show the effect's own controls instead of a stage's")
             }
 
             Spacer()
