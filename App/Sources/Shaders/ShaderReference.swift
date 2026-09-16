@@ -27,6 +27,12 @@ enum ShaderReference {
         Category(id: "io", title: "Inputs / outputs", symbols: io),
         Category(id: "textures", title: "Textures", symbols: textures),
         Category(
+            id: "stages",
+            title: "Stage textures (bindings 22–23)",
+            footer: "Every stage of the active effect owns one slice of uStageTextures. Stages before this one have already rendered this frame; this stage and the ones after it still hold their previous frame, which is what makes feedback loops work. Slices start out transparent black.",
+            symbols: stages
+        ),
+        Category(
             id: "context",
             title: "CEContext (binding = 2)",
             footer: "Members of the injected CEContext uniform block:",
@@ -69,6 +75,39 @@ enum ShaderReference {
             name: "uFrames",
             type: "uniform sampler3D",
             description: "A ring buffer of the last N raw camera frames. The z axis is history: slice 0 is the oldest retained frame, slice N − 1 is the newest. Prefer ceHistory() over manual z indexing."
+        ),
+    ]
+
+    static let stages: [Symbol] = [
+        Symbol(
+            id: "ceStageTexture",
+            name: "ceStageTexture(index, uv)",
+            type: "vec4",
+            description: "Output of the stage at `index` (the number shown next to it in the sidebar). Also accepts the stage's name as a string literal — ceStageTexture(\"Trail Buffer\", vUV) — which the app resolves against the effect, so reordering stages does not break it. Out-of-range indices and unknown names read transparent black."
+        ),
+        Symbol(
+            id: "ceSelfTexture",
+            name: "ceSelfTexture(uv)",
+            type: "vec4",
+            description: "This stage's own output from the previous frame — a feedback buffer. Same as ceStageTexture(uStageIndex, uv)."
+        ),
+        Symbol(
+            id: "uStageTextures",
+            name: "uStageTextures",
+            type: "uniform sampler2DArray",
+            description: "The stage outputs as a texture array, one slice per stage: texture(uStageTextures, vec3(uv, float(index))). Prefer ceStageTexture(), which range-checks the index."
+        ),
+        Symbol(
+            id: "uStageIndex",
+            name: "uStageIndex",
+            type: "int (CEStages, binding = 23)",
+            description: "This stage's position in the effect, 0-based."
+        ),
+        Symbol(
+            id: "uStageCount",
+            name: "uStageCount",
+            type: "int (CEStages, binding = 23)",
+            description: "Number of stages in the effect, i.e. slices in uStageTextures."
         ),
     ]
 
@@ -192,6 +231,24 @@ enum ShaderReference {
             name: "ceHistory(uv, ago)",
             type: "vec4",
             description: "Sample the raw camera frame from ago frames ago (0 = newest). Handles ring-buffer wrapping automatically."
+        ),
+        Symbol(
+            id: "ceDiscBlur",
+            name: "ceDiscBlur(tex, uv, radius, taps, falloff)",
+            type: "vec4",
+            description: "Single-pass disc blur of any sampler2D (uPrev, a media texture, …). `radius` in pixels; `taps` sets quality and cost (16–32 is plenty). `falloff` 0.0 gives a flat bokeh disc, 1.0 a soft Gaussian-like look. Samples lie on a per-pixel-rotated golden-angle spiral, so low tap counts show as fine grain rather than rings. For large true-Gaussian blurs prefer two stages (horizontal, then vertical through uPrev)."
+        ),
+        Symbol(
+            id: "ceGauss3x3",
+            name: "ceGauss3x3(tex, uv, spread)",
+            type: "vec4",
+            description: "Exact 3×3 Gaussian ([1 2 1] ⊗ [1 2 1] / 16) from just four bilinear reads at half-texel offsets. `spread` = 1.0 blurs one texel; larger values widen the kernel at the same cost, with some undersampling."
+        ),
+        Symbol(
+            id: "ceNoise",
+            name: "ceNoise(pixel)",
+            type: "float",
+            description: "Cheap per-pixel noise in [0, 1) with no visible pattern (interleaved gradient noise). Pass vUV * uResolution. Useful for dithering and for rotating sample patterns."
         ),
     ]
 

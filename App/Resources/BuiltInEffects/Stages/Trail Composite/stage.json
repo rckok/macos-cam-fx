@@ -1,0 +1,6 @@
+{
+  "name": "Trail Composite",
+  "params": {
+    "amount": { "type": "float", "value": [1.0], "min": 0, "max": 2, "global": true }
+  }
+}
