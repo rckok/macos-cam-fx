@@ -35,7 +35,7 @@ struct BasicModeView: View {
                     VirtualCameraToolbar(extensionManager: extensionManager, sink: sink)
                         .padding(.horizontal, 14)
                         .frame(height: controlSize)
-                        .glassSurface(in: Capsule(), dim: 0.12)
+                        .glassSurface(in: Capsule(), dim: 0.2)
                         .padding(20)
                 }
             }
@@ -167,7 +167,7 @@ struct BasicModeView: View {
         .frame(maxHeight: 440)
         // Sliders and their labels are fine detail over a moving frame, so
         // this is the one surface that needs a scrim behind it.
-        .glassSurface(in: RoundedRectangle(cornerRadius: 20, style: .continuous), dim: 0.2)
+        .glassSurface(in: RoundedRectangle(cornerRadius: 20, style: .continuous), dim: 0.25)
     }
 
     @ViewBuilder
