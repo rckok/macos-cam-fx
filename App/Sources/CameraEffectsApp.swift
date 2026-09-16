@@ -10,10 +10,8 @@ struct CameraEffectsApp: App {
                 .environmentObject(state)
                 .frame(minWidth: 720, minHeight: 480)
         }
-        // No title bar of its own: in Basic Mode the camera runs to the top
-        // edge under the traffic lights; in Editor Mode the toolbar is the
-        // title bar.
+        // No title bar or toolbar: the camera runs to the top edge under the
+        // traffic lights in both modes.
         .windowStyle(.hiddenTitleBar)
-        .windowToolbarStyle(.unified)
     }
 }

@@ -50,6 +50,8 @@ struct EditorView: View {
                         .help(Stage.shadowedExplanation)
                 }
                 statusLabel
+                EditorToolButtons()
+                    .padding(.leading, 4)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)

@@ -28,8 +28,8 @@ struct GlassGroup<Content: View>: View {
 }
 
 extension View {
-    /// A chrome strip that floats above content: a panel header, the sidebar's
-    /// bottom bar, the editor's diagnostics list. `tint` colors the glass
+    /// A chrome strip that floats above content: a panel header, the stage
+    /// list's bottom bar, the editor's diagnostics list. `tint` colors the glass
     /// itself, which is how the diagnostics list reads as an error or warning.
     ///
     /// Chrome is the only thing that should carry glass here — putting it on a

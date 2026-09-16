@@ -1,169 +1,76 @@
 import SwiftUI
 
+/// The window: the camera with its floating controls, and under it — while
+/// Editor Mode is on — the editor panel. Switching modes only slides that
+/// panel in and out; nothing above it changes.
 struct ContentView: View {
     @EnvironmentObject private var state: AppState
-    @State private var showSettings = false
-    @State private var showInspector = true
-    @State private var showMediaLibrary = false
-    @State private var showUniforms = false
-    @State private var editorDefaultHeight: CGFloat?
+    /// Set once the user drags the panel's edge; until then the panel takes
+    /// a share of the window.
+    @State private var editorPanelHeight: CGFloat?
 
-    private let sidebarWidth: CGFloat = 240
-    private let inspectorWidth: CGFloat = 260
+    /// Enough camera to keep the floating controls usable over it.
+    private let minCameraHeight: CGFloat = 220
+    private let minEditorPanelHeight: CGFloat = 200
+    private let defaultEditorPanelShare: CGFloat = 0.45
 
     var body: some View {
         // One container for the window, so the glass inside it blends as a
         // whole rather than each piece sampling its neighbours.
         GlassGroup {
-            if state.viewMode == .basic {
-                BasicModeView(
-                    store: state.store,
-                    capture: state.capture,
-                    extensionManager: state.extensionManager,
-                    sink: state.sink
-                )
-            } else {
-                editorLayout
+            GeometryReader { geo in
+                let range = editorPanelHeightRange(in: geo.size.height)
+                let panelHeight = (editorPanelHeight ?? geo.size.height * defaultEditorPanelShare)
+                    .clamped(to: range)
+
+                VStack(spacing: 0) {
+                    BasicModeView(
+                        store: state.store,
+                        capture: state.capture,
+                        extensionManager: state.extensionManager,
+                        sink: state.sink
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                    if state.viewMode == .editor {
+                        EditorPanel(store: state.store)
+                            .frame(height: panelHeight)
+                            // The handle straddles the seam, so half of it is
+                            // over the camera. Later in the stack, so it also
+                            // draws over the camera's floating controls.
+                            .overlay(alignment: .top) {
+                                PanelResizeHandle(
+                                    height: Binding(
+                                        get: { panelHeight },
+                                        set: { editorPanelHeight = $0 }
+                                    ),
+                                    range: range
+                                )
+                                .offset(y: -4)
+                            }
+                            .transition(.move(edge: .bottom))
+                    }
+                }
+                // Covers the panel's slide and the camera's stretch to fill
+                // the space it leaves, in one motion.
+                .animation(.snappy(duration: 0.3), value: state.viewMode)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // Basic Mode is the camera and nothing else; its controls float over
-        // the feed, so the window toolbar goes away with the columns.
-        .toolbar(state.viewMode == .basic ? .hidden : .visible, for: .windowToolbar)
+        // The camera runs to the top edge in both modes, so the window never
+        // shows a toolbar; the editor's tools live in the panel's header.
+        .toolbar(.hidden, for: .windowToolbar)
         .modifier(CameraAccessAlert(capture: state.capture))
-        .toolbar {
-            ToolbarItemGroup(placement: .navigation) {
-                modePicker
-            }
-
-            // macOS 26 draws each toolbar group as its own glass capsule, so
-            // the spacer is what keeps the mode switch from sharing one with
-            // the tools next to it.
-            #if compiler(>=6.2)
-            if #available(macOS 26.0, *) {
-                ToolbarSpacer(.fixed, placement: .navigation)
-            }
-            #endif
-
-            ToolbarItemGroup(placement: .navigation) {
-                tools
-            }
-
-            ToolbarItem(placement: .primaryAction) {
-                VirtualCameraToolbar(extensionManager: state.extensionManager, sink: state.sink)
-            }
-        }
     }
 
-    /// Editor Mode: effects and stages on the left, preview over the GLSL
-    /// editor in the middle, the inspector on the right.
-    private var editorLayout: some View {
-        HSplitView {
-            SidebarView(store: state.store, capture: state.capture)
-                .frame(minWidth: 180, idealWidth: sidebarWidth, maxWidth: 320)
-                .layoutPriority(0)
-
-            centerPane
-                .frame(minWidth: 200)
-                .layoutPriority(1)
-
-            if showInspector {
-                InspectorColumn(store: state.store)
-                    .frame(minWidth: 220, idealWidth: inspectorWidth, maxWidth: 400)
-                    .layoutPriority(0)
-            }
-        }
-    }
-
-    private var modePicker: some View {
-        Picker("View Mode", selection: $state.viewMode) {
-            ForEach(ViewMode.allCases) { mode in
-                Text(mode.title).tag(mode)
-            }
-        }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .frame(width: 150)
-        .help("Basic Mode plays effects; Editor Mode edits their stages.")
-    }
-
-    @ViewBuilder
-    private var tools: some View {
-        if state.viewMode == .editor {
-            Button {
-                showUniforms.toggle()
-            } label: {
-                Label("Uniforms", systemImage: "curlybraces")
-            }
-            .help("Built-in shader uniforms")
-            .popover(isPresented: $showUniforms) {
-                ShaderGlobalsView()
-            }
-
-            Button {
-                showMediaLibrary.toggle()
-            } label: {
-                Label("Media", systemImage: "photo.on.rectangle.angled")
-            }
-            .help("Open the shared media library")
-            .popover(isPresented: $showMediaLibrary) {
-                MediaLibraryView()
-                    .environmentObject(state)
-            }
-        }
-
-        Button {
-            showSettings.toggle()
-        } label: {
-            Label("Settings", systemImage: "gearshape")
-        }
-        .popover(isPresented: $showSettings) {
-            SettingsPopover()
-        }
-
-        Button {
-            showInspector.toggle()
-        } label: {
-            Label("Inspector", systemImage: "slider.horizontal.3")
-        }
-        .help("Show or hide the inspector")
-    }
-
-    /// The preview over the GLSL editor.
-    private var centerPane: some View {
-        GeometryReader { geo in
-            let halfHeight = editorDefaultHeight ?? max(geo.size.height * 0.5, 140)
-            VSplitView {
-                PreviewView(engine: state.engine)
-                    .frame(minWidth: 200, minHeight: 160, idealHeight: halfHeight)
-
-                if let stage = state.selectedStage {
-                    EditorView(stage: stage)
-                        .frame(minWidth: 200, minHeight: 140, idealHeight: halfHeight, maxHeight: .infinity)
-                } else {
-                    ContentUnavailableView(
-                        "No Stage Selected",
-                        systemImage: "wand.and.stars",
-                        description: Text("Select a stage in the sidebar, or add one to the active effect.")
-                    )
-                    .frame(maxWidth: .infinity, minHeight: 140, idealHeight: halfHeight)
-                }
-            }
-            .onAppear { captureEditorDefaultHeight(geo.size.height) }
-            .onChange(of: geo.size.height) { _, height in
-                captureEditorDefaultHeight(height)
-            }
-        }
-    }
-
-    private func captureEditorDefaultHeight(_ totalHeight: CGFloat) {
-        guard editorDefaultHeight == nil, totalHeight > 0 else { return }
-        editorDefaultHeight = totalHeight * 0.5
+    private func editorPanelHeightRange(in totalHeight: CGFloat) -> ClosedRange<CGFloat> {
+        let upper = max(totalHeight - minCameraHeight, minEditorPanelHeight)
+        return minEditorPanelHeight...upper
     }
 }
 
-/// Shown in both modes, so it observes the capture manager itself rather than
-/// living in the Editor Mode sidebar.
+/// Observes the capture manager itself, so the window does not redraw for
+/// every capture change.
 private struct CameraAccessAlert: ViewModifier {
     @ObservedObject var capture: CaptureManager
 
@@ -179,30 +86,9 @@ private struct CameraAccessAlert: ViewModifier {
     }
 }
 
-/// Right-hand column. Observes the store as well as the app state so effect
-/// renames and recompiles that reshape the controls land here immediately.
-private struct InspectorColumn: View {
-    @EnvironmentObject private var state: AppState
-    @ObservedObject var store: EffectStore
-
-    var body: some View {
-        InspectorPanel(title: state.activeEffect?.name ?? "Inspector") {
-            if state.viewMode == .editor, let stage = state.selectedStage {
-                StageInspectorView(stage: stage)
-            } else if let effect = state.activeEffect {
-                EffectInspectorView(effect: effect, store: store)
-            } else {
-                Text("Select an effect to adjust its controls.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(12)
-            }
-        }
-    }
-}
-
-/// Toolbar cluster for extension install status and virtual-camera streaming,
-/// which runs automatically whenever the extension is installed.
+/// Extension install status and virtual-camera streaming, which runs
+/// automatically whenever the extension is installed. Floats over the camera
+/// while it needs attention.
 struct VirtualCameraToolbar: View {
     @ObservedObject var extensionManager: ExtensionManager
     @ObservedObject var sink: VirtualCameraSink

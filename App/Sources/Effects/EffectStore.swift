@@ -70,7 +70,7 @@ final class EffectStore: ObservableObject {
     @Published private(set) var builtInEffects: [Effect] = []
     @Published var config = AppConfig()
 
-    /// Built-in first, then custom — the order the sidebar's groups appear in.
+    /// Built-in first, then custom — the order the effect menu's groups appear in.
     var allEffects: [Effect] { builtInEffects + effects }
     var allStages: [Stage] { builtInStages + stages }
 
@@ -633,7 +633,7 @@ final class EffectStore: ObservableObject {
     }
 
     static let newStageTemplate = """
-    // Built-in uniforms are listed in the inspector. See README for details.
+    // Built-in uniforms are listed behind the editor's `{ }` button. See README for details.
 
     layout(std140, binding = 3) uniform Params {
         // @metadata(min=0.0 max=1.0 default=0.5 global)

@@ -1,8 +1,10 @@
 import SwiftUI
 
-/// Basic Mode: the camera fills the window, and everything else floats over
-/// it as glass — camera and effect pickers, the effect's controls in a pane
-/// that unfolds from its button, and the way into Editor Mode.
+/// The camera, with everything else floating over it as glass: camera and
+/// effect pickers, the controls pane that unfolds from its button, and the
+/// switch for the editor panel. This is the whole window in Basic Mode and
+/// the top of it in Editor Mode; the controls pane shows the effect's
+/// controls in the first case and the selected stage's in the second.
 struct BasicModeView: View {
     @EnvironmentObject private var state: AppState
     @ObservedObject var store: EffectStore
@@ -60,10 +62,18 @@ struct BasicModeView: View {
                 showControls.toggle()
             }
             .foregroundStyle(showControls ? Color.accentColor : Color.primary)
-            glassIconButton("chevron.left.forwardslash.chevron.right", help: "Editor Mode") {
-                state.viewMode = .editor
+            glassIconButton(
+                "chevron.left.forwardslash.chevron.right",
+                help: isEditing ? "Hide the editor" : "Edit this effect"
+            ) {
+                state.viewMode = isEditing ? .basic : .editor
             }
+            .foregroundStyle(isEditing ? Color.accentColor : Color.primary)
         }
+    }
+
+    private var isEditing: Bool {
+        state.viewMode == .editor
     }
 
     /// Camera picker plus the two settings that matter while watching the
@@ -145,15 +155,23 @@ struct BasicModeView: View {
 
     // MARK: Controls pane
 
-    /// The active effect's `global` controls — what the inspector shows for
-    /// the effect in Editor Mode — on glass instead of in a column.
+    /// The active effect's `global` controls — or, while a stage is selected
+    /// in the editor panel, every control of that stage — on glass.
     private var controlsPane: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(state.activeEffect?.name ?? "Controls")
-                .font(.headline)
-                .lineLimit(1)
-                .padding(.horizontal, 16)
-                .padding(.top, 14)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(paneTitle)
+                    .font(.headline)
+                    .lineLimit(1)
+                if let stage = state.selectedStage {
+                    Text("Stage in \(state.store.effect(containing: stage.id)?.name ?? "effect")")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 14)
 
             // Hugs its content while it fits, and scrolls once it does not.
             ViewThatFits(in: .vertical) {
@@ -170,9 +188,20 @@ struct BasicModeView: View {
         .glassSurface(in: RoundedRectangle(cornerRadius: 20, style: .continuous), dim: 0.25)
     }
 
+    private var paneTitle: String {
+        state.selectedStage?.name ?? state.activeEffect?.name ?? "Controls"
+    }
+
+    /// The selection only points at a stage while the editor panel is open,
+    /// so closing the panel brings the effect's controls back on its own.
     @ViewBuilder
     private var paneControls: some View {
-        if let effect = state.activeEffect {
+        if let stage = state.selectedStage {
+            StageControls(stage: stage)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 16)
+        } else if let effect = state.activeEffect {
             EffectControls(effect: effect, store: store)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 16)

@@ -2,41 +2,9 @@ import AppKit
 import SwiftUI
 
 /// Effect-level controls: every `@metadata(global)` parameter and sampler its
-/// stages declare, as the Editor Mode inspector shows them.
-struct EffectInspectorView: View {
-    let effect: Effect
-    @ObservedObject var store: EffectStore
-
-    private var contributors: [Stage] {
-        store.controlStages(in: effect)
-    }
-
-    var body: some View {
-        Form {
-            if contributors.isEmpty {
-                Section("Controls") {
-                    Text(EffectControls.emptyMessage(for: effect))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            } else if contributors.count == 1, let stage = contributors.first {
-                Section("Controls") {
-                    GlobalControls(stage: stage)
-                }
-            } else {
-                ForEach(contributors) { stage in
-                    Section(stage.name) {
-                        GlobalControls(stage: stage)
-                    }
-                }
-            }
-        }
-        .formStyle(.grouped)
-    }
-}
-
-/// The same controls as a plain stack, for Basic Mode's floating pane, where
-/// a grouped form's own scrolling and backgrounds would fight the glass.
+/// stages declare. A plain stack rather than a grouped form, because it lives
+/// in the floating controls pane, where a form's own scrolling and
+/// backgrounds would fight the glass.
 struct EffectControls: View {
     let effect: Effect
     @ObservedObject var store: EffectStore
@@ -66,9 +34,38 @@ struct EffectControls: View {
 
     static func emptyMessage(for effect: Effect) -> String {
         if effect.stageIDs.isEmpty {
-            return "This effect has no stages yet. Add one in Editor Mode."
+            return "This effect has no stages yet. Open the editor to add one."
         }
         return "No effect-level controls. Mark a stage parameter or sampler with `// @metadata(global)` to surface it here."
+    }
+}
+
+/// Every control of one stage — its samplers and all of its parameters,
+/// `global` or not — which is what the controls pane shows for the stage
+/// being edited.
+struct StageControls: View {
+    @EnvironmentObject private var state: AppState
+    @ObservedObject var stage: Stage
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if stage.textureBindings.isEmpty && stage.parameters.isEmpty {
+                Text("No controls. Declare a `Params` uniform block for sliders and toggles, or `sampler2D` uniforms (binding ≥ 4) for media pickers.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            ForEach($stage.textureBindings) { $binding in
+                TextureBindingRow(stage: stage, binding: $binding)
+            }
+
+            ForEach($stage.parameters) { $parameter in
+                ParameterControl(parameter: $parameter) {
+                    state.parametersChanged(stage)
+                }
+                .id("\(parameter.name)-\(parameter.type)-\(parameter.values.count)-\(parameter.isColor)")
+            }
+        }
     }
 }
 
@@ -110,47 +107,6 @@ private struct GlobalControls: View {
                 stage.textureBindings[index] = updated
             }
         )
-    }
-}
-
-/// Auto-generated parameter controls reflected from the stage's Params block.
-struct StageInspectorView: View {
-    @EnvironmentObject private var state: AppState
-    @ObservedObject var stage: Stage
-
-    var body: some View {
-        Form {
-            if !stage.textureBindings.isEmpty {
-                Section("Textures") {
-                    ForEach($stage.textureBindings) { $binding in
-                        TextureBindingRow(stage: stage, binding: $binding)
-                    }
-                }
-            }
-
-            Section("Parameters") {
-                if stage.parameters.isEmpty {
-                    Text("No scalar parameters.\nDeclare a `Params` uniform block to add sliders and toggles.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach($stage.parameters) { $parameter in
-                        ParameterControl(parameter: $parameter) {
-                            state.parametersChanged(stage)
-                        }
-                        .id("\(parameter.name)-\(parameter.type)-\(parameter.values.count)-\(parameter.isColor)")
-                    }
-                }
-            }
-
-            if stage.textureBindings.isEmpty && stage.parameters.isEmpty {
-                Text("Declare a `Params` block and/or `sampler2D` uniforms (binding ≥ 4) in your shader.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .formStyle(.grouped)
-        .navigationTitle("Inspector")
     }
 }
 

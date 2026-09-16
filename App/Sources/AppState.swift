@@ -2,7 +2,7 @@ import Combine
 import Foundation
 import SwiftUI
 
-/// What the sidebar currently points at. The effect that owns the selection is
+/// What the UI currently points at. The effect that owns the selection is
 /// the one being rendered, so selecting a stage also activates its effect.
 enum EffectSelection: Hashable {
     case effect(String)
@@ -22,15 +22,14 @@ final class AppState: ObservableObject {
     let engine: RenderEngine
 
     @Published private(set) var selection: EffectSelection?
-    /// Which group the sidebar lists. Follows the selection, so activating an
-    /// effect from either group switches the list to it.
-    @Published var effectsSource: EffectsSource = .builtIn
+    /// Whether the editor panel is open under the camera. Closing it hands
+    /// the selection back to the effect, so the controls pane shows the
+    /// effect's controls again; opening it lands on the effect's first stage
+    /// so there is something to edit right away.
     @Published var viewMode: ViewMode = .basic {
         didSet {
             guard viewMode != oldValue else { return }
-            if viewMode == .basic, case .stage(let stageID) = selection {
-                selection = store.effect(containing: stageID).map { .effect($0.id) }
-            }
+            alignSelection(with: viewMode)
             store.config.viewMode = viewMode
             store.saveConfigSoon()
         }
@@ -138,7 +137,7 @@ final class AppState: ObservableObject {
 
         let restored = store.config.activeEffectID.flatMap { store.effect(id: $0) } ?? store.allEffects.first
         selection = restored.map { .effect($0.id) }
-        effectsSource = restored?.isBuiltIn == false ? .custom : .builtIn
+        alignSelection(with: viewMode)
         capture.start()
 
         for stage in store.allStages {
@@ -152,13 +151,25 @@ final class AppState: ObservableObject {
         guard selection != newSelection else { return }
         let previousEffectID = activeEffectID
         selection = newSelection
-        if let effect = activeEffect {
-            effectsSource = effect.isBuiltIn ? .builtIn : .custom
-        }
         guard activeEffectID != previousEffectID else { return }
         store.config.activeEffectID = activeEffectID
         store.saveConfigSoon()
         rebuildChain()
+    }
+
+    /// Basic Mode never points at a stage; the editor prefers to. Neither
+    /// move changes the active effect, so the render chain is untouched.
+    private func alignSelection(with mode: ViewMode) {
+        switch (mode, selection) {
+        case (.basic, .stage(let stageID)):
+            selection = store.effect(containing: stageID).map { .effect($0.id) }
+        case (.editor, .effect(let effectID)):
+            if let firstStageID = store.effect(id: effectID)?.stageIDs.first {
+                selection = .stage(firstStageID)
+            }
+        default:
+            break
+        }
     }
 
     /// Falls back to the first effect when the selection points at something

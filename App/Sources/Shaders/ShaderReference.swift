@@ -83,7 +83,7 @@ enum ShaderReference {
             id: "ceStageTexture",
             name: "ceStageTexture(index, uv)",
             type: "vec4",
-            description: "Output of the stage at `index` (the number shown next to it in the sidebar). Also accepts the stage's name as a string literal — ceStageTexture(\"Trail Buffer\", vUV) — which the app resolves against the effect, so reordering stages does not break it. Out-of-range indices and unknown names read transparent black."
+            description: "Output of the stage at `index` (the number shown next to it in the stage list). Also accepts the stage's name as a string literal — ceStageTexture(\"Trail Buffer\", vUV) — which the app resolves against the effect, so reordering stages does not break it. Out-of-range indices and unknown names read transparent black."
         ),
         Symbol(
             id: "ceSelfTexture",
@@ -267,13 +267,13 @@ enum ShaderReference {
             id: "Params",
             name: "Params",
             type: "uniform block, binding = 3",
-            description: "Optional std140 block for stage parameters. Members become sliders, toggles, or color pickers in the inspector. Put `// @metadata(min=0 max=1 default=0.5)` on the line above a member to set its slider range. Vectors accept GLSL constructors (`min=vec3(0) max=vec3(1, 2, 1)`). `vec3`/`vec4` use per-component sliders unless you add `color=true`. Add `global` to list the control on the owning effect too, which is the only place Basic Mode can reach it."
+            description: "Optional std140 block for stage parameters. Members become sliders, toggles, or color pickers in the controls pane while the stage is being edited. Put `// @metadata(min=0 max=1 default=0.5)` on the line above a member to set its slider range. Vectors accept GLSL constructors (`min=vec3(0) max=vec3(1, 2, 1)`). `vec3`/`vec4` use per-component sliders unless you add `color=true`. Add `global` to list the control on the owning effect too, which is the only place Basic Mode can reach it."
         ),
         Symbol(
             id: "sampler2D",
             name: "yourSampler",
             type: "uniform sampler2D, binding ≥ 4",
-            description: "Optional 2D textures assigned from the shared media library in the stage inspector. Put `// @metadata(global)` on the line above the declaration to list the picker on the owning effect too, which is the only place Basic Mode can reach it. No other metadata key applies to a sampler."
+            description: "Optional 2D textures assigned from the shared media library in the controls pane while the stage is being edited. Put `// @metadata(global)` on the line above the declaration to list the picker on the owning effect too, which is the only place Basic Mode can reach it. No other metadata key applies to a sampler."
         ),
     ]
 }

@@ -5,16 +5,17 @@ user-editable GLSL **effect** on the GPU, and republishes the result as a
 system-wide **virtual camera** you can pick in Zoom, Meet, FaceTime, etc.
 
 - An **effect** is a small pipeline of one or more **stages**. Exactly one
-  effect is active at a time — the one selected in the sidebar.
+  effect is active at a time — the one picked in the effect menu.
 - Stages are authored in **GLSL 450** and transpiled to Metal at runtime
   (glslang → SPIR-V → SPIRV-Cross → MSL).
 - Every stage gets the last **N frames** of the raw feed as a **3D texture**
   (`sampler3D uFrames`), with N configurable in the app.
 - **Basic Mode** (the default) is the camera filling the window, with four
   glass controls floating over it: a camera picker, the effect menu, the
-  effect's controls in a pane that unfolds from its button, and the way into
-  Editor Mode. **Editor Mode** is the full three-column UI: every effect with
-  its stages, the GLSL editor, and the per-stage inspector.
+  effect's controls in a pane that unfolds from its button, and the editor
+  switch. **Editor Mode** slides an editor panel in under the camera — the
+  active effect's stages beside the GLSL editor — and leaves everything above
+  it in place; the controls pane then shows the selected stage's controls.
 - Built-in editor with GLSL syntax highlighting, code completion (keywords,
   built-ins, and the injected prelude symbols), live recompile, inline compile
   errors, `⌘/` to comment or uncomment the selected lines, and auto-generated
@@ -68,11 +69,11 @@ allow developer mode via `systemextensionsctl developer on`). So:
 
 1. Build the app in Xcode (Release recommended).
 2. Copy `CameraEffects.app` into `/Applications` and launch it from there.
-3. Click **Install Extension** in the toolbar and approve the extension in
-   System Settings → General → Login Items & Extensions.
+3. Click **Install Extension** in the window's top-right corner and approve
+   the extension in System Settings → General → Login Items & Extensions.
 4. "Camera Effects" now appears as a camera in any video-call app. Streaming
-   starts on its own — the toolbar just reports whether the sink stream is
-   connected.
+   starts on its own — the status in the corner only stays visible while the
+   sink stream is not connected.
 
 To remove: `systemextensionsctl uninstall <team-id> studio.polyglot.CameraEffects.Extension`.
 
@@ -81,72 +82,74 @@ To remove: `systemextensionsctl uninstall <team-id> studio.polyglot.CameraEffect
 
 ## Liquid Glass
 
-Built with Xcode 26 or newer, the app picks up macOS 26's Liquid Glass: the
-toolbar, popovers, lists and every standard control are restyled by the system
-without any code. On top of that the app opts in explicitly for the chrome it
-draws itself:
+Built with Xcode 26 or newer, the app picks up macOS 26's Liquid Glass:
+popovers, lists and every standard control are restyled by the system without
+any code. On top of that the app opts in explicitly for the chrome it draws
+itself:
 
 - the whole window is one `GlassEffectContainer`, so its glass surfaces blend
   with each other and render in one pass instead of sampling each other;
-- the sidebar's **Add Effect** bar and the inspector header are glass strips
-  that the list and the controls scroll *under*, rather than rows above a
-  divider;
+- the editor panel's headers and the stage list's **Add Stage** bar are glass
+  strips that the list scrolls *under*, rather than rows above a divider;
 - the editor header is a glass strip too, and the diagnostics list below the
   code tints its glass red or yellow — the tint is what carries the compile
   status, replacing the old color wash;
-- the toolbar's mode switch sits in its own glass group, separated from the
-  tool buttons by a `ToolbarSpacer`;
 - the Dock icon is an Icon Composer package (`App/Resources/AppIcon.icon`).
 
-Basic Mode is built around glass: the window has no title bar or toolbar of
-its own, the camera runs edge to edge, and everything else floats over it as
-interactive *clear* glass — the style meant for controls over photos and
+The camera view is built around glass: the window has no title bar or toolbar
+of its own, the camera runs edge to edge, and everything else floats over it
+as interactive *clear* glass — the style meant for controls over photos and
 video, which shows far more of the feed than the frosted `regular` glass the
 app's chrome uses. The floating elements are the circular camera, controls and
-Editor Mode buttons, the effect menu, the controls pane, and the extension
-status, which only appears while the virtual camera needs installing,
-approving or is still connecting. Clear glass leaves legibility to the app, so
-each surface carries a scrim between the glass and its contents, sized to how
-fine that content is — a hint under the control bar, more under the pane's
-sliders (the `dim` argument of `glassSurface`).
+editor buttons, the effect menu, the controls pane, and the extension status,
+which only appears while the virtual camera needs installing, approving or is
+still connecting. Clear glass leaves legibility to the app, so each surface
+carries a scrim between the glass and its contents, sized to how fine that
+content is — a hint under the control bar, more under the pane's sliders (the
+`dim` argument of `glassSurface`).
 The camera menu also holds two view settings: **Mirror**, and **Fill Window**
 (on by default), which crops the frame to cover the window — turn it off to
 letterbox it and see everything the virtual camera sends. Both are remembered.
-Frame history stays in Editor Mode's settings. The floating UI is pinned to
+Frame history is in the editor panel's settings. The floating UI is pinned to
 the dark appearance whatever the system is set to: glass takes its tone from
 the video behind it rather than from the system, and the pane's native
 controls can only be made to match it by fixing their appearance.
 
-Editor Mode's three columns are an `HSplitView`, not a `NavigationSplitView`,
-so the system does not give the effect list the glass sidebar treatment it
-gives a real sidebar. That would mean rebuilding the window's layout — the
-columns are resized and prioritised by hand here — so it is left alone.
+Editor Mode does not replace that layout — it slides a panel in under the
+camera (`.move(edge: .bottom)` transition, animated together with the camera
+shrinking to make room) and slides it back out when switched off. The panel's
+two columns are an `HSplitView`, and the seam between the panel and the camera
+is a drag handle for the panel's height; the panel follows the system
+appearance while the floating controls above it stay dark.
 
 None of this raises the macOS 14 deployment target. Every use is behind
 `#if compiler(>=6.2)` (the Liquid Glass symbols only exist in the macOS 26
 SDK, which ships with Swift 6.2) and `#available(macOS 26.0, *)`. Both checks
-live in `App/Sources/UI/LiquidGlass.swift` — which is also where the pre-26
-fallbacks are — except for the one `ToolbarSpacer` in `ContentView.swift`. On
-macOS 14 and 15 the same chrome renders with the `.bar` material as before.
+live in `App/Sources/UI/LiquidGlass.swift`, which is also where the pre-26
+fallbacks are. On macOS 14 and 15 the same chrome renders with the `.bar`
+material as before.
 
 ## Effects and stages
 
 An **effect** is a named list of **stages**. Only one effect renders at a
-time: the one that owns the sidebar selection, so clicking an effect (or any
-stage inside it) activates that effect. There is nothing to enable or
-disable — picking an effect *is* turning it on.
+time: the one picked in the effect menu, which is also the one the editor
+panel edits. There is nothing to enable or disable — picking an effect *is*
+turning it on.
 
-Basic Mode's effect menu lists both groups of effects; Editor Mode's sidebar
-switches between them with the **Built-in / Custom** control:
+The effect menu lists both groups of effects:
 
 - **Built-in** effects ship inside the app and are loaded straight from the
   bundle, so the list always matches the installed version. They can be
   activated and their controls adjusted (values are remembered), and in Editor
   Mode their stages and GLSL can be read — but not edited, renamed, reordered
-  or deleted. Use **Duplicate to Custom** (on the effect row, its context menu,
-  or the editor header) to get an editable copy of the effect and its stages.
+  or deleted. Use **Duplicate to Custom** (in the stage list's header menu,
+  its footer, or the editor header) to get an editable copy of the effect and
+  its stages.
 - **Custom** effects are yours: everything below about adding, editing and
-  moving stages applies to them.
+  moving stages applies to them. The stage list's header menu also holds the
+  effect's own actions: **Rename**, **Duplicate**, **Move Up** / **Move Down**
+  (the order the effect menu lists them in), **Delete Effect** and **New
+  Effect**.
 
 Within an effect, stages run top to bottom, each one sampling the previous
 stage's output through `uPrev`. The first stage of every effect sees the
@@ -156,29 +159,21 @@ before.
 
 Every stage also keeps its output in its own texture, which any stage of the
 effect can read with `ceStageTexture()` — by index (shown next to each stage
-in the sidebar) or by name. A stage reading its own texture gets its previous
+in the stage list) or by name. A stage reading its own texture gets its previous
 frame, which is how feedback effects are built. See
 [Stage textures and feedback](#stage-textures-and-feedback).
 
 A stage that never samples `uPrev` does not build on its effect's chain — it
 replaces the whole frame. Every stage before it in the same effect is
 therefore invisible — unless some stage of the effect reads stage textures —
-so the app skips those passes entirely and marks them in the sidebar. Their
+so the app skips those passes entirely and marks them in the stage list. Their
 vision detectors do not run either.
 
 Use Editor Mode to add, remove and duplicate stages (the duplicate lands right
 below the original with the same shader and parameter values). Drag a stage by
-its row to reorder it or to move it into another effect — an insertion line
-shows where it will land:
-
-- onto another stage, to go directly above it;
-- onto an effect's header, to become that effect's first stage (this is also
-  how you drop into a collapsed effect);
-- onto an effect's **Add Stage** row, to go last.
-
-Effects are reordered the same way: drag an effect's header onto another
-effect to go above it, or onto the **Add Effect** bar to go last. Effects and
-stages carry different drag payloads, so neither can land in the other's slot.
+its row to reorder it within the effect. The stage list only shows the active
+effect, so moving a stage into another effect goes through the row's context
+menu: **Move to** › the destination, where it lands last.
 
 ## Storage layout
 
@@ -207,7 +202,7 @@ effects.
 
 Your shader is a GLSL 450 **fragment shader body**. The app injects a prelude
 that declares the interface, so you only write `main()` plus an optional
-`Params` block. The inspector lists every built-in symbol when editing a stage.
+`Params` block. The editor's `{ }` button lists every built-in symbol.
 
 ### Built-in interface
 
@@ -244,7 +239,7 @@ back: `mix(ceSelfTexture(vUV), ceDiscBlur(uPrev, vUV, 6.0, 8, 1.0), 0.3)`.
 
 Each stage of the active effect owns one slice of `uStageTextures`, a
 `sampler2DArray` indexed by the stage's position in the effect (the number
-shown next to it in the sidebar). After a stage has rendered, its result is
+shown next to it in the stage list). After a stage has rendered, its result is
 copied into its slice, so:
 
 - stages **before** the current one hold **this frame's** output;
@@ -383,14 +378,14 @@ void main() {
 
 | Symbol | Type | Description |
 | --- | --- | --- |
-| `Params` | `std140` block, binding = 3 | Optional stage parameters — become inspector controls. |
+| `Params` | `std140` block, binding = 3 | Optional stage parameters — become controls in the controls pane. |
 | `yourSampler` | `sampler2D`, binding 4–15 | Optional 2D textures assigned from the media library. Accepts `// @metadata(global)`. |
 
 Example stage:
 
 ```glsl
 layout(std140, binding = 3) uniform Params {
-    float amount;   // becomes a slider in the inspector
+    float amount;   // becomes a slider in the controls pane
 };
 
 void main() {
@@ -418,7 +413,7 @@ layout(std140, binding = 3) uniform Params {
 };
 ```
 
-`min` / `max` update the inspector on every compile. `default` is used only
+`min` / `max` update the controls on every compile. `default` is used only
 when the parameter is first created. Current slider values stay in
 `stage.json` and are clamped into the new range. Float sliders include an
 editable value field for precise input.
@@ -435,12 +430,12 @@ reported as a shader error on that `@metadata` line.
 
 ### Effect-level controls (`global`)
 
-Basic Mode never shows stages, so by default it cannot reach a stage's
-controls. Add `global` (or `global=true`) to a parameter's `@metadata` and its
-control is listed on the owning **effect** as well as on the stage — which is
-what Basic Mode's controls pane (and the effect's inspector in Editor Mode)
-shows. Effects made of several stages group the borrowed controls under each
-stage's name.
+The controls pane shows a stage's controls only while that stage is selected
+in the editor panel; in Basic Mode it shows the **effect's**. Add `global` (or
+`global=true`) to a parameter's `@metadata` and its control is listed on the
+owning effect as well as on the stage, which is what puts it in reach of
+Basic Mode. Effects made of several stages group the borrowed controls under
+each stage's name.
 
 Sampler uniforms take the same decorator, and `global` is the only key they
 accept — a sampler has no range and no components, so `min`, `max`, `default`
