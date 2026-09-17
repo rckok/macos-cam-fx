@@ -14,8 +14,9 @@ system-wide **virtual camera** you can pick in Zoom, Meet, FaceTime, etc.
   glass controls floating over it: a camera picker, the effect menu, the
   effect's controls in a pane that unfolds from its button, and the editor
   switch. **Editor Mode** slides an editor panel in under the camera — the
-  active effect's stages beside the GLSL editor — and leaves everything above
-  it in place; the controls pane then shows the selected stage's controls.
+  active effect's stages, the GLSL editor, and the selected stage's controls
+  — and leaves everything above it in place. The effect menu unfolds into a
+  glass list there, where effects can also be added, reordered and removed.
 - Built-in editor with GLSL syntax highlighting, code completion (keywords,
   built-ins, and the injected prelude symbols), live recompile, inline compile
   errors, `⌘/` to comment or uncomment the selected lines, and auto-generated
@@ -136,20 +137,24 @@ time: the one picked in the effect menu, which is also the one the editor
 panel edits. There is nothing to enable or disable — picking an effect *is*
 turning it on.
 
-The effect menu lists both groups of effects:
+The effect menu lists both groups of effects. In Basic Mode it is a plain
+menu; while the editor panel is open the same button unfolds a glass list laid
+out like that menu, with the room to manage the effects as well as pick one:
 
 - **Built-in** effects ship inside the app and are loaded straight from the
   bundle, so the list always matches the installed version. They can be
   activated and their controls adjusted (values are remembered), and in Editor
   Mode their stages and GLSL can be read — but not edited, renamed, reordered
-  or deleted. Use **Duplicate to Custom** (in the stage list's header menu,
-  its footer, or the editor header) to get an editable copy of the effect and
-  its stages.
+  or deleted. Use **Duplicate to Custom** (the row's context menu in the
+  effect list, the stage list's footer, or the editor header) to get an
+  editable copy of the effect and its stages.
 - **Custom** effects are yours: everything below about adding, editing and
-  moving stages applies to them. The stage list's header menu also holds the
-  effect's own actions: **Rename**, **Duplicate**, **Move Up** / **Move Down**
-  (the order the effect menu lists them in), **Delete Effect** and **New
-  Effect**.
+  moving stages applies to them. In the unfolded effect list each one has a
+  drag handle to reorder it and a **−** button to delete it (an effect with
+  stages asks whether to delete them or move them to another effect), the
+  row's context menu duplicates it, and **Add Effect** at the bottom creates
+  a new one. Renaming is done in the stage list's header, with the pencil
+  next to the effect's name.
 
 Within an effect, stages run top to bottom, each one sampling the previous
 stage's output through `uPrev`. The first stage of every effect sees the
@@ -378,14 +383,14 @@ void main() {
 
 | Symbol | Type | Description |
 | --- | --- | --- |
-| `Params` | `std140` block, binding = 3 | Optional stage parameters — become controls in the controls pane. |
+| `Params` | `std140` block, binding = 3 | Optional stage parameters — become controls in the editor panel's stage controls column. |
 | `yourSampler` | `sampler2D`, binding 4–15 | Optional 2D textures assigned from the media library. Accepts `// @metadata(global)`. |
 
 Example stage:
 
 ```glsl
 layout(std140, binding = 3) uniform Params {
-    float amount;   // becomes a slider in the controls pane
+    float amount;   // becomes a slider in the stage controls column
 };
 
 void main() {
@@ -430,12 +435,11 @@ reported as a shader error on that `@metadata` line.
 
 ### Effect-level controls (`global`)
 
-The controls pane shows a stage's controls only while that stage is selected
-in the editor panel; in Basic Mode it shows the **effect's**. Add `global` (or
-`global=true`) to a parameter's `@metadata` and its control is listed on the
-owning effect as well as on the stage, which is what puts it in reach of
-Basic Mode. Effects made of several stages group the borrowed controls under
-each stage's name.
+A stage's controls live in the editor panel, so Basic Mode cannot reach them.
+Add `global` (or `global=true`) to a parameter's `@metadata` and its control
+is listed on the owning **effect** as well as on the stage — which is what the
+floating controls pane shows, in both modes. Effects made of several stages
+group the borrowed controls under each stage's name.
 
 Sampler uniforms take the same decorator, and `global` is the only key they
 accept — a sampler has no range and no components, so `min`, `max`, `default`

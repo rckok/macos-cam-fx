@@ -1,10 +1,9 @@
 import SwiftUI
 
 /// The camera, with everything else floating over it as glass: camera and
-/// effect pickers, the controls pane that unfolds from its button, and the
-/// switch for the editor panel. This is the whole window in Basic Mode and
-/// the top of it in Editor Mode; the controls pane shows the effect's
-/// controls in the first case and the selected stage's in the second.
+/// effect pickers, the effect's controls in a pane that unfolds from its
+/// button, and the switch for the editor panel. This is the whole window in
+/// Basic Mode and the top of it in Editor Mode.
 struct BasicModeView: View {
     @EnvironmentObject private var state: AppState
     @ObservedObject var store: EffectStore
@@ -12,21 +11,40 @@ struct BasicModeView: View {
     @ObservedObject var extensionManager: ExtensionManager
     @ObservedObject var sink: VirtualCameraSink
 
-    @State private var showControls = false
+    /// The panes that unfold from the control bar. One slot above the bar,
+    /// so opening one closes the other.
+    private enum Pane {
+        case effects
+        case controls
+    }
+
+    @State private var openPane: Pane?
+    @State private var effectToDelete: Effect?
 
     private let controlSize: CGFloat = 40
+    private let paneWidth: CGFloat = 320
+    private let paneShape = RoundedRectangle(cornerRadius: 20, style: .continuous)
     /// Clear glass leaves legibility to the caller. The bar's symbols and its
-    /// one label need only a hint of a scrim; the controls pane needs more.
+    /// one label need only a hint of a scrim; the panes need more.
     private let controlDim = 0.12
+    private let paneDim = 0.25
 
     var body: some View {
         PreviewView(engine: state.engine, contentMode: state.previewFillsWindow ? .fill : .fit)
             .ignoresSafeArea()
             .overlay(alignment: .bottom) {
-                VStack(alignment: .trailing, spacing: 12) {
-                    if showControls {
+                // Each pane unfolds towards its own button: the effect list
+                // from the left half of the bar, the controls from the right.
+                VStack(alignment: openPane == .effects ? .leading : .trailing, spacing: 12) {
+                    switch openPane {
+                    case .effects:
+                        effectsPane
+                            .transition(.scale(scale: 0.9, anchor: .bottomLeading).combined(with: .opacity))
+                    case .controls:
                         controlsPane
                             .transition(.scale(scale: 0.9, anchor: .bottomTrailing).combined(with: .opacity))
+                    case nil:
+                        EmptyView()
                     }
                     controlBar
                 }
@@ -49,7 +67,31 @@ struct BasicModeView: View {
             // black on dark glass in light mode. Pinning the whole HUD to
             // dark keeps every part of it agreeing with the glass.
             .environment(\.colorScheme, .dark)
-            .animation(.snappy(duration: 0.3), value: showControls)
+            .animation(.snappy(duration: 0.3), value: openPane)
+            // The unfolded effect list belongs to editing; the system menu
+            // takes over again when the editor closes.
+            .onChange(of: state.viewMode) { _, mode in
+                if mode == .basic, openPane == .effects {
+                    openPane = nil
+                }
+            }
+            // Attached outside the dark HUD, so the sheet keeps the window's
+            // appearance.
+            .sheet(item: $effectToDelete) { effect in
+                DeleteEffectSheet(
+                    effect: effect,
+                    stageCount: effect.stageIDs.count,
+                    destinations: store.effects.filter { $0.id != effect.id }
+                ) { choice in
+                    switch choice {
+                    case .deleteStages:
+                        state.removeEffect(effect, deleteStages: true)
+                    case .move(let targetEffectID):
+                        state.removeEffect(effect, deleteStages: false, moveStagesTo: targetEffectID)
+                    }
+                    effectToDelete = nil
+                }
+            }
     }
 
     // MARK: Control bar
@@ -57,11 +99,18 @@ struct BasicModeView: View {
     private var controlBar: some View {
         HStack(spacing: 12) {
             cameraMenu
-            effectMenu
-            glassIconButton("slider.horizontal.3", help: showControls ? "Hide controls" : "Effect controls") {
-                showControls.toggle()
+            if isEditing {
+                effectListButton
+            } else {
+                effectMenu
             }
-            .foregroundStyle(showControls ? Color.accentColor : Color.primary)
+            glassIconButton(
+                "slider.horizontal.3",
+                help: openPane == .controls ? "Hide controls" : "Effect controls"
+            ) {
+                toggle(.controls)
+            }
+            .foregroundStyle(openPane == .controls ? Color.accentColor : Color.primary)
             glassIconButton(
                 "chevron.left.forwardslash.chevron.right",
                 help: isEditing ? "Hide the editor" : "Edit this effect"
@@ -74,6 +123,10 @@ struct BasicModeView: View {
 
     private var isEditing: Bool {
         state.viewMode == .editor
+    }
+
+    private func toggle(_ pane: Pane) {
+        openPane = openPane == pane ? nil : pane
     }
 
     /// Camera picker plus the two settings that matter while watching the
@@ -104,27 +157,46 @@ struct BasicModeView: View {
         .help("Camera")
     }
 
+    /// Basic Mode's effect picker: a plain system menu.
     private var effectMenu: some View {
         Menu {
             effectSection("Built-in", store.builtInEffects)
             effectSection("Custom", store.effects)
         } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "wand.and.stars")
-                Text(state.activeEffect?.name ?? "Choose Effect")
-                    .lineLimit(1)
-                    .frame(maxWidth: 200)
-                Image(systemName: "chevron.down")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-            }
-            .font(.system(size: 13, weight: .medium))
-            .padding(.horizontal, 14)
-            .frame(height: controlSize)
-            .contentShape(Capsule())
+            effectLabel
         }
         .glassMenu(in: Capsule(), dim: controlDim)
         .help("Effect")
+    }
+
+    /// The same control while editing, unfolding the effect list pane instead
+    /// of a menu — the list can be managed, a menu can only be picked from.
+    private var effectListButton: some View {
+        Button {
+            toggle(.effects)
+        } label: {
+            effectLabel
+        }
+        .buttonStyle(.plain)
+        .glassSurface(in: Capsule(), interactive: true, dim: controlDim)
+        .foregroundStyle(openPane == .effects ? Color.accentColor : Color.primary)
+        .help(openPane == .effects ? "Hide effects" : "Effects")
+    }
+
+    private var effectLabel: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "wand.and.stars")
+            Text(state.activeEffect?.name ?? "Choose Effect")
+                .lineLimit(1)
+                .frame(maxWidth: 200)
+            Image(systemName: openPane == .effects ? "chevron.up" : "chevron.down")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+        }
+        .font(.system(size: 13, weight: .medium))
+        .padding(.horizontal, 14)
+        .frame(height: controlSize)
+        .contentShape(Capsule())
     }
 
     @ViewBuilder
@@ -153,25 +225,34 @@ struct BasicModeView: View {
         .help(help)
     }
 
-    // MARK: Controls pane
+    // MARK: Panes
 
-    /// The active effect's `global` controls — or, while a stage is selected
-    /// in the editor panel, every control of that stage — on glass.
+    /// The effect menu unfolded, with the management a menu has no room for.
+    private var effectsPane: some View {
+        let list = EffectListPane(store: store) { effect in
+            requestDelete(effect)
+        }
+        return ViewThatFits(in: .vertical) {
+            list
+            ScrollView {
+                list
+            }
+        }
+        .frame(width: paneWidth)
+        .frame(maxHeight: 440)
+        .glassSurface(in: paneShape, dim: paneDim)
+    }
+
+    /// The active effect's `global` controls on glass. Stage-level controls
+    /// are the editor panel's business, so this pane shows the same thing in
+    /// both modes.
     private var controlsPane: some View {
         VStack(alignment: .leading, spacing: 10) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(paneTitle)
-                    .font(.headline)
-                    .lineLimit(1)
-                if let stage = state.selectedStage {
-                    Text("Stage in \(state.store.effect(containing: stage.id)?.name ?? "effect")")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 14)
+            Text(state.activeEffect?.name ?? "Controls")
+                .font(.headline)
+                .lineLimit(1)
+                .padding(.horizontal, 16)
+                .padding(.top, 14)
 
             // Hugs its content while it fits, and scrolls once it does not.
             ViewThatFits(in: .vertical) {
@@ -181,27 +262,25 @@ struct BasicModeView: View {
                 }
             }
         }
-        .frame(width: 320)
+        .frame(width: paneWidth)
         .frame(maxHeight: 440)
         // Sliders and their labels are fine detail over a moving frame, so
-        // this is the one surface that needs a scrim behind it.
-        .glassSurface(in: RoundedRectangle(cornerRadius: 20, style: .continuous), dim: 0.25)
+        // the panes are the surfaces that need a scrim behind them.
+        .glassSurface(in: paneShape, dim: paneDim)
     }
 
-    private var paneTitle: String {
-        state.selectedStage?.name ?? state.activeEffect?.name ?? "Controls"
+    /// An effect with stages asks what to do with them; an empty one just goes.
+    private func requestDelete(_ effect: Effect) {
+        if effect.stageIDs.isEmpty {
+            state.removeEffect(effect, deleteStages: true)
+        } else {
+            effectToDelete = effect
+        }
     }
 
-    /// The selection only points at a stage while the editor panel is open,
-    /// so closing the panel brings the effect's controls back on its own.
     @ViewBuilder
     private var paneControls: some View {
-        if let stage = state.selectedStage {
-            StageControls(stage: stage)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 16)
-                .padding(.bottom, 16)
-        } else if let effect = state.activeEffect {
+        if let effect = state.activeEffect {
             EffectControls(effect: effect, store: store)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 16)

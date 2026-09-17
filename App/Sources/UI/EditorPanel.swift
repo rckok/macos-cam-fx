@@ -2,9 +2,9 @@ import AppKit
 import SwiftUI
 
 /// Editor Mode's panel, which slides up under the camera: the active effect's
-/// stages on the left, the GLSL editor for the selected stage on the right.
-/// Controls are not here — the floating controls pane over the camera shows
-/// the selected stage's while the panel is open.
+/// stages on the left, the GLSL editor for the selected stage in the middle,
+/// and that stage's controls on the right. The effect's own (`global`)
+/// controls stay in the floating pane over the camera.
 struct EditorPanel: View {
     @EnvironmentObject private var state: AppState
     @ObservedObject var store: EffectStore
@@ -21,9 +21,14 @@ struct EditorPanel: View {
                     .layoutPriority(0)
             }
 
+            // The three minimums have to fit the window's 720pt minimum width.
             editorColumn
-                .frame(minWidth: 320)
+                .frame(minWidth: 280)
                 .layoutPriority(1)
+
+            StageControlsColumn(stage: state.selectedStage)
+                .frame(minWidth: 220, idealWidth: 260, maxWidth: 400)
+                .layoutPriority(0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
@@ -89,6 +94,58 @@ struct EditorPanel: View {
 
             Spacer()
         }
+    }
+}
+
+/// The editor panel's right column: every control of the stage being edited,
+/// `global` or not.
+private struct StageControlsColumn: View {
+    let stage: Stage?
+
+    var body: some View {
+        ScrollView {
+            if let stage {
+                StageControls(stage: stage)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+            } else {
+                Text("Select a stage to adjust its controls.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+            }
+        }
+        // An inset rather than a row above the scroll view, so the controls
+        // travel under the glass instead of stopping at a hard edge.
+        .safeAreaInset(edge: .top, spacing: 0) {
+            HStack {
+                if let stage {
+                    StageNameLabel(stage: stage)
+                } else {
+                    Text("Stage Controls")
+                        .font(.headline)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity)
+            .glassChrome()
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+}
+
+/// Observes the stage so a rename in the editor header shows up here.
+private struct StageNameLabel: View {
+    @ObservedObject var stage: Stage
+
+    var body: some View {
+        Text(stage.name)
+            .font(.headline)
+            .lineLimit(1)
     }
 }
 

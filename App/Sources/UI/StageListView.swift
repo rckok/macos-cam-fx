@@ -2,14 +2,13 @@ import SwiftUI
 
 /// The editor panel's left column: the active effect's stages in render
 /// order, with the controls to add, reorder, duplicate and remove them. The
-/// effect itself is chosen with the floating effect menu; its own actions
-/// (rename, duplicate, delete, reorder) sit behind the menu in the header.
+/// effect itself is chosen — and added, reordered or deleted — in the
+/// floating effect list; only renaming happens here, in the header.
 struct StageListView: View {
     @EnvironmentObject private var state: AppState
     @ObservedObject var store: EffectStore
     let effect: Effect
 
-    @State private var effectToDelete: Effect?
     @State private var isRenaming = false
     @State private var draftName = ""
     @FocusState private var nameFieldFocused: Bool
@@ -63,21 +62,6 @@ struct StageListView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             footer
         }
-        .sheet(item: $effectToDelete) { effect in
-            DeleteEffectSheet(
-                effect: effect,
-                stageCount: effect.stageIDs.count,
-                destinations: store.effects.filter { $0.id != effect.id }
-            ) { choice in
-                switch choice {
-                case .deleteStages:
-                    state.removeEffect(effect, deleteStages: true)
-                case .move(let targetEffectID):
-                    state.removeEffect(effect, deleteStages: false, moveStagesTo: targetEffectID)
-                }
-                effectToDelete = nil
-            }
-        }
         .onChange(of: effect.id) { _, _ in
             cancelRename()
         }
@@ -85,9 +69,7 @@ struct StageListView: View {
 
     // MARK: Header
 
-    /// The effect's name, which selects the effect itself — the way to get
-    /// its effect-level controls back into the controls pane while editing —
-    /// and the menu of actions on the effect.
+    /// The effect's name, with a pencil to rename a custom effect in place.
     private var header: some View {
         HStack(spacing: 8) {
             if isRenaming {
@@ -98,64 +80,34 @@ struct StageListView: View {
                     .onSubmit(commitRename)
                     .onExitCommand(perform: cancelRename)
             } else {
-                Button {
-                    state.select(.effect(effect.id))
-                } label: {
-                    HStack(spacing: 6) {
-                        Text(effect.name)
-                            .font(.headline)
-                            .lineLimit(1)
-                        if effect.isBuiltIn {
-                            Image(systemName: "lock.fill")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .contentShape(Rectangle())
+                Text(effect.name)
+                    .font(.headline)
+                    .lineLimit(1)
+                if effect.isBuiltIn {
+                    Image(systemName: "lock.fill")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .help("Built-in effect: read-only")
                 }
-                .buttonStyle(.plain)
-                .help(effect.isBuiltIn
-                      ? "Built-in effect: read-only. Click to show its effect-level controls."
-                      : "Click to show the effect's own controls instead of a stage's")
             }
 
             Spacer()
 
-            Menu {
-                effectActions
-            } label: {
-                Image(systemName: "ellipsis.circle")
-                    .font(.system(size: 14))
-                    .frame(width: 22, height: 22)
-                    .contentShape(Rectangle())
+            if !effect.isBuiltIn && !isRenaming {
+                Button(action: startRename) {
+                    Image(systemName: "pencil")
+                        .foregroundStyle(.secondary)
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Rename effect")
             }
-            .menuStyle(.button)
-            .buttonStyle(.plain)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help("Effect actions")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity)
         .glassChrome()
-    }
-
-    @ViewBuilder
-    private var effectActions: some View {
-        if effect.isBuiltIn {
-            Button("Duplicate to Custom") { state.duplicateEffect(effect) }
-        } else {
-            Button("Rename") { startRename() }
-            Button("Duplicate") { state.duplicateEffect(effect) }
-            Button("Move Up") { moveEffect(by: -1) }
-                .disabled(!canMoveEffect(by: -1))
-            Button("Move Down") { moveEffect(by: 1) }
-                .disabled(!canMoveEffect(by: 1))
-            Button("Delete Effect", role: .destructive) { requestDelete() }
-        }
-        Divider()
-        Button("New Effect") { state.addEffect() }
     }
 
     // MARK: Footer
@@ -222,34 +174,7 @@ struct StageListView: View {
         state.moveStage(ids[sourceIndex], toEffect: effect.id, placement: placement)
     }
 
-    // MARK: Effect actions
-
-    private func canMoveEffect(by offset: Int) -> Bool {
-        guard let index = store.effects.firstIndex(where: { $0.id == effect.id }) else { return false }
-        return store.effects.indices.contains(index + offset)
-    }
-
-    /// Effect order is what the effect menu lists; every effect is its own
-    /// pipeline, so this never touches the render chain.
-    private func moveEffect(by offset: Int) {
-        let effects = store.effects
-        guard let index = effects.firstIndex(where: { $0.id == effect.id }),
-              effects.indices.contains(index + offset)
-        else { return }
-        // Moving down means landing after the next effect, i.e. before the one
-        // past it — or last when there is none.
-        let anchorIndex = offset < 0 ? index + offset : index + offset + 1
-        let anchorID = effects.indices.contains(anchorIndex) ? effects[anchorIndex].id : nil
-        state.moveEffect(effect.id, before: anchorID)
-    }
-
-    private func requestDelete() {
-        if effect.stageIDs.isEmpty {
-            state.removeEffect(effect, deleteStages: true)
-        } else {
-            effectToDelete = effect
-        }
-    }
+    // MARK: Renaming
 
     private func startRename() {
         draftName = effect.name
@@ -333,78 +258,5 @@ private struct StageRow: View {
             }
         }
         .padding(.vertical, 3)
-    }
-}
-
-private struct DeleteEffectSheet: View {
-    @Environment(\.dismiss) private var dismiss
-
-    enum Choice {
-        case deleteStages
-        case move(toEffectID: String)
-    }
-
-    let effect: Effect
-    let stageCount: Int
-    let destinations: [Effect]
-    let onConfirm: (Choice) -> Void
-
-    @State private var deleteStages: Bool
-    @State private var targetEffectID: String
-
-    init(effect: Effect, stageCount: Int, destinations: [Effect], onConfirm: @escaping (Choice) -> Void) {
-        self.effect = effect
-        self.stageCount = stageCount
-        self.destinations = destinations
-        self.onConfirm = onConfirm
-        _deleteStages = State(initialValue: destinations.isEmpty)
-        _targetEffectID = State(initialValue: destinations.first?.id ?? "")
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Delete \"\(effect.name)\"?")
-                .font(.headline)
-
-            Text("This effect has \(stageCount) stage\(stageCount == 1 ? "" : "s").")
-                .foregroundStyle(.secondary)
-
-            if destinations.isEmpty {
-                Text("There is no other effect to move them to, so deleting this effect deletes its stages.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                Picker("What should happen to the stages?", selection: $deleteStages) {
-                    Text("Move to another effect").tag(false)
-                    Text("Delete all stages").tag(true)
-                }
-                .pickerStyle(.radioGroup)
-
-                if !deleteStages {
-                    Picker("Destination effect", selection: $targetEffectID) {
-                        ForEach(destinations) { destination in
-                            Text(destination.name).tag(destination.id)
-                        }
-                    }
-                    .labelsHidden()
-                }
-            }
-
-            HStack {
-                Button("Cancel") { dismiss() }
-                Spacer()
-                Button("Delete Effect", role: .destructive) {
-                    if deleteStages {
-                        onConfirm(.deleteStages)
-                    } else {
-                        onConfirm(.move(toEffectID: targetEffectID))
-                    }
-                    dismiss()
-                }
-                .disabled(!deleteStages && targetEffectID.isEmpty)
-            }
-        }
-        .padding(20)
-        .frame(width: 380)
     }
 }
