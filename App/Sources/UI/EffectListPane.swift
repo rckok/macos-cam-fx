@@ -1,5 +1,4 @@
 import SwiftUI
-import UniformTypeIdentifiers
 
 /// The effect menu, unfolded onto glass while the editor panel is open: the
 /// same two groups of effects the system menu lists, with the active one
@@ -13,20 +12,29 @@ struct EffectListPane: View {
     /// the floating controls are pinned to.
     let onDelete: (Effect) -> Void
 
-    @State private var dropTarget: EffectDropTarget?
+    /// Reordering is a plain drag gesture on the row's handle, not a
+    /// pasteboard drag: the row follows the pointer and the others step
+    /// aside, and nothing has to make it across the drop machinery over the
+    /// camera view. Rows have one fixed height so the pointer's travel maps
+    /// straight onto a position in the list.
+    @State private var draggedEffectID: String?
+    @State private var dragTranslation: CGFloat = 0
+
+    private let rowHeight: CGFloat = 28
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             sectionHeader("Built-in")
             ForEach(store.builtInEffects) { effect in
-                row(for: effect)
+                row(for: effect, at: nil)
             }
 
             sectionHeader("Custom")
                 .padding(.top, 10)
-            ForEach(store.effects) { effect in
-                row(for: effect)
-                    .effectDropZone(.before(effectID: effect.id), current: $dropTarget, perform: moveEffect)
+            ForEach(Array(store.effects.enumerated()), id: \.element.id) { index, effect in
+                row(for: effect, at: index)
+                    .offset(y: rowOffset(at: index, id: effect.id))
+                    .zIndex(draggedEffectID == effect.id ? 1 : 0)
             }
 
             Button {
@@ -39,11 +47,13 @@ struct EffectListPane: View {
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
             .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .effectDropZone(.end, current: $dropTarget, perform: moveEffect)
+            .frame(height: rowHeight)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 8)
+        // Keyed to the landing slot, so the rows stepping aside animate while
+        // the dragged row tracks the pointer without lag in between.
+        .animation(.snappy(duration: 0.2), value: dropIndex)
     }
 
     private func sectionHeader(_ title: String) -> some View {
@@ -54,26 +64,76 @@ struct EffectListPane: View {
             .padding(.bottom, 2)
     }
 
-    private func row(for effect: Effect) -> some View {
+    /// `index` is the effect's place among the custom effects; nil for a
+    /// built-in one, which cannot be dragged.
+    private func row(for effect: Effect, at index: Int?) -> some View {
         EffectPaneRow(
             effect: effect,
             isActive: state.activeEffectID == effect.id,
+            isDragging: draggedEffectID == effect.id,
+            height: rowHeight,
             onSelect: { state.select(.effect(effect.id)) },
             onDuplicate: { state.duplicateEffect(effect) },
-            onDelete: { onDelete(effect) }
+            onDelete: { onDelete(effect) },
+            reorder: index.map { index in
+                EffectPaneRow.Reorder(
+                    changed: { translation in
+                        draggedEffectID = effect.id
+                        dragTranslation = translation
+                    },
+                    ended: { finishDrag(from: index) }
+                )
+            }
         )
     }
 
-    private func moveEffect(_ dragged: DraggedEffect, to target: EffectDropTarget) -> Bool {
-        guard store.effect(id: dragged.id) != nil else { return false }
-        switch target {
-        case .before(let anchorID):
-            guard anchorID != dragged.id else { return false }
-            state.moveEffect(dragged.id, before: anchorID)
-        case .end:
-            state.moveEffect(dragged.id, before: nil)
+    // MARK: Reordering
+
+    private var draggedIndex: Int? {
+        guard let draggedEffectID else { return nil }
+        return store.effects.firstIndex { $0.id == draggedEffectID }
+    }
+
+    /// Where the dragged row would land if released now.
+    private var dropIndex: Int? {
+        guard let draggedIndex else { return nil }
+        let steps = Int((dragTranslation / (rowHeight + 2)).rounded())
+        return (draggedIndex + steps).clamped(to: 0...(store.effects.count - 1))
+    }
+
+    /// The dragged row rides with the pointer; rows between its old and new
+    /// places shift one slot to open a gap where it will land.
+    private func rowOffset(at index: Int, id: String) -> CGFloat {
+        guard let draggedIndex, let dropIndex else { return 0 }
+        if id == draggedEffectID {
+            return dragTranslation
         }
-        return true
+        let slot = rowHeight + 2
+        if draggedIndex < index, index <= dropIndex {
+            return -slot
+        }
+        if dropIndex <= index, index < draggedIndex {
+            return slot
+        }
+        return 0
+    }
+
+    private func finishDrag(from sourceIndex: Int) {
+        defer {
+            draggedEffectID = nil
+            dragTranslation = 0
+        }
+        guard let movedID = draggedEffectID, let targetIndex = dropIndex, targetIndex != sourceIndex else { return }
+        let effects = store.effects
+        // Landing at `targetIndex` means going in front of whatever follows
+        // that slot once the row has left its own — or last.
+        let anchorID: String? = targetIndex < sourceIndex
+            ? effects[targetIndex].id
+            : (targetIndex + 1 < effects.count ? effects[targetIndex + 1].id : nil)
+        // The reorder and the reset land in one update: every row's new slot
+        // is where the drag already had it, give or take the last few points,
+        // which the animation settles.
+        state.moveEffect(movedID, before: anchorID)
     }
 }
 
@@ -83,9 +143,19 @@ struct EffectListPane: View {
 private struct EffectPaneRow: View {
     let effect: Effect
     let isActive: Bool
+    let isDragging: Bool
+    let height: CGFloat
     let onSelect: () -> Void
     let onDuplicate: () -> Void
     let onDelete: () -> Void
+    /// Present on custom effects only, which are the ones that can move.
+    let reorder: Reorder?
+
+    struct Reorder {
+        /// The pointer's vertical travel since the drag began.
+        let changed: (CGFloat) -> Void
+        let ended: () -> Void
+    }
 
     @State private var isHovered = false
 
@@ -105,20 +175,20 @@ private struct EffectPaneRow: View {
             }
             .buttonStyle(.plain)
 
-            if !effect.isBuiltIn {
-                // Only the handle starts a drag: a drag on the button would
-                // fight its press for the mouse-down.
+            if let reorder {
+                // Only the handle starts a drag, so the row's button keeps
+                // its click and the handle keeps the mouse-down. Global
+                // coordinates, because the handle moves with the row.
                 Image(systemName: "line.3.horizontal")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
                     .frame(width: 16, height: 16)
                     .contentShape(Rectangle())
-                    .draggable(DraggedEffect(id: effect.id)) {
-                        Text(effect.name)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
-                    }
+                    .gesture(
+                        DragGesture(minimumDistance: 2, coordinateSpace: .global)
+                            .onChanged { reorder.changed($0.translation.height) }
+                            .onEnded { _ in reorder.ended() }
+                    )
                     .help("Drag to reorder")
 
                 Button(action: onDelete) {
@@ -130,11 +200,12 @@ private struct EffectPaneRow: View {
             }
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 5)
+        .frame(height: height)
         .background(
-            Color.primary.opacity(isHovered ? 0.1 : 0),
+            Color.primary.opacity(isHovered || isDragging ? 0.1 : 0),
             in: RoundedRectangle(cornerRadius: 6, style: .continuous)
         )
+        .shadow(color: .black.opacity(isDragging ? 0.3 : 0), radius: 6, y: 2)
         .onHover { isHovered = $0 }
         .contextMenu {
             Button(effect.isBuiltIn ? "Duplicate to Custom" : "Duplicate", action: onDuplicate)
@@ -217,68 +288,5 @@ struct DeleteEffectSheet: View {
         }
         .padding(20)
         .frame(width: 380)
-    }
-}
-
-// MARK: - Drag and drop
-
-private extension UTType {
-    /// Declared in Info.plist, so nothing but an effect can land on the
-    /// targets that reorder effects.
-    static let cameraEffectsEffect = UTType(exportedAs: "studio.polyglot.CameraEffects.effect")
-}
-
-private struct DraggedEffect: Codable, Transferable {
-    let id: String
-
-    static var transferRepresentation: some TransferRepresentation {
-        CodableRepresentation(contentType: .cameraEffectsEffect)
-    }
-}
-
-/// A spot a dragged effect can land in, named after the row that offers it.
-private enum EffectDropTarget: Equatable {
-    case before(effectID: String)
-    case end
-}
-
-/// Turns a row into a landing spot, with an insertion line along its top edge
-/// while the pointer is over it.
-private struct EffectDropZone: ViewModifier {
-    let target: EffectDropTarget
-    @Binding var current: EffectDropTarget?
-    let perform: (DraggedEffect, EffectDropTarget) -> Bool
-
-    func body(content: Content) -> some View {
-        content
-            .dropDestination(for: DraggedEffect.self) { payloads, _ in
-                current = nil
-                guard let payload = payloads.first else { return false }
-                return perform(payload, target)
-            } isTargeted: { isTargeted in
-                if isTargeted {
-                    current = target
-                } else if current == target {
-                    current = nil
-                }
-            }
-            .overlay(alignment: .top) {
-                Capsule()
-                    .fill(Color.accentColor)
-                    .frame(height: 2)
-                    .padding(.horizontal, 8)
-                    .opacity(current == target ? 1 : 0)
-                    .allowsHitTesting(false)
-            }
-    }
-}
-
-private extension View {
-    func effectDropZone(
-        _ target: EffectDropTarget,
-        current: Binding<EffectDropTarget?>,
-        perform: @escaping (DraggedEffect, EffectDropTarget) -> Bool
-    ) -> some View {
-        modifier(EffectDropZone(target: target, current: current, perform: perform))
     }
 }
