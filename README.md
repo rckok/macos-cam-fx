@@ -117,11 +117,21 @@ the video behind it rather than from the system, and the pane's native
 controls can only be made to match it by fixing their appearance.
 
 Editor Mode does not replace that layout — it slides a panel in under the
-camera (`.move(edge: .bottom)` transition, animated together with the camera
-shrinking to make room) and slides it back out when switched off. The panel's
-two columns are an `HSplitView`, and the seam between the panel and the camera
-is a drag handle for the panel's height; the panel follows the system
-appearance while the floating controls above it stay dark.
+camera and slides it back out when switched off. The window grows to make
+room rather than the camera shrinking: opening the panel extends the window
+downwards by the panel's height (the first time, by the camera's own height,
+so the window doubles), and closing it takes that back. The panel's reveal
+and the window's frame are animated on one clock — the same duration and
+timing curve on the SwiftUI and AppKit sides — so the camera holds still
+while the panel appears. The screen caps the growth: the window never gets
+taller than the screen's visible area, whatever it could not grow by comes
+out of the camera, and a window that would run off the bottom is moved up
+instead, never past the top. Both the window frame (AppKit's frame autosave)
+and the panel height (`config.json`) are remembered across launches.
+
+The panel's three columns are an `HSplitView`, and the seam between the panel
+and the camera is a drag handle that trades height between the two; the panel
+follows the system appearance while the floating controls above it stay dark.
 
 None of this raises the macOS 14 deployment target. Every use is behind
 `#if compiler(>=6.2)` (the Liquid Glass symbols only exist in the macOS 26
