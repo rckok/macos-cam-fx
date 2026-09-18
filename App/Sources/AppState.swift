@@ -33,6 +33,15 @@ final class AppState: ObservableObject {
             store.saveConfigSoon()
         }
     }
+    /// Height of the editor panel, in points. Nil until the panel has been
+    /// opened once, when it takes the height of the camera above it.
+    @Published var editorPanelHeight: CGFloat? {
+        didSet {
+            guard editorPanelHeight != oldValue else { return }
+            store.config.editorPanelHeight = editorPanelHeight.map { Double($0) }
+            store.saveConfigSoon()
+        }
+    }
     @Published var historyDepth: Int {
         didSet {
             engine.setHistoryDepth(historyDepth)
@@ -96,6 +105,7 @@ final class AppState: ObservableObject {
         historyDepth = store.config.historyDepth
         flipHorizontal = store.config.flipHorizontal
         previewFillsWindow = store.config.previewFillsWindow
+        editorPanelHeight = store.config.editorPanelHeight.map { CGFloat($0) }
         viewMode = store.config.viewMode
         // Property observers do not fire for assignments inside an initializer.
         engine.setHistoryDepth(historyDepth)
