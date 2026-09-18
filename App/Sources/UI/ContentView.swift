@@ -8,11 +8,11 @@ import SwiftUI
 struct ContentView: View {
     @EnvironmentObject private var state: AppState
     @State private var window: NSWindow?
-    /// How much of the editor panel shows, in points. Opening and closing
-    /// animate it in step with the window's frame — the window grows by the
-    /// same amount the panel reveals, so the camera stays put — and the seam
-    /// drag sets it directly.
-    @State private var panelReveal: CGFloat = 0
+    /// Set while the panel slides in or out. The window's frame is the only
+    /// thing animated then; the panel's reveal is read off the content height
+    /// as the window changes, so the camera above — content minus reveal —
+    /// holds still instead of following an animation of its own.
+    @State private var slide: PanelSlide?
     /// The panel stays in the hierarchy while it slides out.
     @State private var isPanelMounted = false
 
@@ -25,8 +25,12 @@ struct ContentView: View {
         // One container for the window, so the glass inside it blends as a
         // whole rather than each piece sampling its neighbours.
         GlassGroup {
+            // The geometry reader is the resize observer: it is laid out again
+            // for every frame the window's animation produces.
             GeometryReader { geo in
-                let panelHeight = panelHeight(in: geo.size.height)
+                let content = geo.size.height
+                let panelHeight = slide?.panelHeight ?? panelHeight(in: content)
+                let reveal = slide?.reveal(at: content) ?? panelHeight
 
                 VStack(spacing: 0) {
                     BasicModeView(
@@ -43,7 +47,7 @@ struct ContentView: View {
                             // is revealed, so it slides in whole instead of
                             // squashing as it grows.
                             .frame(height: panelHeight)
-                            .frame(height: min(panelReveal, panelHeight), alignment: .top)
+                            .frame(height: reveal, alignment: .top)
                             .clipped()
                             // The handle straddles the seam, so half of it is
                             // over the camera. Later in the stack, so it also
@@ -52,14 +56,12 @@ struct ContentView: View {
                                 PanelResizeHandle(
                                     height: Binding(
                                         get: { panelHeight },
-                                        set: { newHeight in
-                                            panelReveal = newHeight
-                                            state.editorPanelHeight = newHeight
-                                        }
+                                        set: { state.editorPanelHeight = $0 }
                                     ),
-                                    range: panelHeightRange(in: geo.size.height)
+                                    range: panelHeightRange(in: content)
                                 )
                                 .offset(y: -4)
+                                .allowsHitTesting(slide == nil)
                             }
                     }
                 }
@@ -106,24 +108,23 @@ struct ContentView: View {
         // Launched with the editor open: the remembered frame already has the
         // panel in it, so it shows without any sliding.
         if state.viewMode == .editor {
-            let target = state.editorPanelHeight ?? window.contentLayoutRect.height / 2
-            state.editorPanelHeight = target
-            panelReveal = target
+            if state.editorPanelHeight == nil {
+                state.editorPanelHeight = window.contentLayoutRect.height / 2
+            }
             isPanelMounted = true
         }
     }
 
     /// Grows the window downwards by the panel's height — the first time, by
-    /// the camera's own height, doubling the window — and slides the panel
-    /// in at the same rate. The screen caps the growth: what it does not
-    /// allow comes out of the camera, and a window that would run off the
-    /// bottom is moved up instead, no higher than the top of the screen.
+    /// the camera's own height, doubling the window — with the panel revealed
+    /// point for point as the window grows. The screen caps the growth: what
+    /// it does not allow comes out of the camera, which then shrinks at the
+    /// rate that gets the panel fully in by the time the window stops, and a
+    /// window that would run off the bottom is moved up instead, no higher
+    /// than the top of the screen.
     private func openPanel() {
         isPanelMounted = true
-        guard let window else {
-            panelReveal = state.editorPanelHeight ?? minEditorPanelHeight
-            return
-        }
+        guard let window else { return }
 
         let content = window.contentLayoutRect.height
         let chrome = window.frame.height - content
@@ -137,6 +138,7 @@ struct ContentView: View {
             height = min(height, screen.height)
         }
         target = max(min(target, height - chrome - minCameraHeight), minEditorPanelHeight)
+        let growth = height - frame.height
         frame.size.height = height
         frame.origin.y = top - height
         if let screen {
@@ -145,67 +147,87 @@ struct ContentView: View {
         }
 
         state.editorPanelHeight = target
-        slide(window, to: frame) {
-            panelReveal = target
+        // A window that cannot grow at all reveals the panel on its first
+        // frame; there is no growth to pace it by.
+        let slide = PanelSlide(
+            hiddenContentHeight: content,
+            revealPerPoint: target / max(growth, 1),
+            panelHeight: target
+        )
+        self.slide = slide
+        animate(window, to: frame) {
+            finish(slide)
         }
     }
 
-    /// Shrinks the window from the bottom by what the panel showed, with the
-    /// panel sliding out at the same rate. The window keeps whatever position
-    /// opening gave it.
+    /// Shrinks the window from the bottom by what the panel shows, with the
+    /// panel going out at the rate the window shrinks. The window keeps
+    /// whatever position opening gave it.
     private func closePanel() {
         guard let window, isPanelMounted else {
-            panelReveal = 0
+            slide = nil
             isPanelMounted = false
             return
         }
 
+        let content = window.contentLayoutRect.height
+        let chrome = window.frame.height - content
+        let shown = slide?.reveal(at: content) ?? panelHeight(in: content)
+
         var frame = window.frame
         let top = frame.maxY
-        let height = max(frame.height - panelReveal, window.minSize.height)
+        let height = max(frame.height - shown, window.minSize.height)
         frame.size.height = height
         frame.origin.y = top - height
 
-        slide(window, to: frame, changes: {
-            panelReveal = 0
-        }, completion: {
-            // Reopened before the slide finished: leave it mounted.
-            if state.viewMode == .basic {
-                isPanelMounted = false
-            }
-        })
+        // Hidden once the window is down to its final height; the min size
+        // may hold that above content − shown, in which case the panel goes
+        // out a little faster than the window shrinks.
+        let finalContent = height - chrome
+        let slide = PanelSlide(
+            hiddenContentHeight: finalContent,
+            revealPerPoint: shown / max(content - finalContent, 1),
+            panelHeight: shown
+        )
+        self.slide = slide
+        animate(window, to: frame) {
+            finish(slide)
+        }
     }
 
-    /// Runs a window frame change and a SwiftUI state change on one clock:
-    /// the same duration and the same cubic Bézier on both sides, so the
-    /// panel's reveal tracks the window's growth frame for frame.
-    private func slide(
-        _ window: NSWindow,
-        to frame: NSRect,
-        changes: () -> Void,
-        completion: (() -> Void)? = nil
-    ) {
+    /// Ends a slide, unless another one has replaced it in the meantime — the
+    /// interrupted animation's completion still fires.
+    private func finish(_ slide: PanelSlide) {
+        guard self.slide?.id == slide.id else { return }
+        self.slide = nil
+        if state.viewMode == .basic {
+            isPanelMounted = false
+        }
+    }
+
+    private func animate(_ window: NSWindow, to frame: NSRect, completion: @escaping () -> Void) {
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = slideDuration
-            context.timingFunction = SlideCurve.timingFunction
+            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.3, 1.0)
             window.animator().setFrame(frame, display: true)
         }, completionHandler: completion)
-        withAnimation(SlideCurve.animation(duration: slideDuration), changes)
     }
 }
 
-/// An ease-out, written once for each framework.
-private enum SlideCurve {
-    private static let controlPoints: (Float, Float, Float, Float) = (0.2, 0.9, 0.3, 1.0)
+/// Maps the window's content height onto how much of the panel shows while
+/// it slides. Everything about the motion — timing, curve, interruptions —
+/// is then the window animation's, and the camera is whatever is left.
+private struct PanelSlide {
+    let id = UUID()
+    /// The content height at which none of the panel shows.
+    let hiddenContentHeight: CGFloat
+    /// Points of panel per point of content: 1 when the window grows by the
+    /// whole panel, more when the screen or the minimum size held it back.
+    let revealPerPoint: CGFloat
+    let panelHeight: CGFloat
 
-    static var timingFunction: CAMediaTimingFunction {
-        let (c0x, c0y, c1x, c1y) = controlPoints
-        return CAMediaTimingFunction(controlPoints: c0x, c0y, c1x, c1y)
-    }
-
-    static func animation(duration: TimeInterval) -> Animation {
-        let (c0x, c0y, c1x, c1y) = controlPoints
-        return .timingCurve(Double(c0x), Double(c0y), Double(c1x), Double(c1y), duration: duration)
+    func reveal(at contentHeight: CGFloat) -> CGFloat {
+        ((contentHeight - hiddenContentHeight) * revealPerPoint).clamped(to: 0...panelHeight)
     }
 }
 
