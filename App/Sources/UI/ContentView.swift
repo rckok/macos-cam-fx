@@ -45,9 +45,12 @@ struct ContentView: View {
                         EditorPanel(store: state.store)
                             // Laid out at its full height and clipped to what
                             // is revealed, so it slides in whole instead of
-                            // squashing as it grows.
+                            // squashing as it grows. Anchored at the bottom,
+                            // so the bottom edge comes into view first and the
+                            // panel appears to slide down from behind the
+                            // camera.
                             .frame(height: panelHeight)
-                            .frame(height: reveal, alignment: .top)
+                            .frame(height: reveal, alignment: .bottom)
                             .clipped()
                             // The handle straddles the seam, so half of it is
                             // over the camera. Later in the stack, so it also
