@@ -42,16 +42,22 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                     if isPanelMounted {
-                        EditorPanel(store: state.store)
-                            // Laid out at its full height and clipped to what
-                            // is revealed, so it slides in whole instead of
-                            // squashing as it grows. Anchored at the bottom,
-                            // so the bottom edge comes into view first and the
-                            // panel appears to slide down from behind the
-                            // camera.
-                            .frame(height: panelHeight)
-                            .frame(height: reveal, alignment: .bottom)
-                            .clipped()
+                        // Its own glass container: glass is drawn by the
+                        // container it belongs to, and the window's would
+                        // draw the panel's chrome over the camera, outside
+                        // the clip below. The panel's glass has nothing to
+                        // blend with the floating controls anyway.
+                        GlassGroup {
+                            EditorPanel(store: state.store)
+                        }
+                        // Laid out at its full height and clipped to what is
+                        // revealed, so it slides in whole instead of squashing
+                        // as it grows. Anchored at the bottom, so the bottom
+                        // edge comes into view first and the panel appears to
+                        // slide down from behind the camera.
+                        .frame(height: panelHeight)
+                        .frame(height: reveal, alignment: .bottom)
+                        .clipped()
                             // The handle straddles the seam, so half of it is
                             // over the camera. Later in the stack, so it also
                             // draws over the camera's floating controls.
@@ -170,6 +176,7 @@ struct ContentView: View {
         guard let window, isPanelMounted else {
             slide = nil
             isPanelMounted = false
+            state.editorDidClose()
             return
         }
 
@@ -199,12 +206,14 @@ struct ContentView: View {
     }
 
     /// Ends a slide, unless another one has replaced it in the meantime — the
-    /// interrupted animation's completion still fires.
+    /// interrupted animation's completion still fires. The stage stays
+    /// selected until here, so the editor keeps its contents while it goes.
     private func finish(_ slide: PanelSlide) {
         guard self.slide?.id == slide.id else { return }
         self.slide = nil
         if state.viewMode == .basic {
             isPanelMounted = false
+            state.editorDidClose()
         }
     }
 

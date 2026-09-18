@@ -22,13 +22,17 @@ final class AppState: ObservableObject {
     let engine: RenderEngine
 
     @Published private(set) var selection: EffectSelection?
-    /// Whether the editor panel is open under the camera. Closing it hands
-    /// the selection back to the effect; opening it lands on the effect's
-    /// first stage so there is something to edit right away.
+    /// Whether the editor panel is open under the camera. Opening it lands on
+    /// the effect's last stage — the one whose output is seen — before the
+    /// panel slides in, so it arrives with something to edit. Closing leaves
+    /// the stage selected until the panel is out of sight; `ContentView`
+    /// calls `editorDidClose()` then.
     @Published var viewMode: ViewMode = .basic {
         didSet {
             guard viewMode != oldValue else { return }
-            alignSelection(with: viewMode)
+            if viewMode == .editor {
+                selectLastStageOfActiveEffect()
+            }
             store.config.viewMode = viewMode
             store.saveConfigSoon()
         }
@@ -146,7 +150,9 @@ final class AppState: ObservableObject {
 
         let restored = store.config.activeEffectID.flatMap { store.effect(id: $0) } ?? store.allEffects.first
         selection = restored.map { .effect($0.id) }
-        alignSelection(with: viewMode)
+        if viewMode == .editor {
+            selectLastStageOfActiveEffect()
+        }
         capture.start()
 
         for stage in store.allStages {
@@ -166,19 +172,20 @@ final class AppState: ObservableObject {
         rebuildChain()
     }
 
-    /// Basic Mode never points at a stage; the editor prefers to. Neither
-    /// move changes the active effect, so the render chain is untouched.
-    private func alignSelection(with mode: ViewMode) {
-        switch (mode, selection) {
-        case (.basic, .stage(let stageID)):
-            selection = store.effect(containing: stageID).map { .effect($0.id) }
-        case (.editor, .effect(let effectID)):
-            if let firstStageID = store.effect(id: effectID)?.stageIDs.first {
-                selection = .stage(firstStageID)
-            }
-        default:
-            break
-        }
+    /// Hands the selection back to the effect once the editor panel has
+    /// closed. Basic Mode never points at a stage. The active effect does not
+    /// change, so the render chain is untouched.
+    func editorDidClose() {
+        guard viewMode == .basic, case .stage(let stageID) = selection else { return }
+        selection = store.effect(containing: stageID).map { .effect($0.id) }
+    }
+
+    /// Leaves a stage that is already selected alone.
+    private func selectLastStageOfActiveEffect() {
+        guard case .effect(let effectID) = selection,
+              let lastStageID = store.effect(id: effectID)?.stageIDs.last
+        else { return }
+        selection = .stage(lastStageID)
     }
 
     /// Falls back to the first effect when the selection points at something
