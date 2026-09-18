@@ -19,7 +19,7 @@ struct ContentView: View {
     /// Enough camera to keep the floating controls usable over it.
     private let minCameraHeight: CGFloat = 220
     private let minEditorPanelHeight: CGFloat = 200
-    private let slideDuration: TimeInterval = 0.3
+    private let slideDuration: TimeInterval = 0.6
 
     var body: some View {
         // One container for the window, so the glass inside it blends as a
