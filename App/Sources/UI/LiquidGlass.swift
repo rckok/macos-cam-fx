@@ -10,7 +10,8 @@ import SwiftUI
 /// of sampling each other, and so nearby ones merge as they move. Wrap the
 /// window's content in one of these once; nesting them defeats the blending
 /// between the groups. A nested one is also where glass gets *drawn*, which
-/// is what keeps the editor panel's chrome inside the panel's clip.
+/// is what keeps the editor panel's chrome inside the panel's clip, and what
+/// makes the floating panes' glass follow their own transitions.
 struct GlassGroup<Content: View>: View {
     @ViewBuilder let content: () -> Content
 

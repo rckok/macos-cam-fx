@@ -36,12 +36,18 @@ struct BasicModeView: View {
                 // Each pane unfolds towards its own button: the effect list
                 // from the left half of the bar, the controls from the right.
                 VStack(alignment: openPane == .effects ? .leading : .trailing, spacing: 12) {
+                    // Each pane in a glass container of its own: glass is
+                    // drawn by the container it belongs to, and the window's
+                    // would fade the pane's glass in on its own schedule
+                    // while the transition below scaled the contents.
+                    // Inside the pane's own container, the whole pane —
+                    // glass, scrim and contents — moves as one.
                     switch openPane {
                     case .effects:
-                        effectsPane
+                        GlassGroup { effectsPane }
                             .transition(.scale(scale: 0.9, anchor: .bottomLeading).combined(with: .opacity))
                     case .controls:
-                        controlsPane
+                        GlassGroup { controlsPane }
                             .transition(.scale(scale: 0.9, anchor: .bottomTrailing).combined(with: .opacity))
                     case nil:
                         EmptyView()
