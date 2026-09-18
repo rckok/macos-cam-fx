@@ -163,6 +163,7 @@ final class AppState: ObservableObject {
     // MARK: Selection
 
     func select(_ newSelection: EffectSelection?) {
+        let newSelection = pointingAtStage(newSelection)
         guard selection != newSelection else { return }
         let previousEffectID = activeEffectID
         selection = newSelection
@@ -182,10 +183,17 @@ final class AppState: ObservableObject {
 
     /// Leaves a stage that is already selected alone.
     private func selectLastStageOfActiveEffect() {
-        guard case .effect(let effectID) = selection,
+        selection = pointingAtStage(selection)
+    }
+
+    /// While the editor is open, an effect stands for its last stage — the
+    /// one whose output is on screen — so picking an effect anywhere gives
+    /// the editor something to show. An effect without stages stays as is.
+    private func pointingAtStage(_ candidate: EffectSelection?) -> EffectSelection? {
+        guard viewMode == .editor, case .effect(let effectID) = candidate,
               let lastStageID = store.effect(id: effectID)?.stageIDs.last
-        else { return }
-        selection = .stage(lastStageID)
+        else { return candidate }
+        return .stage(lastStageID)
     }
 
     /// Falls back to the first effect when the selection points at something
@@ -339,7 +347,7 @@ final class AppState: ObservableObject {
         let owner = store.effect(containing: stage.id)
         store.removeStage(stage)
         if selection == .stage(stage.id) {
-            selection = owner.map { .effect($0.id) }
+            selection = pointingAtStage(owner.map { .effect($0.id) })
         }
         validateSelection()
         rebuildChain()
