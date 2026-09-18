@@ -120,10 +120,10 @@ Editor Mode does not replace that layout — it slides a panel in under the
 camera and slides it back out when switched off. The window grows to make
 room rather than the camera shrinking: opening the panel extends the window
 downwards by the panel's height (the first time, by the camera's own height,
-so the window doubles), and closing it takes that back. The panel's reveal
-and the window's frame are animated on one clock — the same duration and
-timing curve on the SwiftUI and AppKit sides — so the camera holds still
-while the panel appears. The screen caps the growth: the window never gets
+so the window doubles), and closing it takes that back. Only the window's
+frame is animated: how much of the panel shows is read off the window's
+content height as it changes, so the camera — content minus panel — holds
+still while the panel appears. The screen caps the growth: the window never gets
 taller than the screen's visible area, whatever it could not grow by comes
 out of the camera, and a window that would run off the bottom is moved up
 instead, never past the top. Both the window frame (AppKit's frame autosave)
