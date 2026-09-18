@@ -2,7 +2,7 @@ import Combine
 import Foundation
 import SwiftUI
 
-/// What the sidebar currently points at. The effect that owns the selection is
+/// What the UI currently points at. The effect that owns the selection is
 /// the one being rendered, so selecting a stage also activates its effect.
 enum EffectSelection: Hashable {
     case effect(String)
@@ -22,16 +22,27 @@ final class AppState: ObservableObject {
     let engine: RenderEngine
 
     @Published private(set) var selection: EffectSelection?
-    /// Which group the sidebar lists. Follows the selection, so activating an
-    /// effect from either group switches the list to it.
-    @Published var effectsSource: EffectsSource = .builtIn
+    /// Whether the editor panel is open under the camera. Opening it lands on
+    /// the effect's last stage — the one whose output is seen — before the
+    /// panel slides in, so it arrives with something to edit. Closing leaves
+    /// the stage selected until the panel is out of sight; `ContentView`
+    /// calls `editorDidClose()` then.
     @Published var viewMode: ViewMode = .basic {
         didSet {
             guard viewMode != oldValue else { return }
-            if viewMode == .basic, case .stage(let stageID) = selection {
-                selection = store.effect(containing: stageID).map { .effect($0.id) }
+            if viewMode == .editor {
+                selectLastStageOfActiveEffect()
             }
             store.config.viewMode = viewMode
+            store.saveConfigSoon()
+        }
+    }
+    /// Height of the editor panel, in points. Nil until the panel has been
+    /// opened once, when it takes the height of the camera above it.
+    @Published var editorPanelHeight: CGFloat? {
+        didSet {
+            guard editorPanelHeight != oldValue else { return }
+            store.config.editorPanelHeight = editorPanelHeight.map { Double($0) }
             store.saveConfigSoon()
         }
     }
@@ -98,6 +109,7 @@ final class AppState: ObservableObject {
         historyDepth = store.config.historyDepth
         flipHorizontal = store.config.flipHorizontal
         previewFillsWindow = store.config.previewFillsWindow
+        editorPanelHeight = store.config.editorPanelHeight.map { CGFloat($0) }
         viewMode = store.config.viewMode
         // Property observers do not fire for assignments inside an initializer.
         engine.setHistoryDepth(historyDepth)
@@ -138,7 +150,9 @@ final class AppState: ObservableObject {
 
         let restored = store.config.activeEffectID.flatMap { store.effect(id: $0) } ?? store.allEffects.first
         selection = restored.map { .effect($0.id) }
-        effectsSource = restored?.isBuiltIn == false ? .custom : .builtIn
+        if viewMode == .editor {
+            selectLastStageOfActiveEffect()
+        }
         capture.start()
 
         for stage in store.allStages {
@@ -149,16 +163,37 @@ final class AppState: ObservableObject {
     // MARK: Selection
 
     func select(_ newSelection: EffectSelection?) {
+        let newSelection = pointingAtStage(newSelection)
         guard selection != newSelection else { return }
         let previousEffectID = activeEffectID
         selection = newSelection
-        if let effect = activeEffect {
-            effectsSource = effect.isBuiltIn ? .builtIn : .custom
-        }
         guard activeEffectID != previousEffectID else { return }
         store.config.activeEffectID = activeEffectID
         store.saveConfigSoon()
         rebuildChain()
+    }
+
+    /// Hands the selection back to the effect once the editor panel has
+    /// closed. Basic Mode never points at a stage. The active effect does not
+    /// change, so the render chain is untouched.
+    func editorDidClose() {
+        guard viewMode == .basic, case .stage(let stageID) = selection else { return }
+        selection = store.effect(containing: stageID).map { .effect($0.id) }
+    }
+
+    /// Leaves a stage that is already selected alone.
+    private func selectLastStageOfActiveEffect() {
+        selection = pointingAtStage(selection)
+    }
+
+    /// While the editor is open, an effect stands for its last stage — the
+    /// one whose output is on screen — so picking an effect anywhere gives
+    /// the editor something to show. An effect without stages stays as is.
+    private func pointingAtStage(_ candidate: EffectSelection?) -> EffectSelection? {
+        guard viewMode == .editor, case .effect(let effectID) = candidate,
+              let lastStageID = store.effect(id: effectID)?.stageIDs.last
+        else { return candidate }
+        return .stage(lastStageID)
     }
 
     /// Falls back to the first effect when the selection points at something
@@ -312,7 +347,7 @@ final class AppState: ObservableObject {
         let owner = store.effect(containing: stage.id)
         store.removeStage(stage)
         if selection == .stage(stage.id) {
-            selection = owner.map { .effect($0.id) }
+            selection = pointingAtStage(owner.map { .effect($0.id) })
         }
         validateSelection()
         rebuildChain()

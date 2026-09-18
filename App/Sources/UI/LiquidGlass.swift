@@ -8,7 +8,9 @@ import SwiftUI
 
 /// Groups the glass surfaces of a window so they blend with each other instead
 /// of sampling each other, and so nearby ones merge as they move. Wrap the
-/// window's content in one of these once; nesting them defeats the blending.
+/// window's content in one of these once; nesting them defeats the blending
+/// between the groups. A nested one is also where glass gets *drawn*, which
+/// is what keeps the editor panel's chrome inside the panel's clip.
 struct GlassGroup<Content: View>: View {
     @ViewBuilder let content: () -> Content
 
@@ -28,8 +30,8 @@ struct GlassGroup<Content: View>: View {
 }
 
 extension View {
-    /// A chrome strip that floats above content: a panel header, the sidebar's
-    /// bottom bar, the editor's diagnostics list. `tint` colors the glass
+    /// A chrome strip that floats above content: a panel header, the stage
+    /// list's bottom bar, the editor's diagnostics list. `tint` colors the glass
     /// itself, which is how the diagnostics list reads as an error or warning.
     ///
     /// Chrome is the only thing that should carry glass here — putting it on a

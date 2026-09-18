@@ -2,9 +2,11 @@ import Foundation
 
 /// How much of the effect tree the UI exposes.
 enum ViewMode: String, Codable, CaseIterable, Identifiable {
-    /// Only the effects list and the effect-level (`global`) controls.
+    /// The camera with its floating controls: effects and their effect-level
+    /// (`global`) controls.
     case basic
-    /// Effects, their stages, the GLSL editor and every stage control.
+    /// The same, plus the editor panel under the camera: the active effect's
+    /// stages, the GLSL editor, and the selected stage's controls.
     case editor
 
     var id: String { rawValue }
@@ -216,21 +218,6 @@ struct Effect: Identifiable, Codable, Equatable {
     }
 }
 
-/// Which group of effects the sidebar lists.
-enum EffectsSource: String, CaseIterable, Identifiable {
-    case builtIn
-    case custom
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .builtIn: return "Built-in"
-        case .custom: return "Custom"
-        }
-    }
-}
-
 /// Where a stage lands when it is dragged into an effect.
 enum StagePlacement: Equatable {
     case start
@@ -358,7 +345,7 @@ final class Stage: Identifiable, ObservableObject {
     /// Set after a successful compile; consumed by the render engine.
     var compiled: CompiledStage?
 
-    /// Everything the editor and sidebar should surface for this stage.
+    /// Everything the editor and stage list should surface for this stage.
     var allDiagnostics: [ShaderDiagnostic] {
         diagnostics + layoutDiagnostics
     }

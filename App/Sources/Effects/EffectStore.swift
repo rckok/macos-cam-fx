@@ -19,13 +19,16 @@ final class EffectStore: ObservableObject {
         /// Basic Mode preview: crop the camera to fill the window (default),
         /// or letterbox it so the whole frame is visible.
         var previewFillsWindow: Bool = true
+        /// Height of the editor panel under the camera, once it has been
+        /// opened. The window frame itself is AppKit's to remember.
+        var editorPanelHeight: Double?
         /// Parameter values and media picks the user made on built-in stages,
         /// keyed by stage ID. The bundle itself is never written to.
         var builtInStageOverrides: [String: StageManifest] = [:]
 
         enum CodingKeys: String, CodingKey {
             case effects, activeEffectID, viewMode, selectedDeviceID, historyDepth, flipHorizontal
-            case previewFillsWindow, builtInStageOverrides
+            case previewFillsWindow, editorPanelHeight, builtInStageOverrides
         }
 
         init() {}
@@ -41,6 +44,7 @@ final class EffectStore: ObservableObject {
             historyDepth = try container.decodeIfPresent(Int.self, forKey: .historyDepth) ?? 16
             flipHorizontal = try container.decodeIfPresent(Bool.self, forKey: .flipHorizontal) ?? true
             previewFillsWindow = try container.decodeIfPresent(Bool.self, forKey: .previewFillsWindow) ?? true
+            editorPanelHeight = try container.decodeIfPresent(Double.self, forKey: .editorPanelHeight)
             builtInStageOverrides = try container.decodeIfPresent(
                 [String: StageManifest].self, forKey: .builtInStageOverrides
             ) ?? [:]
@@ -55,6 +59,7 @@ final class EffectStore: ObservableObject {
             try container.encode(historyDepth, forKey: .historyDepth)
             try container.encode(flipHorizontal, forKey: .flipHorizontal)
             try container.encode(previewFillsWindow, forKey: .previewFillsWindow)
+            try container.encodeIfPresent(editorPanelHeight, forKey: .editorPanelHeight)
             if !builtInStageOverrides.isEmpty {
                 try container.encode(builtInStageOverrides, forKey: .builtInStageOverrides)
             }
@@ -70,7 +75,7 @@ final class EffectStore: ObservableObject {
     @Published private(set) var builtInEffects: [Effect] = []
     @Published var config = AppConfig()
 
-    /// Built-in first, then custom — the order the sidebar's groups appear in.
+    /// Built-in first, then custom — the order the effect menu's groups appear in.
     var allEffects: [Effect] { builtInEffects + effects }
     var allStages: [Stage] { builtInStages + stages }
 
@@ -633,7 +638,7 @@ final class EffectStore: ObservableObject {
     }
 
     static let newStageTemplate = """
-    // Built-in uniforms are listed in the inspector. See README for details.
+    // Built-in uniforms are listed behind the editor's `{ }` button. See README for details.
 
     layout(std140, binding = 3) uniform Params {
         // @metadata(min=0.0 max=1.0 default=0.5 global)
