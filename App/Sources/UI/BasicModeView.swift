@@ -12,8 +12,9 @@ struct BasicModeView: View {
     @ObservedObject var sink: VirtualCameraSink
 
     /// The panes that unfold from the control bar. One slot above the bar,
-    /// so opening one closes the other.
+    /// so opening one closes the others.
     private enum Pane {
+        case background
         case effects
         case controls
     }
@@ -33,10 +34,14 @@ struct BasicModeView: View {
         PreviewView(engine: state.engine, contentMode: state.previewFillsWindow ? .fill : .fit)
             .ignoresSafeArea()
             .overlay(alignment: .bottom) {
-                // Each pane unfolds towards its own button: the effect list
-                // from the left half of the bar, the controls from the right.
-                VStack(alignment: openPane == .effects ? .leading : .trailing, spacing: 12) {
+                // Each pane unfolds towards its own button: the background
+                // gallery and the effect list from the left half of the bar,
+                // the controls from the right.
+                VStack(alignment: openPane == .controls ? .trailing : .leading, spacing: 12) {
                     switch openPane {
+                    case .background:
+                        backgroundPane
+                            .transition(.scale(scale: 0.9, anchor: .bottomLeading).combined(with: .opacity))
                     case .effects:
                         effectsPane
                             .transition(.scale(scale: 0.9, anchor: .bottomLeading).combined(with: .opacity))
@@ -129,10 +134,10 @@ struct BasicModeView: View {
         openPane = openPane == pane ? nil : pane
     }
 
-    /// Camera picker plus the two settings that matter while watching the
-    /// feed: mirroring, and whether the preview crops to fill the window or
-    /// letterboxes to show the whole frame. Frame history stays in Editor
-    /// Mode's settings.
+    /// Camera picker plus the settings that matter while watching the feed:
+    /// mirroring, whether the preview crops to fill the window or letterboxes
+    /// to show the whole frame, and the background image. Frame history stays
+    /// in Editor Mode's settings.
     private var cameraMenu: some View {
         Menu {
             if capture.devices.isEmpty {
@@ -147,6 +152,25 @@ struct BasicModeView: View {
             Divider()
             Toggle("Mirror", isOn: $state.flipHorizontal)
             Toggle("Fill Window", isOn: $state.previewFillsWindow)
+            Divider()
+            // A menu cannot hold a gallery, so switching the background on
+            // unfolds one; while it is on, the gallery can be reopened here.
+            Toggle("Background Image", isOn: Binding(
+                get: { state.backgroundEnabled },
+                set: { enabled in
+                    state.backgroundEnabled = enabled
+                    if enabled {
+                        openPane = .background
+                    } else if openPane == .background {
+                        openPane = nil
+                    }
+                }
+            ))
+            if state.backgroundEnabled {
+                Button("Choose Background…") {
+                    openPane = .background
+                }
+            }
         } label: {
             Image(systemName: "video")
                 .font(.system(size: 15, weight: .medium))
@@ -226,6 +250,15 @@ struct BasicModeView: View {
     }
 
     // MARK: Panes
+
+    /// The background gallery: pick the image behind the person, add more,
+    /// or remove some.
+    private var backgroundPane: some View {
+        BackgroundGalleryPane(library: state.backgrounds)
+            .frame(width: paneWidth)
+            .frame(maxHeight: 440)
+            .glassSurface(in: paneShape, dim: paneDim)
+    }
 
     /// The effect menu unfolded, with the management a menu has no room for.
     private var effectsPane: some View {
