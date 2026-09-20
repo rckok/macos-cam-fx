@@ -1,9 +1,10 @@
 import AppKit
 import SwiftUI
 
-/// The background gallery, unfolded from the camera menu onto glass: a grid
-/// of the images that can go behind the person, the one in use marked, with
-/// a button to add more and a delete control on each.
+/// The background gallery, unfolded from the camera menu onto glass: how
+/// carefully the person is cut out, then a grid of the images that can go
+/// behind them — led by a None tile that leaves the camera as it is — with
+/// a button to add more and a delete control on each image.
 struct BackgroundGalleryPane: View {
     @EnvironmentObject private var state: AppState
     @ObservedObject var library: BackgroundLibrary
@@ -32,37 +33,56 @@ struct BackgroundGalleryPane: View {
 
             // Hugs its content while it fits, and scrolls once it does not.
             ViewThatFits(in: .vertical) {
-                gallery
+                content
                 ScrollView {
-                    gallery
+                    content
                 }
             }
         }
     }
 
-    @ViewBuilder
-    private var gallery: some View {
-        if library.images.isEmpty {
-            Text("Add an image to put behind you. Everything outside the person is replaced by it.")
+    private var content: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            qualityControl
+            gallery
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 16)
+    }
+
+    /// One switch for the person matte everywhere it is used, not only under
+    /// the background: an effect sampling `uPersonMatte` gets the same cut.
+    private var qualityControl: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Toggle("High-accuracy matte", isOn: Binding(
+                get: { state.personMatteQuality == .accurate },
+                set: { state.personMatteQuality = $0 ? .accurate : .balanced }
+            ))
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            Text("Cleaner edges around hair and shoulders, at a higher cost per frame. Applies to the background and to every effect that uses the person matte.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 16)
-                .padding(.bottom, 16)
-        } else {
-            LazyVGrid(columns: columns, spacing: 8) {
-                ForEach(library.images) { image in
-                    BackgroundCell(
-                        thumbnail: library.thumbnail(for: image.id),
-                        name: image.name,
-                        isSelected: state.backgroundImageID == image.id,
-                        onSelect: { state.backgroundImageID = image.id },
-                        onDelete: { state.removeBackground(id: image.id) }
-                    )
-                }
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var gallery: some View {
+        LazyVGrid(columns: columns, spacing: 8) {
+            BackgroundTile(
+                content: .none,
+                isSelected: state.backgroundImageID == nil,
+                onSelect: { state.backgroundImageID = nil },
+                onDelete: nil
+            )
+            ForEach(library.images) { image in
+                BackgroundTile(
+                    content: .image(library.thumbnail(for: image.id), name: image.name),
+                    isSelected: state.backgroundImageID == image.id,
+                    onSelect: { state.backgroundImageID = image.id },
+                    onDelete: { state.removeBackground(id: image.id) }
+                )
             }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 16)
         }
     }
 
@@ -81,15 +101,20 @@ struct BackgroundGalleryPane: View {
     }
 }
 
-/// One gallery image at the camera's 16:9. Clicking picks it; the pick is
-/// marked with a tick and an accent border; hovering reveals its delete
-/// button, which the context menu also offers.
-private struct BackgroundCell: View {
-    let thumbnail: NSImage?
-    let name: String
+/// One gallery tile at the camera's 16:9. Clicking picks it; the pick is
+/// marked with a tick and an accent border. Image tiles reveal a delete
+/// button on hover, which their context menu also offers; the None tile has
+/// nothing to delete.
+private struct BackgroundTile: View {
+    enum Content {
+        case none
+        case image(NSImage?, name: String)
+    }
+
+    let content: Content
     let isSelected: Bool
     let onSelect: () -> Void
-    let onDelete: () -> Void
+    let onDelete: (() -> Void)?
 
     @State private var isHovered = false
 
@@ -119,11 +144,11 @@ private struct BackgroundCell: View {
                 .contentShape(shape)
         }
         .buttonStyle(.plain)
-        .help(name)
+        .help(helpText)
         // A sibling of the select button, not part of its label, so each
         // click lands on exactly one of them.
         .overlay(alignment: .topTrailing) {
-            if isHovered {
+            if isHovered, let onDelete {
                 Button(action: onDelete) {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 14))
@@ -138,20 +163,41 @@ private struct BackgroundCell: View {
         }
         .onHover { isHovered = $0 }
         .contextMenu {
-            Button("Delete", role: .destructive, action: onDelete)
+            if let onDelete {
+                Button("Delete", role: .destructive, action: onDelete)
+            }
+        }
+    }
+
+    private var helpText: String {
+        switch content {
+        case .none: return "No background — the camera as it is"
+        case .image(_, let name): return name
         }
     }
 
     @ViewBuilder
     private var picture: some View {
-        if let thumbnail {
+        switch content {
+        case .none:
+            ZStack {
+                Color.primary.opacity(0.1)
+                VStack(spacing: 2) {
+                    Image(systemName: "nosign")
+                        .foregroundStyle(.secondary)
+                    Text("None")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        case .image(let thumbnail?, _):
             Color.clear
                 .overlay(
                     Image(nsImage: thumbnail)
                         .resizable()
                         .scaledToFill()
                 )
-        } else {
+        case .image(nil, _):
             ZStack {
                 Color.primary.opacity(0.1)
                 Image(systemName: "photo")

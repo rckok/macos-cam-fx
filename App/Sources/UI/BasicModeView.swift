@@ -153,23 +153,10 @@ struct BasicModeView: View {
             Toggle("Mirror", isOn: $state.flipHorizontal)
             Toggle("Fill Window", isOn: $state.previewFillsWindow)
             Divider()
-            // A menu cannot hold a gallery, so switching the background on
-            // unfolds one; while it is on, the gallery can be reopened here.
-            Toggle("Background Image", isOn: Binding(
-                get: { state.backgroundEnabled },
-                set: { enabled in
-                    state.backgroundEnabled = enabled
-                    if enabled {
-                        openPane = .background
-                    } else if openPane == .background {
-                        openPane = nil
-                    }
-                }
-            ))
-            if state.backgroundEnabled {
-                Button("Choose Background…") {
-                    openPane = .background
-                }
+            // A menu cannot hold a gallery, so this unfolds one; the
+            // gallery's None tile is what turns the background off.
+            Button("Background…") {
+                openPane = .background
             }
         } label: {
             Image(systemName: "video")
@@ -251,8 +238,8 @@ struct BasicModeView: View {
 
     // MARK: Panes
 
-    /// The background gallery: pick the image behind the person, add more,
-    /// or remove some.
+    /// The background gallery: pick the image behind the person (or none),
+    /// add more, remove some, and choose how carefully the person is cut out.
     private var backgroundPane: some View {
         BackgroundGalleryPane(library: state.backgrounds)
             .frame(width: paneWidth)
