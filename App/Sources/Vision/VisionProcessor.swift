@@ -27,11 +27,13 @@ final class VisionProcessor {
 
     // Protected by `lock`:
     private var features: VisionFeatures = []
+    private var matteQuality: PersonMatteQuality = .balanced
     private var busy = false
     private var pending: SubmittedFrame?
 
     // Only touched on `queue`:
     private var requestFeatures: VisionFeatures = []
+    private var requestMatteQuality: PersonMatteQuality = .balanced
     private var faceRequest: VNImageBasedRequest?
     private var handRequest: VNDetectHumanHandPoseRequest?
     private var matteRequest: VNGeneratePersonSegmentationRequest?
@@ -51,6 +53,14 @@ final class VisionProcessor {
         lock.lock()
         defer { lock.unlock() }
         features = newFeatures
+    }
+
+    /// Picks the segmentation level for every consumer of the person matte.
+    /// Takes effect from the next analyzed frame.
+    func setMatteQuality(_ quality: PersonMatteQuality) {
+        lock.lock()
+        defer { lock.unlock() }
+        matteQuality = quality
     }
 
     /// Queues `pixelBuffer` for analysis. If a frame is already in flight, this
@@ -74,6 +84,7 @@ final class VisionProcessor {
 
         lock.lock()
         let activeFeatures = features
+        let activeQuality = matteQuality
         if activeFeatures.isEmpty {
             lock.unlock()
             completion(pixelBuffer, timestamp, mirrored, VisionSnapshot())
@@ -88,7 +99,7 @@ final class VisionProcessor {
         lock.unlock()
 
         queue.async { [weak self] in
-            self?.analyze(frame, features: activeFeatures)
+            self?.analyze(frame, features: activeFeatures, matteQuality: activeQuality)
         }
     }
 
@@ -96,11 +107,16 @@ final class VisionProcessor {
 
     /// Processes `initial` and then any later pending replacement without
     /// recursing, so the stack stays bounded for a long-running session.
-    private func analyze(_ initial: SubmittedFrame, features initialFeatures: VisionFeatures) {
+    private func analyze(
+        _ initial: SubmittedFrame,
+        features initialFeatures: VisionFeatures,
+        matteQuality initialQuality: PersonMatteQuality
+    ) {
         var frame = initial
         var features = initialFeatures
+        var quality = initialQuality
         while true {
-            updateRequests(for: features)
+            updateRequests(for: features, matteQuality: quality)
             let requests: [VNRequest] = [faceRequest, handRequest, matteRequest].compactMap { $0 }
 
             var snapshot = VisionSnapshot()
@@ -122,6 +138,7 @@ final class VisionProcessor {
             let next = pending
             pending = nil
             let nextFeatures = self.features
+            let nextQuality = self.matteQuality
             if next == nil {
                 busy = false
             }
@@ -139,15 +156,17 @@ final class VisionProcessor {
             }
             frame = next
             features = nextFeatures
+            quality = nextQuality
         }
     }
 
     /// Requests are cached and reused across frames (person segmentation is
     /// stateful and benefits from temporal consistency); they are rebuilt only
-    /// when the feature set changes.
-    private func updateRequests(for features: VisionFeatures) {
-        guard features != requestFeatures else { return }
+    /// when the feature set or the matte quality changes.
+    private func updateRequests(for features: VisionFeatures, matteQuality: PersonMatteQuality) {
+        guard features != requestFeatures || matteQuality != requestMatteQuality else { return }
         requestFeatures = features
+        requestMatteQuality = matteQuality
 
         if features.needsFaceLandmarks {
             faceRequest = VNDetectFaceLandmarksRequest()
@@ -167,7 +186,7 @@ final class VisionProcessor {
 
         if features.contains(.personMatte) {
             let request = VNGeneratePersonSegmentationRequest()
-            request.qualityLevel = .balanced
+            request.qualityLevel = matteQuality == .accurate ? .accurate : .balanced
             request.outputPixelFormat = kCVPixelFormatType_OneComponent8
             matteRequest = request
         } else {

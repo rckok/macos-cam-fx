@@ -15,6 +15,17 @@ enum VisionUniforms {
     static let handJointCount = 21
 }
 
+/// How much work person segmentation does per frame. Applies to every use of
+/// the matte: background compositing and stages sampling `uPersonMatte`.
+enum PersonMatteQuality: String, Codable, CaseIterable {
+    /// Vision's `.balanced` level: fine for most framing, cheap enough to
+    /// run alongside the other detectors.
+    case balanced
+    /// Vision's `.accurate` level: cleaner edges around hair and shoulders,
+    /// at a noticeably higher cost per frame.
+    case accurate
+}
+
 /// The set of vision algorithms the active effect requires. Derived from shader
 /// reflection so detectors only run while one of its stages uses their output.
 struct VisionFeatures: OptionSet, Hashable {

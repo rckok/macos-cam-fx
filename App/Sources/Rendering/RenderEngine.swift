@@ -196,6 +196,12 @@ final class RenderEngine {
         updateVisionFeatures()
     }
 
+    /// Segmentation level for every use of the person matte — the background
+    /// composite and stages sampling `uPersonMatte` alike.
+    func setPersonMatteQuality(_ quality: PersonMatteQuality) {
+        visionProcessor.setMatteQuality(quality)
+    }
+
     private func updateVisionFeatures() {
         lock.lock()
         var features = stageVisionFeatures

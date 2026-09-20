@@ -68,24 +68,23 @@ final class AppState: ObservableObject {
             store.saveConfigSoon()
         }
     }
-    /// Whether the selected background image sits under the person in the
-    /// frame every effect sees as the camera.
-    @Published var backgroundEnabled: Bool {
-        didSet {
-            guard backgroundEnabled != oldValue else { return }
-            store.config.backgroundEnabled = backgroundEnabled
-            store.saveConfigSoon()
-            applyBackground()
-        }
-    }
-    /// The gallery image used while `backgroundEnabled`. Remembered while the
-    /// background is off, so turning it back on restores the same picture.
+    /// The gallery image under the person in the frame every effect sees as
+    /// the camera. Nil — the gallery's None tile — leaves the camera as it is.
     @Published var backgroundImageID: String? {
         didSet {
             guard backgroundImageID != oldValue else { return }
             store.config.backgroundImageID = backgroundImageID
             store.saveConfigSoon()
             applyBackground()
+        }
+    }
+    /// Person segmentation level, applied whether or not a background is set.
+    @Published var personMatteQuality: PersonMatteQuality {
+        didSet {
+            guard personMatteQuality != oldValue else { return }
+            engine.setPersonMatteQuality(personMatteQuality)
+            store.config.personMatteQuality = personMatteQuality
+            store.saveConfigSoon()
         }
     }
 
@@ -125,8 +124,8 @@ final class AppState: ObservableObject {
         self.historyDepth = 16
         self.flipHorizontal = true
         self.previewFillsWindow = true
-        self.backgroundEnabled = false
         self.backgroundImageID = nil
+        self.personMatteQuality = .balanced
 
         mediaLibrary.reloadGPUCache(device: engine.device)
 
@@ -135,13 +134,14 @@ final class AppState: ObservableObject {
         previewFillsWindow = store.config.previewFillsWindow
         editorPanelHeight = store.config.editorPanelHeight.map { CGFloat($0) }
         viewMode = store.config.viewMode
-        backgroundEnabled = store.config.backgroundEnabled
         // A remembered image that has since gone from disk is dropped.
         backgroundImageID = store.config.backgroundImageID.flatMap { backgrounds.image(id: $0)?.id }
         store.config.backgroundImageID = backgroundImageID
+        personMatteQuality = store.config.personMatteQuality
         // Property observers do not fire for assignments inside an initializer.
         engine.setHistoryDepth(historyDepth)
         engine.setFlipHorizontal(flipHorizontal)
+        engine.setPersonMatteQuality(personMatteQuality)
         applyBackground()
         capture.selectedDeviceID = store.config.selectedDeviceID
 
@@ -477,42 +477,29 @@ final class AppState: ObservableObject {
 
     // MARK: Background gallery
 
-    /// Adds an image to the gallery. The first image added becomes the
-    /// background, so switching the feature on with an empty gallery and
-    /// adding a picture shows it straight away.
+    /// Adds an image to the gallery and makes it the background: the reason
+    /// to add a picture is to use it.
     func addBackground(from url: URL) {
         do {
-            let image = try backgrounds.add(from: url)
-            if backgroundImageID == nil {
-                backgroundImageID = image.id
-            }
+            backgroundImageID = try backgrounds.add(from: url).id
         } catch {
             NSLog("Failed to add background image: \(error)")
         }
     }
 
-    /// Removes an image; if it was the background, its neighbour takes over.
+    /// Removes an image. If it was the background, the camera goes back to
+    /// passing through rather than silently switching to another picture.
     func removeBackground(id: String) {
-        let images = backgrounds.images
-        let removedIndex = images.firstIndex { $0.id == id }
         backgrounds.remove(id: id)
-        guard backgroundImageID == id else { return }
-        let remaining = backgrounds.images
-        if remaining.isEmpty {
+        if backgroundImageID == id {
             backgroundImageID = nil
-        } else {
-            let index = min(removedIndex ?? 0, remaining.count - 1)
-            backgroundImageID = remaining[index].id
         }
     }
 
     /// Hands the engine the texture to composite under the person, or nil to
     /// pass the camera through untouched.
     private func applyBackground() {
-        let texture = backgroundEnabled
-            ? backgroundImageID.flatMap { backgrounds.texture(for: $0, device: engine.device) }
-            : nil
-        engine.setBackground(texture)
+        engine.setBackground(backgroundImageID.flatMap { backgrounds.texture(for: $0, device: engine.device) })
     }
 
     // MARK: Compilation
