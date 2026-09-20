@@ -111,7 +111,21 @@ content is — a hint under the control bar, more under the pane's sliders (the
 The camera menu also holds two view settings: **Mirror**, and **Fill Window**
 (on by default), which crops the frame to cover the window — turn it off to
 letterbox it and see everything the virtual camera sends. Both are remembered.
-Frame history is in the editor panel's settings. The floating UI is pinned to
+Frame history is in the editor panel's settings.
+
+The camera menu's **Background Image** switch puts a picture behind you.
+Turning it on unfolds a gallery pane above the control bar (**Choose
+Background…** reopens it while the switch is on): a grid of images to pick
+from, **+** to add more from disk, and a delete button on each image (hover
+it, or use the context menu). The chosen image is cropped to fill the frame
+and never mirrored, whatever **Mirror** does to the feed. With the switch on,
+the frame the effects get *is* the composite — the image with the camera
+masked by the person matte on top — so `uPrev` in the first stage,
+`ceHistory()` and `uFrames` all carry it, and every effect works over the new
+background without knowing about it. The segmentation model runs whenever the
+switch is on, even for effects that never sample `uPersonMatte`; until its
+first matte arrives, the camera passes through untouched. The switch, the
+chosen image and the gallery are remembered across launches. The floating UI is pinned to
 the dark appearance whatever the system is set to: glass takes its tone from
 the video behind it rather than from the system, and the pane's native
 controls can only be made to match it by fixing their appearance.
@@ -197,6 +211,12 @@ Stages live in the app's sandbox container at
 one folder per stage containing `shader.frag` (GLSL) and `stage.json`
 (name + saved parameter values). You can edit them in the app's editor
 (recompiles as you type) or in an external editor (hot-reloads on save).
+
+Background images are copied into a `Backgrounds` folder next to `Stages`,
+catalogued by `backgrounds.json`; they are separate from the media library
+(`Media` and `media-library.json`), so deleting a background never unbinds a
+shader's sampler. Which one is in use, and whether the background is on, is in
+`config.json` (`backgroundImageID`, `backgroundEnabled`).
 
 Which stages belong to which effect — and in what order — lives in
 `config.json` next to the `Stages` folder. It is the only place that grouping
