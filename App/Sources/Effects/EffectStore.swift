@@ -22,13 +22,18 @@ final class EffectStore: ObservableObject {
         /// Height of the editor panel under the camera, once it has been
         /// opened. The window frame itself is AppKit's to remember.
         var editorPanelHeight: Double?
+        /// Whether the selected background image replaces everything outside
+        /// the person in the camera frame the effects see.
+        var backgroundEnabled: Bool = false
+        /// The background gallery image to composite under the person.
+        var backgroundImageID: String?
         /// Parameter values and media picks the user made on built-in stages,
         /// keyed by stage ID. The bundle itself is never written to.
         var builtInStageOverrides: [String: StageManifest] = [:]
 
         enum CodingKeys: String, CodingKey {
             case effects, activeEffectID, viewMode, selectedDeviceID, historyDepth, flipHorizontal
-            case previewFillsWindow, editorPanelHeight, builtInStageOverrides
+            case previewFillsWindow, editorPanelHeight, backgroundEnabled, backgroundImageID, builtInStageOverrides
         }
 
         init() {}
@@ -45,6 +50,8 @@ final class EffectStore: ObservableObject {
             flipHorizontal = try container.decodeIfPresent(Bool.self, forKey: .flipHorizontal) ?? true
             previewFillsWindow = try container.decodeIfPresent(Bool.self, forKey: .previewFillsWindow) ?? true
             editorPanelHeight = try container.decodeIfPresent(Double.self, forKey: .editorPanelHeight)
+            backgroundEnabled = try container.decodeIfPresent(Bool.self, forKey: .backgroundEnabled) ?? false
+            backgroundImageID = try container.decodeIfPresent(String.self, forKey: .backgroundImageID)
             builtInStageOverrides = try container.decodeIfPresent(
                 [String: StageManifest].self, forKey: .builtInStageOverrides
             ) ?? [:]
@@ -60,6 +67,8 @@ final class EffectStore: ObservableObject {
             try container.encode(flipHorizontal, forKey: .flipHorizontal)
             try container.encode(previewFillsWindow, forKey: .previewFillsWindow)
             try container.encodeIfPresent(editorPanelHeight, forKey: .editorPanelHeight)
+            try container.encode(backgroundEnabled, forKey: .backgroundEnabled)
+            try container.encodeIfPresent(backgroundImageID, forKey: .backgroundImageID)
             if !builtInStageOverrides.isEmpty {
                 try container.encode(builtInStageOverrides, forKey: .builtInStageOverrides)
             }
