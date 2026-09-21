@@ -20,6 +20,17 @@ final class RenderEngine {
         var pad: Float = 0
     }
 
+    /// Layout of `CEBackgroundUniforms` in `BuiltinShaders`: a float4, then a
+    /// float padded out to the struct's 16-byte alignment.
+    private struct BackgroundUniforms {
+        /// xy = scale, zw = offset applied to vUV to aspect-fill the image.
+        var backgroundUV: SIMD4<Float>
+        var mirror: Float
+        var pad0: Float = 0
+        var pad1: Float = 0
+        var pad2: Float = 0
+    }
+
     let device: MTLDevice
     private let commandQueue: MTLCommandQueue
     private var textureCache: CVMetalTextureCache!
@@ -28,6 +39,7 @@ final class RenderEngine {
     private let flipHPipeline: MTLRenderPipelineState
     private let blitR8Pipeline: MTLRenderPipelineState
     private let flipHR8Pipeline: MTLRenderPipelineState
+    private let backgroundCompositePipeline: MTLRenderPipelineState
     private let sampler: MTLSamplerState
 
     private let visionProcessor: VisionProcessor
@@ -45,7 +57,13 @@ final class RenderEngine {
     private var stageCount: Int = 0
     private var historyDepth: Int = 16
     private var flipHorizontal: Bool = true
+    /// What the active effect's shaders read, per reflection.
+    private var stageVisionFeatures: VisionFeatures = []
+    /// `stageVisionFeatures` plus the person matte while a background is set.
     private var visionFeatures: VisionFeatures = []
+    /// The image composited under the person in place of the camera frame's
+    /// own background, or nil to pass the camera through.
+    private var backgroundTexture: MTLTexture?
 
     // Working resolution is always the virtual-camera size so the sink stream
     // receives buffers that match its declared format.
@@ -77,8 +95,17 @@ final class RenderEngine {
     private var lastFrameTime: CFTimeInterval?
     private var outputPool: CVPixelBufferPool?
 
-    /// Latest fully rendered output texture, for the preview view.
-    private(set) var previewTexture: MTLTexture?
+    /// Latest fully rendered output texture, for the preview view. Written on
+    /// the render queue and read on the main thread, so the reference itself
+    /// is handed over under `lock`: a strong-reference swap is not atomic, and
+    /// a read overlapping the release of the previous texture is a crash.
+    var previewTexture: MTLTexture? {
+        lock.lock()
+        defer { lock.unlock() }
+        return latestOutputTexture
+    }
+    // Protected by `lock`:
+    private var latestOutputTexture: MTLTexture?
 
     /// Called on a Metal completion thread with each rendered output frame.
     var outputHandler: ((CVPixelBuffer, CMTime) -> Void)?
@@ -98,6 +125,7 @@ final class RenderEngine {
         guard let vertex = library.makeFunction(name: "ce_fullscreen_vertex"),
               let blitFragment = library.makeFunction(name: "ce_blit_fragment"),
               let flipFragment = library.makeFunction(name: "ce_blit_flip_h_fragment"),
+              let backgroundFragment = library.makeFunction(name: "ce_background_composite_fragment"),
               let handMaskFragment = library.makeFunction(name: "ce_hand_mask_fragment")
         else {
             throw NSError(domain: "CameraEffects", code: 2, userInfo: [NSLocalizedDescriptionKey: "Missing builtin shader functions"])
@@ -115,6 +143,7 @@ final class RenderEngine {
         self.flipHPipeline = try makePipeline(flipFragment, .bgra8Unorm)
         self.blitR8Pipeline = try makePipeline(blitFragment, .r8Unorm)
         self.flipHR8Pipeline = try makePipeline(flipFragment, .r8Unorm)
+        self.backgroundCompositePipeline = try makePipeline(backgroundFragment, .bgra8Unorm)
 
         self.visionProcessor = VisionProcessor(device: device)
         self.handMaskRenderer = try HandMaskRenderer(
@@ -161,6 +190,33 @@ final class RenderEngine {
         lock.lock()
         stages = newStages
         stageCount = max(newStageCount, newStages.map { $0.index + 1 }.max() ?? 0)
+        stageVisionFeatures = features
+        lock.unlock()
+        updateVisionFeatures()
+    }
+
+    /// The image to put behind the person, aspect-filled to the output, or
+    /// nil to leave the camera frame as it is. Setting one turns person
+    /// segmentation on whether or not any stage samples `uPersonMatte`.
+    func setBackground(_ texture: MTLTexture?) {
+        lock.lock()
+        backgroundTexture = texture
+        lock.unlock()
+        updateVisionFeatures()
+    }
+
+    /// Segmentation level for every use of the person matte — the background
+    /// composite and stages sampling `uPersonMatte` alike.
+    func setPersonMatteQuality(_ quality: PersonMatteQuality) {
+        visionProcessor.setMatteQuality(quality)
+    }
+
+    private func updateVisionFeatures() {
+        lock.lock()
+        var features = stageVisionFeatures
+        if backgroundTexture != nil {
+            features.insert(.personMatte)
+        }
         visionFeatures = features
         lock.unlock()
         visionProcessor.setFeatures(features)
@@ -232,6 +288,7 @@ final class RenderEngine {
         let currentStageCount = stageCount
         let depth = historyDepth
         let activeVision = visionFeatures
+        let background = backgroundTexture
         lock.unlock()
 
         guard let frameTexture = makeTexture(from: pixelBuffer) else { return }
@@ -258,13 +315,28 @@ final class RenderEngine {
         }
 
         // 1. Scale (+ optional mirror) the capture frame into the fixed working
-        //    resolution that matches the virtual camera.
-        encodeBlit(
-            commandBuffer: commandBuffer,
-            pipeline: mirrored ? flipHPipeline : blitPipeline,
-            source: frameTexture,
-            destination: workingTexture
-        )
+        //    resolution that matches the virtual camera. With a background set,
+        //    this is where it goes under the person: everything downstream —
+        //    the history ring, uPrev, the preview — sees the composited frame
+        //    as the camera. Until the first matte arrives the frame passes
+        //    through as is.
+        if let background, let matte = vision.personMatte {
+            encodeBackgroundComposite(
+                commandBuffer: commandBuffer,
+                camera: frameTexture,
+                background: background,
+                matte: matte,
+                mirrored: mirrored,
+                destination: workingTexture
+            )
+        } else {
+            encodeBlit(
+                commandBuffer: commandBuffer,
+                pipeline: mirrored ? flipHPipeline : blitPipeline,
+                source: frameTexture,
+                destination: workingTexture
+            )
+        }
 
         // 2. Append the processed frame to the history ring (slice `head`).
         head = (head + 1) % allocatedDepth
@@ -434,7 +506,9 @@ final class RenderEngine {
             }
         }
 
-        previewTexture = currentInput
+        lock.lock()
+        latestOutputTexture = currentInput
+        lock.unlock()
         commandBuffer.commit()
     }
 
@@ -464,6 +538,63 @@ final class RenderEngine {
         encoder.setFragmentSamplerState(sampler, index: 0)
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         encoder.endEncoding()
+    }
+
+    /// `mix(background, camera, matte)` into `destination`. The camera and the
+    /// raw Vision matte are in the same orientation, so both take the mirrored
+    /// UV; the background is aspect-filled and never mirrored, so the picture
+    /// reads the way it was chosen whatever the mirror setting does to the feed.
+    private func encodeBackgroundComposite(
+        commandBuffer: MTLCommandBuffer,
+        camera: MTLTexture,
+        background: MTLTexture,
+        matte: MTLTexture,
+        mirrored: Bool,
+        destination: MTLTexture
+    ) {
+        let pass = MTLRenderPassDescriptor()
+        pass.colorAttachments[0].texture = destination
+        pass.colorAttachments[0].loadAction = .dontCare
+        pass.colorAttachments[0].storeAction = .store
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return }
+
+        var uniforms = BackgroundUniforms(
+            backgroundUV: Self.aspectFillTransform(
+                imageWidth: background.width, imageHeight: background.height,
+                targetWidth: outputWidth, targetHeight: outputHeight
+            ),
+            mirror: mirrored ? 1 : 0
+        )
+        encoder.setRenderPipelineState(backgroundCompositePipeline)
+        encoder.setFragmentTexture(camera, index: 0)
+        encoder.setFragmentTexture(background, index: 1)
+        encoder.setFragmentTexture(matte, index: 2)
+        encoder.setFragmentSamplerState(sampler, index: 0)
+        encoder.setFragmentBytes(&uniforms, length: MemoryLayout<BackgroundUniforms>.stride, index: 0)
+        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+        encoder.endEncoding()
+    }
+
+    /// UV scale (xy) and offset (zw) that crop an image to cover the target
+    /// while keeping its aspect ratio, centered.
+    private static func aspectFillTransform(
+        imageWidth: Int, imageHeight: Int, targetWidth: Int, targetHeight: Int
+    ) -> SIMD4<Float> {
+        guard imageWidth > 0, imageHeight > 0, targetWidth > 0, targetHeight > 0 else {
+            return SIMD4<Float>(1, 1, 0, 0)
+        }
+        let imageAspect = Float(imageWidth) / Float(imageHeight)
+        let targetAspect = Float(targetWidth) / Float(targetHeight)
+        var scale = SIMD2<Float>(1, 1)
+        if imageAspect > targetAspect {
+            // Wider than the target: crop the sides.
+            scale.x = targetAspect / imageAspect
+        } else {
+            // Taller than the target: crop top and bottom.
+            scale.y = imageAspect / targetAspect
+        }
+        let offset = (SIMD2<Float>(1, 1) - scale) * 0.5
+        return SIMD4<Float>(scale.x, scale.y, offset.x, offset.y)
     }
 
     /// Metal constant structs are 16-byte aligned; SPIR-V sizes often are not.

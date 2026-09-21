@@ -38,6 +38,30 @@ enum BuiltinShaders {
         return source.sample(smp, uv);
     }
 
+    /// Background replacement: the selected image under the camera frame,
+    /// masked by the person matte. Runs in place of the scale/mirror blit, so
+    /// the camera and the raw Vision matte share the (optionally mirrored)
+    /// camera UV, while the background keeps its own orientation and is
+    /// aspect-filled through `backgroundUV` (xy = scale, zw = offset).
+    struct CEBackgroundUniforms {
+        float4 backgroundUV;
+        float mirror;
+    };
+
+    fragment float4 ce_background_composite_fragment(CEVertexOut in [[stage_in]],
+                                                     texture2d<float> camera [[texture(0)]],
+                                                     texture2d<float> background [[texture(1)]],
+                                                     texture2d<float> matte [[texture(2)]],
+                                                     sampler smp [[sampler(0)]],
+                                                     constant CEBackgroundUniforms& uniforms [[buffer(0)]]) {
+        float2 cameraUV = float2(mix(in.uv.x, 1.0 - in.uv.x, uniforms.mirror), in.uv.y);
+        float2 backgroundUV = in.uv * uniforms.backgroundUV.xy + uniforms.backgroundUV.zw;
+        float4 frame = camera.sample(smp, cameraUV);
+        float4 image = background.sample(smp, backgroundUV);
+        float person = smoothstep(0.35, 0.65, matte.sample(smp, cameraUV).r);
+        return float4(mix(image.rgb, frame.rgb, person), 1.0);
+    }
+
     /// Approximate hand silhouette: max coverage over capsules placed along
     /// the detected hand skeleton (see HandMaskRenderer). Layout must match
     /// HandMaskRenderer.uniformSlots: one header slot, then `maxCapsules`

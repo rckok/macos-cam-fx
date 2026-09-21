@@ -16,6 +16,7 @@ final class AppState: ObservableObject {
 
     let store: EffectStore
     let mediaLibrary: MediaLibrary
+    let backgrounds: BackgroundLibrary
     let capture: CaptureManager
     let extensionManager: ExtensionManager
     let sink: VirtualCameraSink
@@ -67,6 +68,25 @@ final class AppState: ObservableObject {
             store.saveConfigSoon()
         }
     }
+    /// The gallery image under the person in the frame every effect sees as
+    /// the camera. Nil — the gallery's None tile — leaves the camera as it is.
+    @Published var backgroundImageID: String? {
+        didSet {
+            guard backgroundImageID != oldValue else { return }
+            store.config.backgroundImageID = backgroundImageID
+            store.saveConfigSoon()
+            applyBackground()
+        }
+    }
+    /// Person segmentation level, applied whether or not a background is set.
+    @Published var personMatteQuality: PersonMatteQuality {
+        didSet {
+            guard personMatteQuality != oldValue else { return }
+            engine.setPersonMatteQuality(personMatteQuality)
+            store.config.personMatteQuality = personMatteQuality
+            store.saveConfigSoon()
+        }
+    }
 
     private var compileTasks: [String: Task<Void, Never>] = [:]
     private var cancellables = Set<AnyCancellable>()
@@ -97,12 +117,15 @@ final class AppState: ObservableObject {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
             .appendingPathComponent("CameraEffects", isDirectory: true)
         self.mediaLibrary = MediaLibrary(appSupportRoot: appSupport)
+        self.backgrounds = BackgroundLibrary(appSupportRoot: appSupport)
         self.capture = CaptureManager()
         self.extensionManager = ExtensionManager()
         self.sink = VirtualCameraSink()
         self.historyDepth = 16
         self.flipHorizontal = true
         self.previewFillsWindow = true
+        self.backgroundImageID = nil
+        self.personMatteQuality = .balanced
 
         mediaLibrary.reloadGPUCache(device: engine.device)
 
@@ -111,9 +134,15 @@ final class AppState: ObservableObject {
         previewFillsWindow = store.config.previewFillsWindow
         editorPanelHeight = store.config.editorPanelHeight.map { CGFloat($0) }
         viewMode = store.config.viewMode
+        // A remembered image that has since gone from disk is dropped.
+        backgroundImageID = store.config.backgroundImageID.flatMap { backgrounds.image(id: $0)?.id }
+        store.config.backgroundImageID = backgroundImageID
+        personMatteQuality = store.config.personMatteQuality
         // Property observers do not fire for assignments inside an initializer.
         engine.setHistoryDepth(historyDepth)
         engine.setFlipHorizontal(flipHorizontal)
+        engine.setPersonMatteQuality(personMatteQuality)
+        applyBackground()
         capture.selectedDeviceID = store.config.selectedDeviceID
 
         capture.frameHandler = { [engine] pixelBuffer, timestamp in
@@ -444,6 +473,33 @@ final class AppState: ObservableObject {
         stage.textureBindings[index].mediaID = mediaID
         store.persist(stage: stage)
         rebuildChain()
+    }
+
+    // MARK: Background gallery
+
+    /// Adds an image to the gallery and makes it the background: the reason
+    /// to add a picture is to use it.
+    func addBackground(from url: URL) {
+        do {
+            backgroundImageID = try backgrounds.add(from: url).id
+        } catch {
+            NSLog("Failed to add background image: \(error)")
+        }
+    }
+
+    /// Removes an image. If it was the background, the camera goes back to
+    /// passing through rather than silently switching to another picture.
+    func removeBackground(id: String) {
+        backgrounds.remove(id: id)
+        if backgroundImageID == id {
+            backgroundImageID = nil
+        }
+    }
+
+    /// Hands the engine the texture to composite under the person, or nil to
+    /// pass the camera through untouched.
+    private func applyBackground() {
+        engine.setBackground(backgroundImageID.flatMap { backgrounds.texture(for: $0, device: engine.device) })
     }
 
     // MARK: Compilation

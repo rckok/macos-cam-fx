@@ -12,8 +12,9 @@ struct BasicModeView: View {
     @ObservedObject var sink: VirtualCameraSink
 
     /// The panes that unfold from the control bar. One slot above the bar,
-    /// so opening one closes the other.
+    /// so opening one closes the others.
     private enum Pane {
+        case background
         case effects
         case controls
     }
@@ -23,6 +24,8 @@ struct BasicModeView: View {
 
     private let controlSize: CGFloat = 40
     private let paneWidth: CGFloat = 320
+    /// Panes hug their content up to this height, then scroll.
+    private let paneMaxHeight: CGFloat = 440
     private let paneShape = RoundedRectangle(cornerRadius: 20, style: .continuous)
     /// Clear glass leaves legibility to the caller. The bar's symbols and its
     /// one label need only a hint of a scrim; the panes need more.
@@ -32,11 +35,25 @@ struct BasicModeView: View {
     var body: some View {
         PreviewView(engine: state.engine, contentMode: state.previewFillsWindow ? .fill : .fit)
             .ignoresSafeArea()
+            // A click on the camera puts whichever pane is open away. This
+            // layer sits under the bar and the pane, so clicks on those
+            // still land where they should.
+            .overlay {
+                if openPane != nil {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onTapGesture { openPane = nil }
+                }
+            }
             .overlay(alignment: .bottom) {
-                // Each pane unfolds towards its own button: the effect list
-                // from the left half of the bar, the controls from the right.
-                VStack(alignment: openPane == .effects ? .leading : .trailing, spacing: 12) {
+                // Each pane unfolds towards its own button: the background
+                // gallery and the effect list from the left half of the bar,
+                // the controls from the right.
+                VStack(alignment: openPane == .controls ? .trailing : .leading, spacing: 12) {
                     switch openPane {
+                    case .background:
+                        backgroundPane
+                            .transition(.scale(scale: 0.9, anchor: .bottomLeading).combined(with: .opacity))
                     case .effects:
                         effectsPane
                             .transition(.scale(scale: 0.9, anchor: .bottomLeading).combined(with: .opacity))
@@ -129,10 +146,10 @@ struct BasicModeView: View {
         openPane = openPane == pane ? nil : pane
     }
 
-    /// Camera picker plus the two settings that matter while watching the
-    /// feed: mirroring, and whether the preview crops to fill the window or
-    /// letterboxes to show the whole frame. Frame history stays in Editor
-    /// Mode's settings.
+    /// Camera picker plus the settings that matter while watching the feed:
+    /// mirroring, whether the preview crops to fill the window or letterboxes
+    /// to show the whole frame, and the background image. Frame history stays
+    /// in Editor Mode's settings.
     private var cameraMenu: some View {
         Menu {
             if capture.devices.isEmpty {
@@ -147,6 +164,12 @@ struct BasicModeView: View {
             Divider()
             Toggle("Mirror", isOn: $state.flipHorizontal)
             Toggle("Fill Window", isOn: $state.previewFillsWindow)
+            Divider()
+            // A menu cannot hold a gallery, so this unfolds one; the
+            // gallery's None tile is what turns the background off.
+            Button("Background…") {
+                openPane = .background
+            }
         } label: {
             Image(systemName: "video")
                 .font(.system(size: 15, weight: .medium))
@@ -227,6 +250,14 @@ struct BasicModeView: View {
 
     // MARK: Panes
 
+    /// The background gallery: pick the image behind the person (or none),
+    /// add more, remove some, and choose how carefully the person is cut out.
+    private var backgroundPane: some View {
+        BackgroundGalleryPane(library: state.backgrounds, onClose: { openPane = nil })
+            .paneFrame(width: paneWidth, maxHeight: paneMaxHeight)
+            .glassSurface(in: paneShape, dim: paneDim)
+    }
+
     /// The effect menu unfolded, with the management a menu has no room for.
     private var effectsPane: some View {
         let list = EffectListPane(store: store) { effect in
@@ -238,8 +269,7 @@ struct BasicModeView: View {
                 list
             }
         }
-        .frame(width: paneWidth)
-        .frame(maxHeight: 440)
+        .paneFrame(width: paneWidth, maxHeight: paneMaxHeight)
         .glassSurface(in: paneShape, dim: paneDim)
     }
 
@@ -262,8 +292,7 @@ struct BasicModeView: View {
                 }
             }
         }
-        .frame(width: paneWidth)
-        .frame(maxHeight: 440)
+        .paneFrame(width: paneWidth, maxHeight: paneMaxHeight)
         // Sliders and their labels are fine detail over a moving frame, so
         // the panes are the surfaces that need a scrim behind them.
         .glassSurface(in: paneShape, dim: paneDim)
@@ -303,7 +332,40 @@ struct BasicModeView: View {
     }
 }
 
+/// A frame that hugs its content up to a height, where `.frame(maxHeight:)`
+/// would fill up to it: that modifier takes the parent's proposal whenever
+/// the proposal is larger than the child, and the overlay the panes live in
+/// proposes the whole window. This one proposes at most `maxHeight` to the
+/// child — so the `ViewThatFits` inside knows when to fall back to scrolling
+/// — and reports the child's own size.
+private struct PaneFrame: Layout {
+    let width: CGFloat
+    let maxHeight: CGFloat
+
+    private func childProposal(_ proposal: ProposedViewSize) -> ProposedViewSize {
+        ProposedViewSize(width: width, height: min(proposal.height ?? maxHeight, maxHeight))
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let child = subviews.first else { return CGSize(width: width, height: 0) }
+        let size = child.sizeThatFits(childProposal(proposal))
+        return CGSize(width: width, height: min(size.height, maxHeight))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard let child = subviews.first else { return }
+        child.place(at: bounds.origin, anchor: .topLeading, proposal: childProposal(proposal))
+    }
+}
+
 private extension View {
+    /// Fixed width, and a height that follows the content up to `maxHeight`.
+    func paneFrame(width: CGFloat, maxHeight: CGFloat) -> some View {
+        PaneFrame(width: width, maxHeight: maxHeight) {
+            self
+        }
+    }
+
     /// A `Menu` drawn as one of the floating controls: no system border or
     /// indicator, just its label on glass.
     func glassMenu(in shape: some Shape, dim: Double) -> some View {

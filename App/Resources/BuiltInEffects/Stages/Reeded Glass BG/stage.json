@@ -1,0 +1,8 @@
+{
+  "name": "Reeded Glass BG",
+  "params": {
+    "num_tiles": { "type": "int", "value": 55, "min": 10, "max": 200, "global": true },
+    "two_dimensional": { "type": "bool", "value": false, "global": true },
+    "displacement_radius": { "type": "float", "value": 0.025, "min": 0, "max": 1, "global": false }
+  }
+}
