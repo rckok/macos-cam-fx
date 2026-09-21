@@ -2,7 +2,7 @@
   "effects": [
     "Hand Tracking",
     "Face Tracking",
-    "Background Cutout"
+    "Background Cutout",
     "Slitscan",
     "Nosy",
     "Reeded Glass",
