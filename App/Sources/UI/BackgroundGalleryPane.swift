@@ -12,7 +12,8 @@ struct BackgroundGalleryPane: View {
     /// to toggle it away, so it carries a close button.
     let onClose: () -> Void
 
-    private let columns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 3)
+    private let columnCount = 3
+    private let tileSpacing: CGFloat = 8
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -69,22 +70,60 @@ struct BackgroundGalleryPane: View {
         }
     }
 
+    /// What the grid holds, in order: None, the images, Add.
+    private enum Slot: Hashable {
+        case none
+        case image(String)
+        case add
+    }
+
+    private var slots: [Slot] {
+        [.none] + library.images.map { .image($0.id) } + [.add]
+    }
+
+    /// Rows of equal-width tiles. A plain grid rather than a lazy one: the
+    /// pane sizes itself to this through `ViewThatFits`, which needs an
+    /// exact height, and lazy containers do not promise one.
     private var gallery: some View {
-        LazyVGrid(columns: columns, spacing: 8) {
+        let rows = stride(from: 0, to: slots.count, by: columnCount).map { start in
+            Array(slots[start..<min(start + columnCount, slots.count)])
+        }
+        return VStack(spacing: tileSpacing) {
+            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                HStack(spacing: tileSpacing) {
+                    ForEach(row, id: \.self) { slot in
+                        tile(for: slot)
+                    }
+                    // Fillers sized like tiles keep a short last row's tiles
+                    // the same width as the rows above.
+                    ForEach(row.count..<columnCount, id: \.self) { _ in
+                        Color.clear
+                            .frame(maxWidth: .infinity)
+                            .aspectRatio(16 / 9, contentMode: .fit)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func tile(for slot: Slot) -> some View {
+        switch slot {
+        case .none:
             BackgroundTile(
                 content: .none,
                 isSelected: state.backgroundImageID == nil,
                 onSelect: { state.backgroundImageID = nil },
                 onDelete: nil
             )
-            ForEach(library.images) { image in
-                BackgroundTile(
-                    content: .image(library.thumbnail(for: image.id), name: image.name),
-                    isSelected: state.backgroundImageID == image.id,
-                    onSelect: { state.backgroundImageID = image.id },
-                    onDelete: { state.removeBackground(id: image.id) }
-                )
-            }
+        case .image(let id):
+            BackgroundTile(
+                content: .image(library.thumbnail(for: id), name: library.image(id: id)?.name ?? ""),
+                isSelected: state.backgroundImageID == id,
+                onSelect: { state.backgroundImageID = id },
+                onDelete: { state.removeBackground(id: id) }
+            )
+        case .add:
             AddBackgroundTile(action: pickAndAdd)
         }
     }

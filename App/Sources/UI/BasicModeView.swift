@@ -24,6 +24,8 @@ struct BasicModeView: View {
 
     private let controlSize: CGFloat = 40
     private let paneWidth: CGFloat = 320
+    /// Panes hug their content up to this height, then scroll.
+    private let paneMaxHeight: CGFloat = 440
     private let paneShape = RoundedRectangle(cornerRadius: 20, style: .continuous)
     /// Clear glass leaves legibility to the caller. The bar's symbols and its
     /// one label need only a hint of a scrim; the panes need more.
@@ -33,12 +35,11 @@ struct BasicModeView: View {
     var body: some View {
         PreviewView(engine: state.engine, contentMode: state.previewFillsWindow ? .fill : .fit)
             .ignoresSafeArea()
-            // The gallery is opened from a menu, so no button on the bar
-            // stands for it the way the other panes' buttons do. A click on
-            // the camera puts it away instead; this layer sits under the bar
-            // and the pane, so clicks on those still land where they should.
+            // A click on the camera puts whichever pane is open away. This
+            // layer sits under the bar and the pane, so clicks on those
+            // still land where they should.
             .overlay {
-                if openPane == .background {
+                if openPane != nil {
                     Color.clear
                         .contentShape(Rectangle())
                         .onTapGesture { openPane = nil }
@@ -253,8 +254,7 @@ struct BasicModeView: View {
     /// add more, remove some, and choose how carefully the person is cut out.
     private var backgroundPane: some View {
         BackgroundGalleryPane(library: state.backgrounds, onClose: { openPane = nil })
-            .frame(width: paneWidth)
-            .frame(maxHeight: 440)
+            .paneFrame(width: paneWidth, maxHeight: paneMaxHeight)
             .glassSurface(in: paneShape, dim: paneDim)
     }
 
@@ -269,8 +269,7 @@ struct BasicModeView: View {
                 list
             }
         }
-        .frame(width: paneWidth)
-        .frame(maxHeight: 440)
+        .paneFrame(width: paneWidth, maxHeight: paneMaxHeight)
         .glassSurface(in: paneShape, dim: paneDim)
     }
 
@@ -293,8 +292,7 @@ struct BasicModeView: View {
                 }
             }
         }
-        .frame(width: paneWidth)
-        .frame(maxHeight: 440)
+        .paneFrame(width: paneWidth, maxHeight: paneMaxHeight)
         // Sliders and their labels are fine detail over a moving frame, so
         // the panes are the surfaces that need a scrim behind them.
         .glassSurface(in: paneShape, dim: paneDim)
@@ -334,7 +332,40 @@ struct BasicModeView: View {
     }
 }
 
+/// A frame that hugs its content up to a height, where `.frame(maxHeight:)`
+/// would fill up to it: that modifier takes the parent's proposal whenever
+/// the proposal is larger than the child, and the overlay the panes live in
+/// proposes the whole window. This one proposes at most `maxHeight` to the
+/// child — so the `ViewThatFits` inside knows when to fall back to scrolling
+/// — and reports the child's own size.
+private struct PaneFrame: Layout {
+    let width: CGFloat
+    let maxHeight: CGFloat
+
+    private func childProposal(_ proposal: ProposedViewSize) -> ProposedViewSize {
+        ProposedViewSize(width: width, height: min(proposal.height ?? maxHeight, maxHeight))
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let child = subviews.first else { return CGSize(width: width, height: 0) }
+        let size = child.sizeThatFits(childProposal(proposal))
+        return CGSize(width: width, height: min(size.height, maxHeight))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard let child = subviews.first else { return }
+        child.place(at: bounds.origin, anchor: .topLeading, proposal: childProposal(proposal))
+    }
+}
+
 private extension View {
+    /// Fixed width, and a height that follows the content up to `maxHeight`.
+    func paneFrame(width: CGFloat, maxHeight: CGFloat) -> some View {
+        PaneFrame(width: width, maxHeight: maxHeight) {
+            self
+        }
+    }
+
     /// A `Menu` drawn as one of the floating controls: no system border or
     /// indicator, just its label on glass.
     func glassMenu(in shape: some Shape, dim: Double) -> some View {
