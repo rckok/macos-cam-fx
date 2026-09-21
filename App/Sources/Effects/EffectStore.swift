@@ -24,13 +24,18 @@ final class EffectStore: ObservableObject {
         /// Height of the editor panel under the camera, once it has been
         /// opened. The window frame itself is AppKit's to remember.
         var editorPanelHeight: Double?
+        /// The background gallery image composited under the person in the
+        /// camera frame the effects see; nil leaves the camera as it is.
+        var backgroundImageID: String?
+        /// Person segmentation level, for compositing and `uPersonMatte` alike.
+        var personMatteQuality: PersonMatteQuality = .balanced
         /// Parameter values and media picks the user made on built-in stages,
         /// keyed by stage ID. The bundle itself is never written to.
         var builtInStageOverrides: [String: StageManifest] = [:]
 
         enum CodingKeys: String, CodingKey {
             case effects, activeEffectID, viewMode, selectedDeviceID, historyDepth, flipHorizontal
-            case previewFillsWindow, editorPanelHeight, builtInStageOverrides
+            case previewFillsWindow, editorPanelHeight, backgroundImageID, personMatteQuality, builtInStageOverrides
         }
 
         init() {}
@@ -47,6 +52,10 @@ final class EffectStore: ObservableObject {
             flipHorizontal = try container.decodeIfPresent(Bool.self, forKey: .flipHorizontal) ?? true
             previewFillsWindow = try container.decodeIfPresent(Bool.self, forKey: .previewFillsWindow) ?? true
             editorPanelHeight = try container.decodeIfPresent(Double.self, forKey: .editorPanelHeight)
+            backgroundImageID = try container.decodeIfPresent(String.self, forKey: .backgroundImageID)
+            personMatteQuality = try container.decodeIfPresent(
+                PersonMatteQuality.self, forKey: .personMatteQuality
+            ) ?? .balanced
             builtInStageOverrides = try container.decodeIfPresent(
                 [String: StageManifest].self, forKey: .builtInStageOverrides
             ) ?? [:]
@@ -62,6 +71,8 @@ final class EffectStore: ObservableObject {
             try container.encode(flipHorizontal, forKey: .flipHorizontal)
             try container.encode(previewFillsWindow, forKey: .previewFillsWindow)
             try container.encodeIfPresent(editorPanelHeight, forKey: .editorPanelHeight)
+            try container.encodeIfPresent(backgroundImageID, forKey: .backgroundImageID)
+            try container.encode(personMatteQuality, forKey: .personMatteQuality)
             if !builtInStageOverrides.isEmpty {
                 try container.encode(builtInStageOverrides, forKey: .builtInStageOverrides)
             }

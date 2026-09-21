@@ -35,7 +35,7 @@ final class MediaTextureCache {
 
         switch entry.kind {
         case .image:
-            guard let texture = Self.loadImage(url: entry.url, device: device) else { return nil }
+            guard let texture = ImageTextureLoader.load(url: entry.url, device: device) else { return nil }
             images[id] = texture
             return texture
         case .video:
@@ -65,12 +65,16 @@ final class MediaTextureCache {
         unload(mediaID: mediaID)
         _ = texture(forMediaID: mediaID)
     }
+}
 
-    private static func loadImage(url: URL, device: MTLDevice) -> MTLTexture? {
-        if let texture = loadImageWithMTKTextureLoader(url: url, device: device) {
+/// Loads a still image from disk into a shader-readable texture. Shared by the
+/// media library and the background library.
+enum ImageTextureLoader {
+    static func load(url: URL, device: MTLDevice) -> MTLTexture? {
+        if let texture = loadWithMTKTextureLoader(url: url, device: device) {
             return texture
         }
-        if let texture = loadImageWithBitmapRep(url: url, device: device) {
+        if let texture = loadWithBitmapRep(url: url, device: device) {
             textureLogger.info("Loaded image via bitmap fallback: \(url.lastPathComponent, privacy: .public)")
             return texture
         }
@@ -78,7 +82,7 @@ final class MediaTextureCache {
         return nil
     }
 
-    private static func loadImageWithMTKTextureLoader(url: URL, device: MTLDevice) -> MTLTexture? {
+    private static func loadWithMTKTextureLoader(url: URL, device: MTLDevice) -> MTLTexture? {
         let loader = MTKTextureLoader(device: device)
         let options: [MTKTextureLoader.Option: Any] = [
             .textureUsage: NSNumber(value: MTLTextureUsage.shaderRead.rawValue),
@@ -88,7 +92,7 @@ final class MediaTextureCache {
     }
 
     /// Fallback for PNGs MTKTextureLoader cannot decode (e.g. 8-bit indexed/colormap).
-    private static func loadImageWithBitmapRep(url: URL, device: MTLDevice) -> MTLTexture? {
+    private static func loadWithBitmapRep(url: URL, device: MTLDevice) -> MTLTexture? {
         guard let data = try? Data(contentsOf: url),
               let rep = NSBitmapImageRep(data: data),
               let bitmapData = rep.bitmapData
