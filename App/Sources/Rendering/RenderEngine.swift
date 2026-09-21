@@ -95,8 +95,17 @@ final class RenderEngine {
     private var lastFrameTime: CFTimeInterval?
     private var outputPool: CVPixelBufferPool?
 
-    /// Latest fully rendered output texture, for the preview view.
-    private(set) var previewTexture: MTLTexture?
+    /// Latest fully rendered output texture, for the preview view. Written on
+    /// the render queue and read on the main thread, so the reference itself
+    /// is handed over under `lock`: a strong-reference swap is not atomic, and
+    /// a read overlapping the release of the previous texture is a crash.
+    var previewTexture: MTLTexture? {
+        lock.lock()
+        defer { lock.unlock() }
+        return latestOutputTexture
+    }
+    // Protected by `lock`:
+    private var latestOutputTexture: MTLTexture?
 
     /// Called on a Metal completion thread with each rendered output frame.
     var outputHandler: ((CVPixelBuffer, CMTime) -> Void)?
@@ -497,7 +506,9 @@ final class RenderEngine {
             }
         }
 
-        previewTexture = currentInput
+        lock.lock()
+        latestOutputTexture = currentInput
+        lock.unlock()
         commandBuffer.commit()
     }
 
