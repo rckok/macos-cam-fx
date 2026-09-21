@@ -4,6 +4,8 @@ import Foundation
 /// Loads and persists stages (one folder per stage: shader.frag + stage.json)
 /// plus the global app configuration, including the effects that group stages
 /// into pipelines, and watches the stages directory for external edits.
+/// Built-in effects come from the bundle instead, one folder per effect with a
+/// subfolder per stage.
 @MainActor
 final class EffectStore: ObservableObject {
 
@@ -93,6 +95,7 @@ final class EffectStore: ObservableObject {
 
     static let shaderFileName = "shader.frag"
     static let manifestFileName = "stage.json"
+    static let effectManifestFileName = "effect.json"
     private static let bundledResourceName = "BuiltInEffects"
 
     init() {
@@ -117,57 +120,82 @@ final class EffectStore: ObservableObject {
         Bundle.main.url(forResource: bundledResourceName, withExtension: nil)
     }
 
-    /// Effects shipped with the app, described by `BuiltInEffects/effects.json`.
-    private struct BuiltInLayout: Decodable {
-        struct Entry: Decodable {
-            var name: String
-            var stages: [String]
-        }
-
-        var effects: [Entry]
+    /// Optional `effect.json` at the root of a built-in effect folder: the
+    /// display name, and the order its stage subfolders render in.
+    private struct BuiltInEffectManifest: Decodable {
+        var name: String?
+        var stages: [String]?
     }
 
-    /// Loads the bundled stages in place — nothing is copied to disk — so the
-    /// list always reflects what this version of the app ships, and applies
-    /// any saved parameter overrides. Bundled folders that `effects.json`
-    /// leaves out become effects of their own so they stay reachable.
+    /// Loads the bundled effects in place — nothing is copied to disk — so the
+    /// list always reflects what this version of the app ships, and applies any
+    /// saved parameter overrides. Each effect is one folder with a subfolder
+    /// per stage, so stage names only have to be unique within their effect.
+    /// Effects appear in alphabetical order of their folder names.
     private func loadBuiltIns() {
         guard let root = Self.bundledRootURL else { return }
-        let bundledStages = root.appendingPathComponent("Stages", isDirectory: true)
-        let folders = (try? FileManager.default.contentsOfDirectory(
-            at: bundledStages, includingPropertiesForKeys: [.isDirectoryKey]
-        ))?.filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true } ?? []
 
-        var stagesByFolder: [String: Stage] = [:]
-        for folder in folders {
-            let id = Effect.builtInIDPrefix + folder.lastPathComponent
-            guard let stage = loadStage(from: folder, id: id, isBuiltIn: true) else { continue }
-            if let overrides = config.builtInStageOverrides[id] {
-                stage.applyManifestValues(overrides)
+        var loadedEffects: [Effect] = []
+        var loadedStages: [Stage] = []
+        for effectFolder in Self.subfolders(of: root) {
+            let effectName = effectFolder.lastPathComponent
+            var manifest: BuiltInEffectManifest?
+            if let data = try? Data(contentsOf: effectFolder.appendingPathComponent(Self.effectManifestFileName)) {
+                manifest = try? JSONDecoder().decode(BuiltInEffectManifest.self, from: data)
             }
-            stagesByFolder[folder.lastPathComponent] = stage
-        }
 
-        var effects: [Effect] = []
-        var assigned = Set<String>()
-        if let data = try? Data(contentsOf: root.appendingPathComponent("effects.json")),
-           let layout = try? JSONDecoder().decode(BuiltInLayout.self, from: data) {
-            for entry in layout.effects {
-                let stageIDs = entry.stages.compactMap { folder -> String? in
-                    guard let stage = stagesByFolder[folder], assigned.insert(stage.id).inserted else { return nil }
-                    return stage.id
+            let effectStages = orderedStageFolders(in: effectFolder, listed: manifest?.stages ?? [])
+                .compactMap { folder -> Stage? in
+                    let stageName = folder.lastPathComponent
+                    let id = Effect.builtInIDPrefix + effectName + "/" + stageName
+                    guard let stage = loadStage(from: folder, id: id, isBuiltIn: true) else { return nil }
+                    if let overrides = builtInOverrides(id: id, legacyID: Effect.builtInIDPrefix + stageName) {
+                        stage.applyManifestValues(overrides)
+                    }
+                    return stage
                 }
-                guard !stageIDs.isEmpty else { continue }
-                effects.append(Effect(id: Effect.builtInIDPrefix + entry.name, name: entry.name, stageIDs: stageIDs))
-            }
-        }
-        for folder in folders.map(\.lastPathComponent).sorted() {
-            guard let stage = stagesByFolder[folder], !assigned.contains(stage.id) else { continue }
-            effects.append(Effect(id: Effect.builtInIDPrefix + folder, name: stage.name, stageIDs: [stage.id]))
+            guard !effectStages.isEmpty else { continue }
+
+            loadedEffects.append(Effect(
+                id: Effect.builtInIDPrefix + effectName,
+                name: manifest?.name ?? effectName,
+                stageIDs: effectStages.map(\.id)
+            ))
+            loadedStages.append(contentsOf: effectStages)
         }
 
-        builtInStages = effects.flatMap(\.stageIDs).compactMap { id in stagesByFolder.values.first { $0.id == id } }
-        builtInEffects = effects
+        builtInStages = loadedStages
+        builtInEffects = loadedEffects
+    }
+
+    /// The effect's stage folders: the ones `effect.json` names, in that order,
+    /// then any subfolder it leaves out so new stages stay reachable.
+    private func orderedStageFolders(in effectFolder: URL, listed: [String]) -> [URL] {
+        let folders = Self.subfolders(of: effectFolder)
+        let byName = Dictionary(folders.map { ($0.lastPathComponent, $0) }, uniquingKeysWith: { first, _ in first })
+        var ordered = listed.compactMap { byName[$0] }
+        ordered += folders.filter { !listed.contains($0.lastPathComponent) }
+        return ordered
+    }
+
+    /// Saved parameter values for a built-in stage. Overrides written before
+    /// built-in stages moved into per-effect folders were keyed by the stage
+    /// folder alone; they are adopted under the new ID on first launch.
+    private func builtInOverrides(id: String, legacyID: String) -> StageManifest? {
+        if let overrides = config.builtInStageOverrides[id] { return overrides }
+        guard let legacy = config.builtInStageOverrides.removeValue(forKey: legacyID) else { return nil }
+        config.builtInStageOverrides[id] = legacy
+        return legacy
+    }
+
+    /// Immediate subdirectories, sorted by name.
+    private static func subfolders(of folder: URL) -> [URL] {
+        let contents = (try? FileManager.default.contentsOfDirectory(
+            at: folder, includingPropertiesForKeys: [.isDirectoryKey]
+        )) ?? []
+        return contents
+            .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 
     private func loadConfig() {
@@ -186,11 +214,7 @@ final class EffectStore: ObservableObject {
     }
 
     private func loadStages() {
-        let folders = (try? FileManager.default.contentsOfDirectory(
-            at: stagesURL, includingPropertiesForKeys: [.isDirectoryKey]
-        ))?.filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true } ?? []
-
-        let loaded: [Stage] = folders.compactMap { loadStage(from: $0) }
+        let loaded: [Stage] = Self.subfolders(of: stagesURL).compactMap { loadStage(from: $0) }
         stages = loaded
 
         // Without a readable config every stage folder becomes its own effect;

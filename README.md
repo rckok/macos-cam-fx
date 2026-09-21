@@ -206,12 +206,30 @@ timer, and a `config.json` the app cannot read is set aside as
 config claims becomes an effect of its own, named after the folder, so it
 stays reachable.
 
-Built-in effects are never copied there. They are read from the app bundle
-(`BuiltInEffects/effects.json` plus one folder per stage) on every launch, and
-only the parameter values and media picks you change on them are saved, under
-`builtInStageOverrides` in `config.json`. Earlier versions seeded copies of the
-built-in stages into the `Stages` folder; those copies simply remain as custom
-effects.
+Built-in effects are never copied there. They are read from the app bundle on
+every launch, and only the parameter values and media picks you change on them
+are saved, under `builtInStageOverrides` in `config.json`. Earlier versions
+seeded copies of the built-in stages into the `Stages` folder; those copies
+simply remain as custom effects.
+
+Inside `BuiltInEffects/`, every effect is one folder with a subfolder per
+stage, so two effects can name their stages alike:
+
+```
+BuiltInEffects/
+  Ghost Aberration/
+    effect.json          # optional: display name and stage order
+    Ghost Echo/
+      shader.frag
+      stage.json
+    Ghost Shift/
+      ...
+```
+
+Without an `effect.json`, the effect is named after its folder and its stages
+render in alphabetical order; stage subfolders the manifest leaves out are
+appended in that same order. The effects themselves are listed alphabetically
+by folder name, ahead of your own.
 
 ## Writing stages
 

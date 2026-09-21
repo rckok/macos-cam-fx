@@ -1,0 +1,4 @@
+{
+  "name": "Light Trails",
+  "stages": ["Trail Buffer", "Trail Composite"]
+}

@@ -209,6 +209,8 @@ struct Effect: Identifiable, Codable, Equatable {
 
     /// Built-in effects and stages ship inside the app bundle and carry this
     /// prefix; user stage IDs are folder names, which never contain ":".
+    /// A built-in effect's ID is the prefix plus its bundle folder name, and
+    /// its stages add "/" plus their subfolder name.
     static let builtInIDPrefix = "builtin:"
 
     /// Shipped with the app: viewable and usable, but its shader sources,
@@ -319,10 +321,11 @@ struct StageManifest: Codable {
 /// One stage of an effect: a GLSL shader on disk plus runtime compile state.
 final class Stage: Identifiable, ObservableObject {
     /// Folder name; doubles as the stable identifier. Built-in stages are
-    /// prefixed with `Effect.builtInIDPrefix`.
+    /// identified by their effect folder and subfolder instead — see
+    /// `Effect.builtInIDPrefix`.
     let id: String
     /// The stage folder: in Application Support for user stages, inside the
-    /// app bundle for built-in ones.
+    /// effect's bundle folder for built-in ones.
     let folderURL: URL
     /// Shipped with the app. The shader and name are read-only; parameter and
     /// media choices still apply and are persisted in config.json.
