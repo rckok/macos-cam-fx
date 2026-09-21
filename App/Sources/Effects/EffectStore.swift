@@ -96,6 +96,7 @@ final class EffectStore: ObservableObject {
     static let shaderFileName = "shader.frag"
     static let manifestFileName = "stage.json"
     static let effectManifestFileName = "effect.json"
+    static let effectOrderFileName = "effects.json"
     private static let bundledResourceName = "BuiltInEffects"
 
     init() {
@@ -120,6 +121,13 @@ final class EffectStore: ObservableObject {
         Bundle.main.url(forResource: bundledResourceName, withExtension: nil)
     }
 
+    /// Optional `effects.json` at the root of the bundled effects folder: the
+    /// order the built-in effects are listed in, and nothing else — an effect
+    /// is described entirely by its own folder.
+    private struct BuiltInOrder: Decodable {
+        var effects: [String]
+    }
+
     /// Optional `effect.json` at the root of a built-in effect folder: the
     /// display name, and the order its stage subfolders render in.
     private struct BuiltInEffectManifest: Decodable {
@@ -131,20 +139,25 @@ final class EffectStore: ObservableObject {
     /// list always reflects what this version of the app ships, and applies any
     /// saved parameter overrides. Each effect is one folder with a subfolder
     /// per stage, so stage names only have to be unique within their effect.
-    /// Effects appear in alphabetical order of their folder names.
     private func loadBuiltIns() {
         guard let root = Self.bundledRootURL else { return }
 
+        var listedEffects: [String] = []
+        if let data = try? Data(contentsOf: root.appendingPathComponent(Self.effectOrderFileName)),
+           let order = try? JSONDecoder().decode(BuiltInOrder.self, from: data) {
+            listedEffects = order.effects
+        }
+
         var loadedEffects: [Effect] = []
         var loadedStages: [Stage] = []
-        for effectFolder in Self.subfolders(of: root) {
+        for effectFolder in Self.ordered(Self.subfolders(of: root), by: listedEffects) {
             let effectName = effectFolder.lastPathComponent
             var manifest: BuiltInEffectManifest?
             if let data = try? Data(contentsOf: effectFolder.appendingPathComponent(Self.effectManifestFileName)) {
                 manifest = try? JSONDecoder().decode(BuiltInEffectManifest.self, from: data)
             }
 
-            let effectStages = orderedStageFolders(in: effectFolder, listed: manifest?.stages ?? [])
+            let effectStages = Self.ordered(Self.subfolders(of: effectFolder), by: manifest?.stages ?? [])
                 .compactMap { folder -> Stage? in
                     let stageName = folder.lastPathComponent
                     let id = Effect.builtInIDPrefix + effectName + "/" + stageName
@@ -168,14 +181,12 @@ final class EffectStore: ObservableObject {
         builtInEffects = loadedEffects
     }
 
-    /// The effect's stage folders: the ones `effect.json` names, in that order,
-    /// then any subfolder it leaves out so new stages stay reachable.
-    private func orderedStageFolders(in effectFolder: URL, listed: [String]) -> [URL] {
-        let folders = Self.subfolders(of: effectFolder)
+    /// `folders` in the order `listed` names them, followed by the ones the
+    /// list leaves out — alphabetically, as `subfolders(of:)` returns them —
+    /// so a folder nobody lists still shows up.
+    private static func ordered(_ folders: [URL], by listed: [String]) -> [URL] {
         let byName = Dictionary(folders.map { ($0.lastPathComponent, $0) }, uniquingKeysWith: { first, _ in first })
-        var ordered = listed.compactMap { byName[$0] }
-        ordered += folders.filter { !listed.contains($0.lastPathComponent) }
-        return ordered
+        return listed.compactMap { byName[$0] } + folders.filter { !listed.contains($0.lastPathComponent) }
     }
 
     /// Saved parameter values for a built-in stage. Overrides written before

@@ -217,6 +217,7 @@ stage, so two effects can name their stages alike:
 
 ```
 BuiltInEffects/
+  effects.json           # the order the effects are listed in
   Ghost Aberration/
     effect.json          # optional: display name and stage order
     Ghost Echo/
@@ -226,10 +227,11 @@ BuiltInEffects/
       ...
 ```
 
-Without an `effect.json`, the effect is named after its folder and its stages
-render in alphabetical order; stage subfolders the manifest leaves out are
-appended in that same order. The effects themselves are listed alphabetically
-by folder name, ahead of your own.
+The root `effects.json` holds nothing but effect folder names, in menu order —
+everything about an effect lives in its own folder. Without an `effect.json`,
+the effect is named after its folder and its stages render in alphabetical
+order. A folder either file leaves out is appended alphabetically, so a new
+effect or stage shows up without being listed.
 
 ## Writing stages
 
