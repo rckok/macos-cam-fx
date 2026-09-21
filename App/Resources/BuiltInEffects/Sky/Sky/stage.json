@@ -1,0 +1,19 @@
+{
+  "name": "Sky",
+  "params": {
+    "cloudy": { "type": "float", "min": 0.0, "max": 0.9, "default": 0.12, "global": true },
+    "cloudSpeed": { "type": "float", "min": -2.0, "max": 2.0, "default": 0.56, "global": true },
+    "haze": { "type": "float", "min": 0.0, "max": 1.0, "default": 0, "global": false },
+    "raininess": { "type": "float", "min": 0, "max": 100, "default": 70, "global": true },
+    "sunPos": { "type": "vec2", "min": "vec2(0, -0.04)", "max": "vec2(1.0)", "default": "vec2(0.7, 0.24)", "global": true },
+    "autoSunY": { "type": "bool", "default": false, "global": false },
+    "autoSunYSpeed": { "type": "float", "min": 0.0, "max": 1.0, "default": 0.5, "global": false },
+    "sunFollowsFinger": { "type": "bool", "default": 1, "global": true },
+    "sunIntensity": { "type": "float", "min": 0.0, "max": 5.0, "default": 1.0, "global": false },
+    "lightPower": { "type": "float", "min": 0.0, "max": 18.0, "default": 0.685, "global": false },
+    "lightConcentration": { "type": "float", "min": 0.0, "max": 0.64, "default": 0.21, "global": false },
+    "fov": { "type": "float", "min": 0.4, "max": 0.8, "default": 0.587, "global": false },
+    "cameraDirection": { "type": "vec3", "min": "vec3(0.0)", "max": "vec3(1.0)", "default": "vec3(0.052, 0.031, 0)", "global": false },
+    "hsb": { "type": "vec3", "min": "vec3(0.0)", "max": "vec3(1, 2, 2)", "default": "vec3(0, 1, 1)", "global": false },
+  }
+}

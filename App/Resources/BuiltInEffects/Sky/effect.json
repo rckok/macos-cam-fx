@@ -1,0 +1,4 @@
+{
+  "name": "Sky",
+  "stages": ["Sky", "Compositing", "Post"]
+}
