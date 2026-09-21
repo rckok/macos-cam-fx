@@ -1,9 +1,11 @@
 {
   "effects": [
-    "Chromatic Aberration",
-    "Echo Trail",
-    "Background Cutout",
-    "Ghost Aberration",
-    "Light Trails"
+    "Hand Tracking",
+    "Face Tracking",
+    "Background Cutout"
+    "Slitscan",
+    "Nosy",
+    "Reeded Glass",
+    "None"
   ]
 }
