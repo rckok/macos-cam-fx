@@ -153,20 +153,18 @@ final class EffectStore: ObservableObject {
     private func loadBuiltIns() {
         guard let root = Self.bundledRootURL else { return }
 
-        var listedEffects: [String] = []
-        if let data = try? Data(contentsOf: root.appendingPathComponent(Self.effectOrderFileName)),
-           let order = try? JSONDecoder().decode(BuiltInOrder.self, from: data) {
-            listedEffects = order.effects
-        }
+        let order = Self.decodeManifest(
+            BuiltInOrder.self, at: root.appendingPathComponent(Self.effectOrderFileName)
+        )
 
         var loadedEffects: [Effect] = []
         var loadedStages: [Stage] = []
-        for effectFolder in Self.ordered(Self.subfolders(of: root), by: listedEffects) {
+        for effectFolder in Self.ordered(Self.subfolders(of: root), by: order?.effects ?? []) {
             let effectName = effectFolder.lastPathComponent
-            var manifest: BuiltInEffectManifest?
-            if let data = try? Data(contentsOf: effectFolder.appendingPathComponent(Self.effectManifestFileName)) {
-                manifest = try? JSONDecoder().decode(BuiltInEffectManifest.self, from: data)
-            }
+            let manifest = Self.decodeManifest(
+                BuiltInEffectManifest.self,
+                at: effectFolder.appendingPathComponent(Self.effectManifestFileName)
+            )
 
             let effectStages = Self.ordered(Self.subfolders(of: effectFolder), by: manifest?.stages ?? [])
                 .compactMap { folder -> Stage? in
@@ -190,6 +188,21 @@ final class EffectStore: ObservableObject {
 
         builtInStages = loadedStages
         builtInEffects = loadedEffects
+    }
+
+    /// Reads a manifest, treating an absent file as "nothing to say" but
+    /// logging one that exists and cannot be parsed. Falling back silently
+    /// there leaves a working app quietly ignoring the file's effect order,
+    /// names and parameter values, which looks like the app, not the JSON.
+    private static func decodeManifest<T: Decodable>(_ type: T.Type, at url: URL) -> T? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        do {
+            return try JSONDecoder().decode(type, from: data)
+        } catch {
+            let folder = url.deletingLastPathComponent().lastPathComponent
+            NSLog("Ignoring \(folder)/\(url.lastPathComponent): \(error)")
+            return nil
+        }
     }
 
     /// `folders` in the order `listed` names them, followed by the ones the
@@ -319,8 +332,7 @@ final class EffectStore: ObservableObject {
         var textureBindings: [StageTextureBinding] = []
 
         let manifestURL = folder.appendingPathComponent(Self.manifestFileName)
-        if let data = try? Data(contentsOf: manifestURL),
-           let manifest = try? JSONDecoder().decode(StageManifest.self, from: data) {
+        if let manifest = Self.decodeManifest(StageManifest.self, at: manifestURL) {
             name = manifest.name
             for (paramName, param) in manifest.params ?? [:] {
                 let type = StageParameter.normalizeReflectionType(
