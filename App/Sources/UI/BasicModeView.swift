@@ -33,6 +33,17 @@ struct BasicModeView: View {
     var body: some View {
         PreviewView(engine: state.engine, contentMode: state.previewFillsWindow ? .fill : .fit)
             .ignoresSafeArea()
+            // The gallery is opened from a menu, so no button on the bar
+            // stands for it the way the other panes' buttons do. A click on
+            // the camera puts it away instead; this layer sits under the bar
+            // and the pane, so clicks on those still land where they should.
+            .overlay {
+                if openPane == .background {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onTapGesture { openPane = nil }
+                }
+            }
             .overlay(alignment: .bottom) {
                 // Each pane unfolds towards its own button: the background
                 // gallery and the effect list from the left half of the bar,
@@ -241,7 +252,7 @@ struct BasicModeView: View {
     /// The background gallery: pick the image behind the person (or none),
     /// add more, remove some, and choose how carefully the person is cut out.
     private var backgroundPane: some View {
-        BackgroundGalleryPane(library: state.backgrounds)
+        BackgroundGalleryPane(library: state.backgrounds, onClose: { openPane = nil })
             .frame(width: paneWidth)
             .frame(maxHeight: 440)
             .glassSurface(in: paneShape, dim: paneDim)

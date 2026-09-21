@@ -116,9 +116,10 @@ Frame history is in the editor panel's settings.
 The camera menu's **Background…** item unfolds a gallery pane above the
 control bar: a grid of images to put behind you, led by a **None** tile that
 leaves the camera as it is — picking any image turns the background on,
-picking None turns it off. **+** adds images from disk (adding one also
-selects it), and each image has a delete button (hover it, or use the context
-menu); deleting the one in use goes back to None. The chosen image is cropped
+picking None turns it off. The **Add** tile at the end adds images from disk
+(adding one also selects it), and each image has a delete button (hover it,
+or use the context menu); deleting the one in use goes back to None. The pane
+closes with its **×** or with a click on the camera outside it. The chosen image is cropped
 to fill the frame and never mirrored, whatever **Mirror** does to the feed.
 With an image chosen, the frame the effects get *is* the composite — the
 image with the camera masked by the person matte on top — so `uPrev` in the

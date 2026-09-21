@@ -3,11 +3,14 @@ import SwiftUI
 
 /// The background gallery, unfolded from the camera menu onto glass: how
 /// carefully the person is cut out, then a grid of the images that can go
-/// behind them — led by a None tile that leaves the camera as it is — with
-/// a button to add more and a delete control on each image.
+/// behind them — led by a None tile that leaves the camera as it is, and
+/// ending in a tile that adds more — with a delete control on each image.
 struct BackgroundGalleryPane: View {
     @EnvironmentObject private var state: AppState
     @ObservedObject var library: BackgroundLibrary
+    /// Opened from a menu item, the pane has no button of its own on the bar
+    /// to toggle it away, so it carries a close button.
+    let onClose: () -> Void
 
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 3)
 
@@ -17,16 +20,15 @@ struct BackgroundGalleryPane: View {
                 Text("Background")
                     .font(.headline)
                 Spacer()
-                Button {
-                    pickAndAdd()
-                } label: {
-                    Image(systemName: "plus")
-                        .font(.system(size: 13, weight: .medium))
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.secondary)
                         .frame(width: 22, height: 22)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help("Add images")
+                .help("Close")
             }
             .padding(.horizontal, 16)
             .padding(.top, 14)
@@ -83,6 +85,7 @@ struct BackgroundGalleryPane: View {
                     onDelete: { state.removeBackground(id: image.id) }
                 )
             }
+            AddBackgroundTile(action: pickAndAdd)
         }
     }
 
@@ -98,6 +101,44 @@ struct BackgroundGalleryPane: View {
                 state.addBackground(from: url)
             }
         }
+    }
+}
+
+/// The gallery's last tile, which adds images from disk. Same shape as the
+/// others, so the grid reads as one set.
+private struct AddBackgroundTile: View {
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    private let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
+
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                Color.primary.opacity(isHovered ? 0.16 : 0.08)
+                VStack(spacing: 2) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 15, weight: .medium))
+                    Text("Add")
+                        .font(.caption2)
+                }
+                .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity)
+            .aspectRatio(16 / 9, contentMode: .fit)
+            .clipShape(shape)
+            .overlay(
+                shape.strokeBorder(
+                    Color.white.opacity(0.15),
+                    style: StrokeStyle(lineWidth: 1, dash: [4, 3])
+                )
+            )
+            .contentShape(shape)
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .help("Add images")
     }
 }
 
