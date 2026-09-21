@@ -1,10 +1,13 @@
 {
   "effects": [
-    { "name": "Passthrough", "stages": ["Passthrough"] },
+    { "name": "None", "stages": ["Passthrough"] },
     { "name": "Chromatic Aberration", "stages": ["Chromatic Aberration"] },
     { "name": "Echo Trail", "stages": ["Echo Trail"] },
     { "name": "Background Cutout", "stages": ["Background Cutout"] },
-    { "name": "Ghost Aberration", "stages": ["Ghost Echo", "Ghost Shift"] },
-    { "name": "Light Trails", "stages": ["Trail Buffer", "Trail Composite"] }
+    { "name": "Hand Tracking", "stages": ["Hand Tracking"] },
+    { "name": "Face Tracking", "stages": ["Face Tracking"] },
+    { "name": "Slitscan", "stages": ["Slitscan"] },
+    { "name": "You're So Nosy", "stages": ["Radial Slitscan"] },
+    { "name": "Reeded Glass", "stages": ["Blur BG", "Reeded Glass BG"] },
   ]
 }
