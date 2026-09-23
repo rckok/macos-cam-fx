@@ -1,9 +1,10 @@
 import SwiftUI
 
-/// The camera, with everything else floating over it as glass: camera and
-/// effect pickers, the effect's controls in a pane that unfolds from its
-/// button, and the switch for the editor panel. This is the whole window in
-/// Basic Mode and the top of it in Editor Mode.
+/// The camera, with the controls floating over it as clear glass and the
+/// panes that unfold from them drawn like system menus: camera and effect
+/// pickers, the effect's controls, the background gallery, and — while
+/// editing — the effect list. This is the whole window in Basic Mode and
+/// the top of it in Editor Mode.
 struct BasicModeView: View {
     @EnvironmentObject private var state: AppState
     @ObservedObject var store: EffectStore
@@ -26,11 +27,15 @@ struct BasicModeView: View {
     private let paneWidth: CGFloat = 320
     /// Panes hug their content up to this height, then scroll.
     private let paneMaxHeight: CGFloat = 440
-    private let paneShape = RoundedRectangle(cornerRadius: 20, style: .continuous)
+    /// The corner radius of a system menu window.
+    private let paneShape = RoundedRectangle(cornerRadius: 12)
     /// Clear glass leaves legibility to the caller. The bar's symbols and its
-    /// one label need only a hint of a scrim; the panes need more.
+    /// one label need only a hint of a scrim.
     private let controlDim = 0.12
-    private let paneDim = 0.25
+    /// How a system menu comes in: a short fade, already at full size. The
+    /// spring this used to be (and the glass materialize under it) is what
+    /// made a pane scale up and sit invisible for a beat first.
+    private let paneFade = Animation.easeOut(duration: 0.15)
 
     var body: some View {
         PreviewView(engine: state.engine, contentMode: state.previewFillsWindow ? .fill : .fit)
@@ -53,13 +58,13 @@ struct BasicModeView: View {
                     switch openPane {
                     case .background:
                         backgroundPane
-                            .transition(.scale(scale: 0.9, anchor: .bottomLeading).combined(with: .opacity))
+                            .transition(.opacity)
                     case .effects:
                         effectsPane
-                            .transition(.scale(scale: 0.9, anchor: .bottomLeading).combined(with: .opacity))
+                            .transition(.opacity)
                     case .controls:
                         controlsPane
-                            .transition(.scale(scale: 0.9, anchor: .bottomTrailing).combined(with: .opacity))
+                            .transition(.opacity)
                     case nil:
                         EmptyView()
                     }
@@ -73,18 +78,13 @@ struct BasicModeView: View {
                         .padding(.horizontal, 14)
                         .frame(height: controlSize)
                         .glassSurface(in: Capsule(), dim: 0.2)
+                        // Clear glass over the feed is dark. The status text
+                        // has to follow that, not the OS appearance.
+                        .environment(\.colorScheme, .dark)
                         .padding(20)
                 }
             }
-            // Glass takes its light or dark tone from the camera feed behind
-            // it, not from the system appearance, and over video that is
-            // dark. SwiftUI text and symbols on glass follow along through
-            // vibrancy, but the pane's sliders, switches, fields and popups
-            // are AppKit controls that draw for the window's appearance —
-            // black on dark glass in light mode. Pinning the whole HUD to
-            // dark keeps every part of it agreeing with the glass.
-            .environment(\.colorScheme, .dark)
-            .animation(.snappy(duration: 0.3), value: openPane)
+            .animation(paneFade, value: openPane)
             // The unfolded effect list belongs to editing; the system menu
             // takes over again when the editor closes.
             .onChange(of: state.viewMode) { _, mode in
@@ -92,8 +92,8 @@ struct BasicModeView: View {
                     openPane = nil
                 }
             }
-            // Attached outside the dark HUD, so the sheet keeps the window's
-            // appearance.
+            // Attached on the window, so the sheet keeps the OS appearance
+            // rather than the dark scheme pinned to the clear-glass controls.
             .sheet(item: $effectToDelete) { effect in
                 DeleteEffectSheet(
                     effect: effect,
@@ -136,6 +136,10 @@ struct BasicModeView: View {
             }
             .foregroundStyle(isEditing ? Color.accentColor : Color.primary)
         }
+        // Clear glass over the feed is dark, so the bar is pinned dark.
+        // The menus it opens are system menus and keep the OS appearance;
+        // the panes that unfold from it do too, and stay outside this scheme.
+        .environment(\.colorScheme, .dark)
     }
 
     private var isEditing: Bool {
@@ -255,7 +259,7 @@ struct BasicModeView: View {
     private var backgroundPane: some View {
         BackgroundGalleryPane(library: state.backgrounds, onClose: { openPane = nil })
             .paneFrame(width: paneWidth, maxHeight: paneMaxHeight)
-            .glassSurface(in: paneShape, dim: paneDim)
+            .menuSurface(in: paneShape)
     }
 
     /// The effect menu unfolded, with the management a menu has no room for.
@@ -270,7 +274,7 @@ struct BasicModeView: View {
             }
         }
         .paneFrame(width: paneWidth, maxHeight: paneMaxHeight)
-        .glassSurface(in: paneShape, dim: paneDim)
+        .menuSurface(in: paneShape)
     }
 
     /// The active effect's `global` controls on glass. Stage-level controls
@@ -293,9 +297,7 @@ struct BasicModeView: View {
             }
         }
         .paneFrame(width: paneWidth, maxHeight: paneMaxHeight)
-        // Sliders and their labels are fine detail over a moving frame, so
-        // the panes are the surfaces that need a scrim behind them.
-        .glassSurface(in: paneShape, dim: paneDim)
+        .menuSurface(in: paneShape)
     }
 
     /// An effect with stages asks what to do with them; an empty one just goes.
