@@ -1,10 +1,10 @@
 import AppKit
 import SwiftUI
 
-/// The background gallery, unfolded from the camera menu onto glass: how
-/// carefully the person is cut out, then a grid of the images that can go
-/// behind them — led by a None tile that leaves the camera as it is, and
-/// ending in a tile that adds more — with a delete control on each image.
+/// The background gallery, unfolded from the camera menu: how carefully the
+/// person is cut out, then a grid of the images that can go behind them —
+/// led by a None tile that leaves the camera as it is, and ending in a tile
+/// that adds more — with a delete control on each image.
 struct BackgroundGalleryPane: View {
     @EnvironmentObject private var state: AppState
     @ObservedObject var library: BackgroundLibrary
@@ -169,7 +169,7 @@ private struct AddBackgroundTile: View {
             .clipShape(shape)
             .overlay(
                 shape.strokeBorder(
-                    Color.white.opacity(0.15),
+                    Color.primary.opacity(0.2),
                     style: StrokeStyle(lineWidth: 1, dash: [4, 3])
                 )
             )
@@ -208,7 +208,7 @@ private struct BackgroundTile: View {
                 .clipShape(shape)
                 .overlay(
                     shape.strokeBorder(
-                        isSelected ? Color.accentColor : Color.white.opacity(0.15),
+                        isSelected ? Color.accentColor : Color.primary.opacity(0.2),
                         lineWidth: isSelected ? 2 : 1
                     )
                 )

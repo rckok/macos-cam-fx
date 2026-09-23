@@ -1,15 +1,13 @@
 import SwiftUI
 
-/// The effect menu, unfolded onto glass while the editor panel is open: the
+/// The effect menu, unfolded into a pane while the editor panel is open: the
 /// same two groups of effects the system menu lists, with the active one
 /// ticked, but with the room a menu does not have for managing them —
 /// custom effects can be dragged into a new order, removed, and added.
 struct EffectListPane: View {
     @EnvironmentObject private var state: AppState
     @ObservedObject var store: EffectStore
-    /// Deleting an effect with stages needs a sheet, which the caller owns:
-    /// presented from inside the glass it would inherit the dark appearance
-    /// the floating controls are pinned to.
+    /// Deleting an effect with stages needs a sheet, which the caller owns.
     let onDelete: (Effect) -> Void
 
     /// Reordering is a plain drag gesture on the row's handle, not a
