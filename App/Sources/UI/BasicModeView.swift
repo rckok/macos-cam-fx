@@ -27,11 +27,15 @@ struct BasicModeView: View {
     private let paneWidth: CGFloat = 320
     /// Panes hug their content up to this height, then scroll.
     private let paneMaxHeight: CGFloat = 440
-    /// The corner radius measured off `NSPopupMenuWindow` on macOS 26.
+    /// The corner radius of a system menu window.
     private let paneShape = RoundedRectangle(cornerRadius: 12)
     /// Clear glass leaves legibility to the caller. The bar's symbols and its
     /// one label need only a hint of a scrim.
     private let controlDim = 0.12
+    /// How a system menu comes in: a short fade, already at full size. The
+    /// spring this used to be (and the glass materialize under it) is what
+    /// made a pane scale up and sit invisible for a beat first.
+    private let paneFade = Animation.easeOut(duration: 0.15)
 
     var body: some View {
         PreviewView(engine: state.engine, contentMode: state.previewFillsWindow ? .fill : .fit)
@@ -54,13 +58,13 @@ struct BasicModeView: View {
                     switch openPane {
                     case .background:
                         backgroundPane
-                            .transition(.scale(scale: 0.9, anchor: .bottomLeading).combined(with: .opacity))
+                            .transition(.opacity)
                     case .effects:
                         effectsPane
-                            .transition(.scale(scale: 0.9, anchor: .bottomLeading).combined(with: .opacity))
+                            .transition(.opacity)
                     case .controls:
                         controlsPane
-                            .transition(.scale(scale: 0.9, anchor: .bottomTrailing).combined(with: .opacity))
+                            .transition(.opacity)
                     case nil:
                         EmptyView()
                     }
@@ -80,7 +84,7 @@ struct BasicModeView: View {
                         .padding(20)
                 }
             }
-            .animation(.snappy(duration: 0.3), value: openPane)
+            .animation(paneFade, value: openPane)
             // The unfolded effect list belongs to editing; the system menu
             // takes over again when the editor closes.
             .onChange(of: state.viewMode) { _, mode in

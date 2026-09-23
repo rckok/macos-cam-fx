@@ -116,6 +116,12 @@ private struct GlassSurface<S: Shape>: ViewModifier {
 /// and light or dark with the appearance, unlike the clear glass that takes
 /// its tone from the feed. The caller passes the menu's corner. Before macOS
 /// 26, the menu material is the surface `NSMenu` draws.
+///
+/// The glass container's default insertion transition *materializes* new
+/// glass: it scales the surface up out of nothing, on a slower timing than
+/// the view transition around it, so the pane stays invisible for a beat and
+/// then grows. Menus do neither — they are just there, fading in — so this
+/// glass appears with no transition of its own and leaves the fade to the caller.
 private struct MenuSurface<S: Shape>: ViewModifier {
     let shape: S
 
@@ -123,9 +129,9 @@ private struct MenuSurface<S: Shape>: ViewModifier {
     func body(content: Content) -> some View {
         #if compiler(>=6.2)
         if #available(macOS 26.0, *) {
-            // The glass effect supplies the menu's edge and separation.
-            // A view shadow on top of it would also shadow the pane's text.
-            content.glassEffect(.regular, in: shape)
+            content
+                .glassEffect(.regular, in: shape)
+                .glassEffectTransition(.identity)
         } else {
             legacy(content)
         }
