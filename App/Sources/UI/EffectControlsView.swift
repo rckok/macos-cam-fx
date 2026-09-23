@@ -1,5 +1,4 @@
 import AppKit
-import ImageIO
 import SwiftUI
 
 /// Effect-level controls: every `@metadata(global)` parameter and sampler its
@@ -114,10 +113,6 @@ private struct TextureBindingRow: View {
     @EnvironmentObject private var state: AppState
     @ObservedObject var stage: Stage
     @Binding var binding: StageTextureBinding
-    /// Decoded off the main thread. `NSImage(contentsOf:)` here reads the
-    /// whole file during layout, and the controls pane is built on the click
-    /// that opens it.
-    @State private var preview: NSImage?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -132,8 +127,9 @@ private struct TextureBindingRow: View {
             }
             .labelsHidden()
 
-            if let preview {
-                Image(nsImage: preview)
+            if let asset = assignedAsset, asset.kind == .image,
+               let image = NSImage(contentsOf: state.mediaLibrary.fileURL(for: asset)) {
+                Image(nsImage: image)
                     .resizable()
                     .scaledToFit()
                     .frame(maxHeight: 64)
@@ -145,31 +141,6 @@ private struct TextureBindingRow: View {
             }
         }
         .padding(.vertical, 4)
-        .task(id: binding.mediaID) {
-            guard let asset = assignedAsset, asset.kind == .image else {
-                preview = nil
-                return
-            }
-            let url = state.mediaLibrary.fileURL(for: asset)
-            let cgImage = await Task.detached(priority: .userInitiated) {
-                Self.downsampledPreview(at: url)
-            }.value
-            if Task.isCancelled { return }
-            preview = cgImage.map {
-                NSImage(cgImage: $0, size: NSSize(width: $0.width, height: $0.height))
-            }
-        }
-    }
-
-    /// A small preview, not the source file. The row is only 64pt tall.
-    private static func downsampledPreview(at url: URL) -> CGImage? {
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
-        let options: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceThumbnailMaxPixelSize: 256,
-        ]
-        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
     }
 
     private var assignedAsset: MediaAsset? {

@@ -68,10 +68,10 @@ extension View {
         modifier(GlassSurface(shape: shape, interactive: interactive, dim: dim))
     }
 
-    /// A floating pane drawn like a system menu: the menu material, light or
-    /// dark with the OS, rather than the clear glass of the controls over the
-    /// camera. The pane must not sit inside a forced dark color scheme, or it
-    /// will stop tracking the appearance the menus use.
+    /// A floating pane drawn like a system menu: frosted, and light or dark
+    /// with the OS, rather than the clear glass of the controls over the camera.
+    /// The pane must not sit inside a forced dark color scheme, or it will
+    /// stop tracking the appearance the menus use.
     func menuSurface(in shape: some Shape) -> some View {
         modifier(MenuSurface(shape: shape))
     }
@@ -112,16 +112,36 @@ private struct GlassSurface<S: Shape>: ViewModifier {
     }
 }
 
-/// The menu material, in the caller's shape. Not liquid glass: a glass
-/// effect samples this window's views to build its backdrop, and the camera
-/// preview is an `MTKView`. AppKit draws that view synchronously for the
-/// sample and waits out whatever frame the GPU is already rendering, so the
-/// preview freezes for a beat before the pane can appear. A menu window
-/// never does that — it blends with what's behind the window.
+/// Regular glass is the macOS 26 surface that matches a system menu: frosted,
+/// and light or dark with the appearance, unlike the clear glass that takes
+/// its tone from the feed. The caller passes the menu's corner. Before macOS
+/// 26, the menu material is the surface `NSMenu` draws.
+///
+/// The glass container's default insertion transition *materializes* new
+/// glass: it scales the surface up out of nothing, on a slower timing than
+/// the view transition around it, so the pane stays invisible for a beat and
+/// then grows. Menus do neither — they are just there, fading in — so this
+/// glass appears with no transition of its own and leaves the fade to the caller.
 private struct MenuSurface<S: Shape>: ViewModifier {
     let shape: S
 
+    @ViewBuilder
     func body(content: Content) -> some View {
+        #if compiler(>=6.2)
+        if #available(macOS 26.0, *) {
+            content
+                .glassEffect(.regular, in: shape)
+                .glassEffectTransition(.identity)
+        } else {
+            legacy(content)
+        }
+        #else
+        legacy(content)
+        #endif
+    }
+
+    /// The shadow is the menu window's, which `NSVisualEffectView` does not draw.
+    private func legacy(_ content: Content) -> some View {
         content
             .background {
                 MenuMaterialFill()
@@ -132,13 +152,14 @@ private struct MenuSurface<S: Shape>: ViewModifier {
     }
 }
 
-/// The material `NSMenu` draws, blended with the screen behind the window
-/// rather than with the views inside it.
+/// The material `NSMenu` uses on systems before the macOS 26 menu glass.
 private struct MenuMaterialFill: NSViewRepresentable {
     func makeNSView(context: Context) -> NSVisualEffectView {
         let view = NSVisualEffectView()
         view.material = .menu
-        view.blendingMode = .behindWindow
+        // Sample the camera behind the pane, the way a menu window samples
+        // whatever it was opened over.
+        view.blendingMode = .withinWindow
         view.state = .active
         view.isEmphasized = true
         return view

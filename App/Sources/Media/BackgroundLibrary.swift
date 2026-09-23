@@ -32,7 +32,7 @@ final class BackgroundLibrary: ObservableObject {
     /// Downsampled previews for the gallery cells.
     private var thumbnails: [String: NSImage] = [:]
 
-    nonisolated static let thumbnailMaxPixelSize = 256
+    static let thumbnailMaxPixelSize = 256
 
     init(appSupportRoot: URL) {
         imagesURL = appSupportRoot.appendingPathComponent("Backgrounds", isDirectory: true)
@@ -67,7 +67,6 @@ final class BackgroundLibrary: ObservableObject {
         )
         images.append(image)
         save()
-        preloadThumbnails(for: [image])
         return image
     }
 
@@ -92,11 +91,24 @@ final class BackgroundLibrary: ObservableObject {
         return texture
     }
 
-    /// A preview no larger than `thumbnailMaxPixelSize` on its long side.
-    /// Decoding happens off the main thread; this only returns one that is
-    /// already ready, so opening the gallery never stalls the preview.
+    /// A preview no larger than `thumbnailMaxPixelSize` on its long side,
+    /// decoded once per image instead of the full file on every layout pass.
     func thumbnail(for id: String) -> NSImage? {
-        thumbnails[id]
+        if let cached = thumbnails[id] { return cached }
+        guard let image = image(id: id),
+              let source = CGImageSourceCreateWithURL(fileURL(for: image) as CFURL, nil)
+        else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: Self.thumbnailMaxPixelSize,
+        ]
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            return nil
+        }
+        let thumbnail = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+        thumbnails[id] = thumbnail
+        return thumbnail
     }
 
     // MARK: Private
@@ -108,42 +120,6 @@ final class BackgroundLibrary: ObservableObject {
         images = manifest.images.filter {
             FileManager.default.fileExists(atPath: imagesURL.appendingPathComponent($0.fileName).path)
         }
-        preloadThumbnails(for: images)
-    }
-
-    /// ImageIO on a background queue. The gallery reads `thumbnails` on the
-    /// main thread, so the decode must not happen there: a handful of source
-    /// photos is enough to freeze the camera preview for a noticeable beat.
-    private func preloadThumbnails(for images: [BackgroundImage]) {
-        let jobs = images.map { (id: $0.id, url: fileURL(for: $0)) }
-        let maxPixelSize = Self.thumbnailMaxPixelSize
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let decoded = jobs.compactMap { job -> (String, CGImage)? in
-                Self.decodeThumbnail(at: job.url, maxPixelSize: maxPixelSize).map { (job.id, $0) }
-            }
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                var changed = false
-                for (id, cgImage) in decoded where self.thumbnails[id] == nil {
-                    self.thumbnails[id] = NSImage(
-                        cgImage: cgImage,
-                        size: NSSize(width: cgImage.width, height: cgImage.height)
-                    )
-                    changed = true
-                }
-                if changed { self.objectWillChange.send() }
-            }
-        }
-    }
-
-    private nonisolated static func decodeThumbnail(at url: URL, maxPixelSize: Int) -> CGImage? {
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
-        let options: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
-        ]
-        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
     }
 
     private func save() {

@@ -71,10 +71,6 @@ struct BasicModeView: View {
                     controlBar
                 }
                 .padding(20)
-                // On this overlay only. The same modifier on the camera view
-                // makes SwiftUI snapshot the preview to animate the change,
-                // and snapshotting the `MTKView` stalls it.
-                .animation(paneFade, value: openPane)
             }
             .overlay(alignment: .topTrailing) {
                 if needsExtensionAttention {
@@ -88,6 +84,7 @@ struct BasicModeView: View {
                         .padding(20)
                 }
             }
+            .animation(paneFade, value: openPane)
             // The unfolded effect list belongs to editing; the system menu
             // takes over again when the editor closes.
             .onChange(of: state.viewMode) { _, mode in
