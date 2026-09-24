@@ -19,6 +19,9 @@ struct PreviewView: NSViewRepresentable {
         view.isPaused = false
         view.enableSetNeedsDisplay = false
         view.clearColor = MTLClearColor(red: 0.05, green: 0.05, blue: 0.07, alpha: 1)
+        // Until the first drawable is presented the layer is empty, and the
+        // window behind it is white. Black matches the empty preview.
+        view.layer?.backgroundColor = CGColor(gray: 0, alpha: 1)
         return view
     }
 
@@ -41,11 +44,22 @@ struct PreviewView: NSViewRepresentable {
         func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 
         func draw(in view: MTKView) {
-            guard let texture = engine.previewTexture,
-                  let drawable = view.currentDrawable,
+            guard let drawable = view.currentDrawable,
                   let passDescriptor = view.currentRenderPassDescriptor,
                   let commandBuffer = commandQueue.makeCommandBuffer()
             else { return }
+
+            // No camera image — a suspended device, or nothing captured yet.
+            // Clearing without presenting leaves the window's white background
+            // showing through, which hides the light controls.
+            guard let texture = engine.previewTexture else {
+                passDescriptor.colorAttachments[0].loadAction = .clear
+                passDescriptor.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+                commandBuffer.makeRenderCommandEncoder(descriptor: passDescriptor)?.endEncoding()
+                commandBuffer.present(drawable)
+                commandBuffer.commit()
+                return
+            }
 
             guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: passDescriptor) else { return }
 

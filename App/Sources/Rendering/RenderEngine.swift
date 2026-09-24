@@ -64,6 +64,10 @@ final class RenderEngine {
     /// The image composited under the person in place of the camera frame's
     /// own background, or nil to pass the camera through.
     private var backgroundTexture: MTLTexture?
+    /// The selected camera is suspended. Frames already queued must not
+    /// replace the cleared preview with the white image those cameras emit.
+    /// Protected by `lock`.
+    private var inputSuspended = false
 
     // Working resolution is always the virtual-camera size so the sink stream
     // receives buffers that match its declared format.
@@ -234,6 +238,17 @@ final class RenderEngine {
         lock.unlock()
     }
 
+    /// Drops the preview while the selected camera is suspended, and ignores
+    /// frames that were already queued so a white frame cannot land afterwards.
+    func setInputSuspended(_ suspended: Bool) {
+        lock.lock()
+        inputSuspended = suspended
+        if suspended {
+            latestOutputTexture = nil
+        }
+        lock.unlock()
+    }
+
     // MARK: Frame processing
 
     func process(pixelBuffer: CVPixelBuffer, timestamp: CMTime) {
@@ -244,6 +259,10 @@ final class RenderEngine {
 
     private func processOnRenderQueue(pixelBuffer: CVPixelBuffer, timestamp: CMTime) {
         lock.lock()
+        if inputSuspended {
+            lock.unlock()
+            return
+        }
         let flip = flipHorizontal
         let activeVision = visionFeatures
         lock.unlock()
@@ -507,9 +526,18 @@ final class RenderEngine {
         }
 
         lock.lock()
-        latestOutputTexture = currentInput
+        // Suspension can flip while this frame is encoding. Publishing it
+        // would put the white image back up after the preview was cleared.
+        if inputSuspended {
+            latestOutputTexture = nil
+        } else {
+            latestOutputTexture = currentInput
+        }
+        let publish = !inputSuspended
         lock.unlock()
-        commandBuffer.commit()
+        if publish {
+            commandBuffer.commit()
+        }
     }
 
     /// Draws `texture` into a drawable's render pass (used by the preview view).

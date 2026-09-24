@@ -162,6 +162,12 @@ final class AppState: ObservableObject {
             }
             .store(in: &cancellables)
 
+        capture.$isSelectedDeviceSuspended
+            .sink { [engine] suspended in
+                engine.setInputSuspended(suspended)
+            }
+            .store(in: &cancellables)
+
         store.externalChange
             .sink { [weak self] stage in
                 self?.scheduleCompile(stage, debounce: false)

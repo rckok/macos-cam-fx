@@ -39,6 +39,7 @@ struct BasicModeView: View {
 
     var body: some View {
         PreviewView(engine: state.engine, contentMode: state.previewFillsWindow ? .fill : .fit)
+            .background(Color.black)
             .ignoresSafeArea()
             // A click on the camera puts whichever pane is open away. This
             // layer sits under the bar and the pane, so clicks on those

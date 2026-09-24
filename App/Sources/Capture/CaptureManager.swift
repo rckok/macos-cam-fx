@@ -14,6 +14,10 @@ final class CaptureManager: NSObject, ObservableObject {
 
     @Published private(set) var devices: [Device] = []
     @Published private(set) var authorizationDenied = false
+    /// The selected camera's source is unavailable — a MacBook's built-in
+    /// camera while the lid is closed. The session may still be running and
+    /// handing over blank white frames; callers should treat that as no image.
+    @Published private(set) var isSelectedDeviceSuspended = false
     @Published var selectedDeviceID: String? {
         didSet {
             guard oldValue != selectedDeviceID else { return }
@@ -28,6 +32,9 @@ final class CaptureManager: NSObject, ObservableObject {
     private let captureQueue = DispatchQueue(label: "cameraEffects.capture", qos: .userInteractive)
     private let videoOutput = AVCaptureVideoDataOutput()
     private var discoveryObservation: NSKeyValueObservation?
+    private var suspensionObservation: NSKeyValueObservation?
+    /// The device the session is configured for. Touched only on `captureQueue`.
+    private var activeDevice: AVCaptureDevice?
     private let discovery = AVCaptureDevice.DiscoverySession(
         deviceTypes: [.builtInWideAngleCamera, .external, .continuityCamera, .deskViewCamera],
         mediaType: .video,
@@ -97,9 +104,26 @@ final class CaptureManager: NSObject, ObservableObject {
     private func reconfigureSession() {
         guard let deviceID = selectedDeviceID,
               let device = AVCaptureDevice(uniqueID: deviceID)
-        else { return }
+        else {
+            suspensionObservation = nil
+            isSelectedDeviceSuspended = false
+            captureQueue.async { [self] in
+                activeDevice = nil
+            }
+            return
+        }
+
+        // Fires immediately for a camera that is already suspended, so the
+        // preview goes black before the first blank frame can land.
+        suspensionObservation = device.observe(\.isSuspended, options: [.initial, .new]) { [weak self] device, _ in
+            let suspended = device.isSuspended
+            DispatchQueue.main.async {
+                self?.isSelectedDeviceSuspended = suspended
+            }
+        }
 
         captureQueue.async { [self] in
+            activeDevice = device
             session.beginConfiguration()
             session.inputs.forEach { session.removeInput($0) }
             if !session.outputs.contains(videoOutput) {
@@ -159,6 +183,9 @@ extension CaptureManager: AVCaptureVideoDataOutputSampleBufferDelegate {
         didOutput sampleBuffer: CMSampleBuffer,
         from connection: AVCaptureConnection
     ) {
+        // A suspended camera (lid closed) keeps delivering frames, and they
+        // are solid white. Drop them so the preview can stay black.
+        guard activeDevice?.isSuspended != true else { return }
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         frameHandler?(pixelBuffer, timestamp)
