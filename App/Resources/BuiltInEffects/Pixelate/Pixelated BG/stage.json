@@ -1,0 +1,6 @@
+{
+  "name": "Pixelated BG",
+  "params": {
+    "pixel_size": { "type": "int", "default": 16, "min": 1, "max": 50, "global": true }
+  }
+}
