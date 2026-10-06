@@ -366,10 +366,10 @@ reads stage textures renders all of its stages.
 | `uHeadIndex` | `int` | z-slice index of the newest raw frame (0 … N − 1). |
 | `uFrameNumber` | `int` | Frame counter since the stream started. |
 
-### Vision data (bindings 16–21)
+### Vision data (bindings 16–21, 24)
 
-Face detection, eye/mouth segmentation, hand pose, hand segmentation, and a
-person matte for background subtraction are available as standard uniforms.
+Face detection, eye/mouth segmentation, hand pose, hand segmentation, body
+pose, and a person matte for background subtraction are available as standard uniforms.
 The underlying detectors (Apple's Vision framework — no extra dependencies)
 **only run while a stage of the active effect uses one of these uniforms**;
 unused uniforms are dead-code-eliminated at compile time, so referencing none
@@ -391,6 +391,10 @@ cost follows whatever is on screen. All coordinates and masks are in vUV space
 | `uHandInfo[2]` | `vec4` (`CEHands`) | Per hand: x = chirality (−1 left, +1 right), y = confidence. |
 | `uHandJoints[42]` | `vec4` (`CEHands`) | 21 joints per hand: xy = vUV position, z = confidence. |
 | `ceHandJoint(hand, joint)` | `vec4` | Convenience accessor; use with the `CE_*` joint constants (`CE_WRIST`, `CE_THUMB_TIP`, `CE_INDEX_TIP`, …). |
+| `uBodyCount` | `int` (`CEBodies`, binding = 24) | Detected people (0 … `CE_MAX_BODIES`), most confident first. |
+| `uBodyInfo[4]` | `vec4` (`CEBodies`) | Per body: x = confidence. |
+| `uBodyJoints[76]` | `vec4` (`CEBodies`) | 19 joints per body: xy = vUV position, z = confidence (0 when not located). |
+| `ceBodyJoint(body, joint)` | `vec4` | Convenience accessor; use with the `CE_BODY_*` joint constants (`CE_BODY_NOSE`, `CE_BODY_NECK`, `CE_BODY_LEFT_WRIST`, `CE_BODY_ROOT`, …). |
 
 Example — background subtraction with a luma matte:
 
@@ -435,6 +439,29 @@ void main() {
             float d = distance(vUV * uResolution, eyes[e].xy * uResolution);
             outColor += vec4(1.0, 0.85, 0.2, 0.0) * (1.0 - smoothstep(0.0, radius, d));
         }
+    }
+}
+```
+
+Body pose comes from Vision's 2D human body pose detector and reports up to
+`CE_MAX_BODIES` people. As with the face landmarks, "left" and "right" in the
+`CE_BODY_*` names are the person's own sides, so mirroring swaps which side of
+the frame they land on. Joints Vision could not locate (for example ankles
+out of frame) read as all zeros, so check `z` before using a joint.
+
+Example — a line between both wrists of every person:
+
+```glsl
+void main() {
+    outColor = texture(uPrev, vUV);
+    vec2 p = vUV * uResolution;
+    for (int i = 0; i < uBodyCount; i++) {
+        vec4 a = ceBodyJoint(i, CE_BODY_LEFT_WRIST);
+        vec4 b = ceBodyJoint(i, CE_BODY_RIGHT_WRIST);
+        if (min(a.z, b.z) < 0.3) { continue; }
+        vec2 pa = p - a.xy * uResolution, ba = (b.xy - a.xy) * uResolution;
+        float d = length(pa - ba * clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0));
+        outColor = mix(vec4(0.2, 1.0, 0.4, 1.0), outColor, smoothstep(3.0, 4.5, d));
     }
 }
 ```

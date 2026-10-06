@@ -1,6 +1,7 @@
 {
   "effects": [
     "Hand Tracking",
+    "Body Tracking",
     "Face Tracking",
     "Background Cutout",
     "Slitscan",

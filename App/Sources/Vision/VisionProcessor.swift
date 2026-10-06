@@ -36,6 +36,7 @@ final class VisionProcessor {
     private var requestMatteQuality: PersonMatteQuality = .balanced
     private var faceRequest: VNImageBasedRequest?
     private var handRequest: VNDetectHumanHandPoseRequest?
+    private var bodyRequest: VNDetectHumanBodyPoseRequest?
     private var matteRequest: VNGeneratePersonSegmentationRequest?
     private let faceMaskRasterizer = FaceMaskRasterizer()
     private var matteTextures: [MTLTexture] = []
@@ -117,7 +118,7 @@ final class VisionProcessor {
         var quality = initialQuality
         while true {
             updateRequests(for: features, matteQuality: quality)
-            let requests: [VNRequest] = [faceRequest, handRequest, matteRequest].compactMap { $0 }
+            let requests: [VNRequest] = [faceRequest, handRequest, bodyRequest, matteRequest].compactMap { $0 }
 
             var snapshot = VisionSnapshot()
             if !requests.isEmpty {
@@ -184,6 +185,8 @@ final class VisionProcessor {
             handRequest = nil
         }
 
+        bodyRequest = features.contains(.bodyPose) ? VNDetectHumanBodyPoseRequest() : nil
+
         if features.contains(.personMatte) {
             let request = VNGeneratePersonSegmentationRequest()
             request.qualityLevel = matteQuality == .accurate ? .accurate : .balanced
@@ -224,6 +227,14 @@ final class VisionProcessor {
             snapshot.hands = (handRequest.results ?? [])
                 .prefix(VisionUniforms.maxHands)
                 .map { convert(hand: $0, mirrored: mirrored) }
+        }
+
+        if let bodyRequest {
+            // The request has no maximum count; keep the most confident people.
+            snapshot.bodies = (bodyRequest.results ?? [])
+                .sorted { $0.confidence > $1.confidence }
+                .prefix(VisionUniforms.maxBodies)
+                .map { convert(body: $0, mirrored: mirrored) }
         }
 
         if let matteBuffer = matteRequest?.results?.first?.pixelBuffer {
@@ -269,6 +280,31 @@ final class VisionProcessor {
         default: chirality = 0
         }
         return VisionHand(chirality: chirality, confidence: Float(observation.confidence), joints: joints)
+    }
+
+    /// Canonical joint order matching the CE_BODY_* indices in the shader prelude.
+    private static let bodyJointOrder: [VNHumanBodyPoseObservation.JointName] = [
+        .nose, .leftEye, .rightEye, .leftEar, .rightEar,
+        .neck,
+        .leftShoulder, .rightShoulder,
+        .leftElbow, .rightElbow,
+        .leftWrist, .rightWrist,
+        .root,
+        .leftHip, .rightHip,
+        .leftKnee, .rightKnee,
+        .leftAnkle, .rightAnkle,
+    ]
+
+    private func convert(body observation: VNHumanBodyPoseObservation, mirrored: Bool) -> VisionBody {
+        let points = (try? observation.recognizedPoints(.all)) ?? [:]
+        let joints = Self.bodyJointOrder.map { name -> SIMD4<Float> in
+            // Vision reports joints it could not locate with zero confidence
+            // and a meaningless location; zero them like absent joints.
+            guard let point = points[name], point.confidence > 0 else { return .zero }
+            let uv = convert(point: point.location, mirrored: mirrored)
+            return SIMD4<Float>(uv.x, uv.y, Float(point.confidence), 0)
+        }
+        return VisionBody(confidence: Float(observation.confidence), joints: joints)
     }
 
     /// Landmark region points in vUV space.

@@ -120,11 +120,11 @@ enum ShaderCompiler {
 
     /// Interface every stage shader sees. Uniform bindings 0-2 are reserved;
     /// user `Params` blocks conventionally use binding 3, user samplers
-    /// bindings 4-15. Bindings 16-21 carry the vision data (segmentation
-    /// mattes, face/hand observations); the underlying detectors only run
-    /// while a stage of the active effect actually uses one of those uniforms.
-    /// Bindings 22-23 expose every stage's output texture and the per-stage
-    /// index data behind `ceStageTexture`.
+    /// bindings 4-15. Bindings 16-21 and 24 carry the vision data
+    /// (segmentation mattes, face/hand/body observations); the underlying
+    /// detectors only run while a stage of the active effect actually uses one
+    /// of those uniforms. Bindings 22-23 expose every stage's output texture
+    /// and the per-stage index data behind `ceStageTexture`.
     static let maxStageReferences = 8
 
     static let prelude = """
@@ -173,6 +173,12 @@ enum ShaderCompiler {
         vec4 uHandJoints[42]; // 21 joints per hand: xy = vUV position, z = confidence
     };
 
+    layout(std140, binding = 24) uniform CEBodies {
+        int  uBodyCount;      // detected people (0 ... CE_MAX_BODIES)
+        vec4 uBodyInfo[4];    // x = confidence
+        vec4 uBodyJoints[76]; // 19 joints per body: xy = vUV position, z = confidence
+    };
+
     // Stage outputs. Slice i holds the output of stage i of the active effect:
     // this frame's output for stages before the current one, the previous
     // frame's output for the current stage itself and every stage after it.
@@ -213,6 +219,32 @@ enum ShaderCompiler {
     #define CE_LITTLE_DIP 19
     #define CE_LITTLE_TIP 20
 
+    #define CE_MAX_BODIES   4
+    #define CE_BODY_JOINTS 19
+
+    // Joint indices into uBodyJoints (per body). Left / right are the
+    // person's own sides, so mirroring swaps which side of the frame they
+    // land on.
+    #define CE_BODY_NOSE           0
+    #define CE_BODY_LEFT_EYE       1
+    #define CE_BODY_RIGHT_EYE      2
+    #define CE_BODY_LEFT_EAR       3
+    #define CE_BODY_RIGHT_EAR      4
+    #define CE_BODY_NECK           5
+    #define CE_BODY_LEFT_SHOULDER  6
+    #define CE_BODY_RIGHT_SHOULDER 7
+    #define CE_BODY_LEFT_ELBOW     8
+    #define CE_BODY_RIGHT_ELBOW    9
+    #define CE_BODY_LEFT_WRIST     10
+    #define CE_BODY_RIGHT_WRIST    11
+    #define CE_BODY_ROOT           12
+    #define CE_BODY_LEFT_HIP       13
+    #define CE_BODY_RIGHT_HIP      14
+    #define CE_BODY_LEFT_KNEE      15
+    #define CE_BODY_RIGHT_KNEE     16
+    #define CE_BODY_LEFT_ANKLE     17
+    #define CE_BODY_RIGHT_ANKLE    18
+
     vec4 ceHistory(vec2 uv, int ago) {
         int idx = uHeadIndex - ago;
         idx = ((idx % uFrameCount) + uFrameCount) % uFrameCount;
@@ -222,6 +254,10 @@ enum ShaderCompiler {
 
     vec4 ceHandJoint(int hand, int joint) {
         return uHandJoints[hand * CE_HAND_JOINTS + joint];
+    }
+
+    vec4 ceBodyJoint(int body, int joint) {
+        return uBodyJoints[body * CE_BODY_JOINTS + joint];
     }
 
     // Output of stage `index`. Out-of-range indices (including the -1 the app

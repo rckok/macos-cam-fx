@@ -9,10 +9,13 @@ enum VisionUniforms {
     static let faceBlock = "CEFace"
     static let facePointsBlock = "CEFacePoints"
     static let handsBlock = "CEHands"
+    static let bodiesBlock = "CEBodies"
 
     static let maxFaces = 4
     static let maxHands = 2
     static let handJointCount = 21
+    static let maxBodies = 4
+    static let bodyJointCount = 19
 }
 
 /// How much work person segmentation does per frame. Applies to every use of
@@ -44,6 +47,8 @@ struct VisionFeatures: OptionSet, Hashable {
     /// Eye and mouth centers from face landmarks, filling the `CEFacePoints`
     /// block (implies face rects).
     static let facePoints = VisionFeatures(rawValue: 1 << 5)
+    /// Human body pose detection filling the `CEBodies` block.
+    static let bodyPose = VisionFeatures(rawValue: 1 << 6)
 
     var needsFaceDetection: Bool { !isDisjoint(with: [.faceRects, .faceMask, .facePoints]) }
     /// Landmarks are strictly more expensive than rectangles, so they are only
@@ -69,6 +74,7 @@ struct VisionFeatures: OptionSet, Hashable {
             case VisionUniforms.faceBlock: features.insert(.faceRects)
             case VisionUniforms.facePointsBlock: features.insert(.facePoints)
             case VisionUniforms.handsBlock: features.insert(.handPose)
+            case VisionUniforms.bodiesBlock: features.insert(.bodyPose)
             default: break
             }
         }
@@ -82,6 +88,15 @@ struct VisionHand {
     var chirality: Float
     var confidence: Float
     /// Exactly `VisionUniforms.handJointCount` entries in prelude joint order:
+    /// xy = vUV position, z = joint confidence, w unused.
+    var joints: [SIMD4<Float>]
+}
+
+/// One detected person's body skeleton in vUV space (top-left origin,
+/// mirroring applied).
+struct VisionBody {
+    var confidence: Float
+    /// Exactly `VisionUniforms.bodyJointCount` entries in prelude joint order:
     /// xy = vUV position, z = joint confidence, w unused.
     var joints: [SIMD4<Float>]
 }
@@ -106,14 +121,16 @@ struct VisionSnapshot {
     var facePoints: [VisionFacePoints] = []
     /// At most `maxHands`.
     var hands: [VisionHand] = []
+    /// At most `maxBodies`.
+    var bodies: [VisionBody] = []
     /// r8Unorm person matte imported from Vision; 1 = person. Not mirrored.
     var personMatte: MTLTexture?
     /// rgba8Unorm eye/mouth mask, already in vUV space.
     var faceMask: MTLTexture?
 }
 
-/// std140 packing of the `CEFace`, `CEFacePoints`, and `CEHands` prelude blocks
-/// as vec4 slots.
+/// std140 packing of the `CEFace`, `CEFacePoints`, `CEHands`, and `CEBodies`
+/// prelude blocks as vec4 slots.
 /// Block-level ints are stored via bit pattern in the first slot's x lane.
 enum VisionUniformPacking {
 
@@ -157,6 +174,27 @@ enum VisionUniformPacking {
             let base = 1 + VisionUniforms.maxHands + handIndex * jointCount
             for jointIndex in 0..<min(jointCount, hand.joints.count) {
                 slots[base + jointIndex] = hand.joints[jointIndex]
+            }
+        }
+        return slots
+    }
+
+    /// CEBodies: int uBodyCount (offset 0), vec4 uBodyInfo[4] (offset 16),
+    /// vec4 uBodyJoints[76] (offset 80). 1296 bytes.
+    static func packBodies(_ bodies: [VisionBody]) -> [SIMD4<Float>] {
+        let jointCount = VisionUniforms.bodyJointCount
+        var slots = [SIMD4<Float>](
+            repeating: .zero,
+            count: 1 + VisionUniforms.maxBodies + VisionUniforms.maxBodies * jointCount
+        )
+        let count = min(bodies.count, VisionUniforms.maxBodies)
+        slots[0].x = Float(bitPattern: UInt32(bitPattern: Int32(count)))
+        for bodyIndex in 0..<count {
+            let body = bodies[bodyIndex]
+            slots[1 + bodyIndex] = SIMD4<Float>(body.confidence, 0, 0, 0)
+            let base = 1 + VisionUniforms.maxBodies + bodyIndex * jointCount
+            for jointIndex in 0..<min(jointCount, body.joints.count) {
+                slots[base + jointIndex] = body.joints[jointIndex]
             }
         }
         return slots
