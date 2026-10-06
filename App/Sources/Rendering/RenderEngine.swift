@@ -394,6 +394,7 @@ final class RenderEngine {
         let faceSlots = VisionUniformPacking.packFace(rects: vision.faceRects)
         let facePointSlots = VisionUniformPacking.packFacePoints(vision.facePoints)
         let handSlots = VisionUniformPacking.packHands(vision.hands)
+        let bodySlots = VisionUniformPacking.packBodies(vision.bodies)
 
         // 4. Timing / context uniforms.
         let now = CACurrentMediaTime()
@@ -482,6 +483,10 @@ final class RenderEngine {
                     }
                 case VisionUniforms.handsBlock:
                     handSlots.withUnsafeBytes { bytes in
+                        Self.setFragmentBytes(encoder, bytes: bytes, index: block.mslBuffer, requiredLength: requiredLength)
+                    }
+                case VisionUniforms.bodiesBlock:
+                    bodySlots.withUnsafeBytes { bytes in
                         Self.setFragmentBytes(encoder, bytes: bytes, index: block.mslBuffer, requiredLength: requiredLength)
                     }
                 default:

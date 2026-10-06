@@ -223,6 +223,30 @@ enum ShaderReference {
             type: "vec4",
             description: "Joint of hand `hand` (0 … uHandCount − 1) at index `joint` — use the CE_* constants: wrist (CE_WRIST), then CMC/MP/IP/TIP for the thumb and MCP/PIP/DIP/TIP for each finger (CE_THUMB_*, CE_INDEX_*, CE_MIDDLE_*, CE_RING_*, CE_LITTLE_*)."
         ),
+        Symbol(
+            id: "uBodyCount",
+            name: "uBodyCount",
+            type: "int (CEBodies, binding = 24)",
+            description: "Number of detected people (0 … CE_MAX_BODIES), most confident first."
+        ),
+        Symbol(
+            id: "uBodyInfo",
+            name: "uBodyInfo[4]",
+            type: "vec4 (CEBodies, binding = 24)",
+            description: "Per body: x = detection confidence."
+        ),
+        Symbol(
+            id: "uBodyJoints",
+            name: "uBodyJoints[76]",
+            type: "vec4 (CEBodies, binding = 24)",
+            description: "19 joints per body: xy = vUV position, z = joint confidence (0 when not located). Prefer ceBodyJoint() with the CE_BODY_* joint constants (CE_BODY_NOSE, CE_BODY_LEFT_WRIST, …) over manual indexing."
+        ),
+        Symbol(
+            id: "ceBodyJoint",
+            name: "ceBodyJoint(body, joint)",
+            type: "vec4",
+            description: "Joint of body `body` (0 … uBodyCount − 1) at index `joint` — use the CE_BODY_* constants: NOSE, LEFT/RIGHT_EYE, LEFT/RIGHT_EAR, NECK, LEFT/RIGHT_SHOULDER, LEFT/RIGHT_ELBOW, LEFT/RIGHT_WRIST, ROOT (hip center), LEFT/RIGHT_HIP, LEFT/RIGHT_KNEE, LEFT/RIGHT_ANKLE. Left and right are the person's own sides."
+        ),
     ]
 
     static let functions: [Symbol] = [

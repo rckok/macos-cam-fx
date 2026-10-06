@@ -135,7 +135,7 @@ enum GLSLSyntaxHighlighter {
         "bitfieldExtract", "bitfieldInsert", "bitfieldReverse", "bitCount",
         "findLSB", "findMSB",
         // Injected by the prelude
-        "ceHistory", "ceHandJoint", "ceStageTexture", "ceSelfTexture",
+        "ceHistory", "ceHandJoint", "ceBodyJoint", "ceStageTexture", "ceSelfTexture",
         "ceDiscBlur", "ceGauss3x3", "ceNoise",
     ]
 
@@ -154,14 +154,21 @@ enum GLSLSyntaxHighlighter {
         "uFaceCount", "uFaceRects",
         "uFaceLeftEye", "uFaceRightEye", "uFaceMouth",
         "uHandCount", "uHandInfo", "uHandJoints",
+        "uBodyCount", "uBodyInfo", "uBodyJoints",
         // Prelude #defines
         "CE_MAX_FACES", "CE_MAX_HANDS", "CE_HAND_JOINTS", "CE_MAX_STAGE_REFS",
+        "CE_MAX_BODIES", "CE_BODY_JOINTS",
         "CE_WRIST",
         "CE_THUMB_CMC", "CE_THUMB_MP", "CE_THUMB_IP", "CE_THUMB_TIP",
         "CE_INDEX_MCP", "CE_INDEX_PIP", "CE_INDEX_DIP", "CE_INDEX_TIP",
         "CE_MIDDLE_MCP", "CE_MIDDLE_PIP", "CE_MIDDLE_DIP", "CE_MIDDLE_TIP",
         "CE_RING_MCP", "CE_RING_PIP", "CE_RING_DIP", "CE_RING_TIP",
         "CE_LITTLE_MCP", "CE_LITTLE_PIP", "CE_LITTLE_DIP", "CE_LITTLE_TIP",
+        "CE_BODY_NOSE", "CE_BODY_LEFT_EYE", "CE_BODY_RIGHT_EYE", "CE_BODY_LEFT_EAR", "CE_BODY_RIGHT_EAR",
+        "CE_BODY_NECK", "CE_BODY_LEFT_SHOULDER", "CE_BODY_RIGHT_SHOULDER",
+        "CE_BODY_LEFT_ELBOW", "CE_BODY_RIGHT_ELBOW", "CE_BODY_LEFT_WRIST", "CE_BODY_RIGHT_WRIST",
+        "CE_BODY_ROOT", "CE_BODY_LEFT_HIP", "CE_BODY_RIGHT_HIP",
+        "CE_BODY_LEFT_KNEE", "CE_BODY_RIGHT_KNEE", "CE_BODY_LEFT_ANKLE", "CE_BODY_RIGHT_ANKLE",
     ]
 
     private static func classify(_ word: String) -> TokenKind? {
