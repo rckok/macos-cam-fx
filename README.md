@@ -208,6 +208,16 @@ therefore invisible — unless some stage of the effect reads stage textures —
 so the app skips those passes entirely and marks them in the stage list. Their
 vision detectors do not run either.
 
+A stage is one of two types, picked from the **Add Stage** menu and fixed
+from then on:
+
+- A **fragment stage** (the default) is one fullscreen fragment shader: it
+  computes every pixel of its output.
+- A **geometry stage** draws points, lines or triangles with a vertex and a
+  fragment shader, optionally driven by a simulation pass that keeps per-item
+  state in 32-bit float textures — the building block for particle systems
+  and flow fields. See [Geometry stages](#geometry-stages).
+
 Use Editor Mode to add, remove and duplicate stages (the duplicate lands right
 below the original with the same shader and parameter values). Drag a stage by
 its row to reorder it within the effect. The stage list only shows the active
@@ -219,7 +229,10 @@ menu: **Move to** › the destination, where it lands last.
 Stages live in the app's sandbox container at
 `~/Library/Containers/studio.polyglot.CameraEffects/Data/Library/Application Support/CameraEffects/Stages/`,
 one folder per stage containing `shader.frag` (GLSL) and `stage.json`
-(name + saved parameter values). You can edit them in the app's editor
+(name + saved parameter values). A geometry stage adds `shader.vert` and,
+once its simulation has been switched on, `simulate.frag`; its `stage.json`
+also records `"kind": "geometry"` and the stage-level controls under
+`geometry`. You can edit them in the app's editor
 (recompiles as you type) or in an external editor (hot-reloads on save).
 
 Background images are copied into a `Backgrounds` folder next to `Stages`,
@@ -285,7 +298,19 @@ that declares the interface, so you only write `main()` plus an optional
 | --- | --- | --- |
 | `ceDiscBlur(tex, uv, radius, taps, falloff)` | `vec4` | Single-pass disc blur of any `sampler2D`. `radius` in pixels; `taps` is quality and cost (16–32 is plenty); `falloff` 0.0 = flat bokeh disc, 1.0 = soft Gaussian-like. Samples sit on a golden-angle spiral rotated per pixel, so few taps read as fine grain, not rings. |
 | `ceGauss3x3(tex, uv, spread)` | `vec4` | Exact 3×3 Gaussian from four bilinear reads at half-texel offsets. `spread` = 1.0 is one texel; larger values widen it at the same cost. |
-| `ceNoise(pixel)` | `float` | Per-pixel noise in [0, 1) with no visible pattern. Pass `vUV * uResolution`. |
+| `ceNoise(pixel)` | `float` | Per-pixel noise in [0, 1) with no visible pattern. Pass `vUV * uResolution`. Every pixel is independent: use it for dithering, not for smooth fields. |
+
+### Noise and randomness
+
+Available in every stage and, in geometry stages, every tab.
+
+| Symbol | Type | Description |
+| --- | --- | --- |
+| `ceHash(seed)` | `float` | Random value in [0, 1) for an `int`, `float`, `vec2` or `vec3` seed (PCG hash). The same seed always gives the same value; neighboring seeds are unrelated. |
+| `ceHash4(seed)` | `vec4` | Four independent random values in [0, 1) for one `int` seed. |
+| `ceSimplex(p)` | `float` | Smooth simplex noise in roughly [−1, 1] for a `vec2` or `vec3` point, features about 1 unit apart. Pass time as `z` to animate a 2D field. |
+| `ceFbm(p, octaves)` | `float` | Fractal simplex noise: `octaves` (≤ 8) layers, each at twice the frequency and half the amplitude. |
+| `ceCurlNoise(p, t)` | `vec2` | Divergence-free 2D flow (the curl of simplex noise) that changes smoothly with `t`. Particles moved along it neither bunch up nor thin out. Magnitude roughly 0 … 3. |
 
 ```glsl
 void main() {
@@ -542,6 +567,104 @@ Supported `Params` member types and their generated controls: `float`
 std140 stores them as 0/1), `vec2` / `vec3` / `vec4` (a slider per component;
 `vec3` / `vec4` become a color picker when `color=true`). Parameter values
 and ranges are stored in the stage's `stage.json`.
+
+## Geometry stages
+
+A geometry stage draws instead of filling the frame: **Count** items of
+**Vertices per item** vertices each, as **Points**, **Lines**, a **Line
+Strip**, **Triangles** or a **Triangle Strip** (strips connect within one
+item). Metal has no geometry shader stage, so the vertex shader generates the
+geometry: it runs once per vertex, works out where that vertex goes from
+`ceItemIndex` and `ceVertexIndex`, and places it with `ceEmit(uv)`. There are
+no vertex buffers to fill.
+
+The editor shows the stage's shaders as tabs — **Vertex** and **Fragment**,
+plus **Simulation** while the simulation pass is on — and the stage controls
+column gains a **Geometry** section with these settings:
+
+| Control | Default | What it does |
+| --- | --- | --- |
+| Primitive | Points | What each item's vertices draw. |
+| Count | 10 000 | Items drawn, and simulated. Up to 4 194 304. |
+| Vertices per item | 1 | 1 for a point, 2 for a line, 6 for a quad (see `ceQuadCorner`). |
+| Start from | Transparent | What the stage's texture holds before drawing: transparent black, the previous stage's output, or the stage's own last frame (so drawing accumulates). |
+| Blend | Alpha | How `outColor` combines with that: replace it, mix by its alpha, or add to it. |
+| Simulation | Off | Adds the Simulation tab and its state textures. |
+| State slots | 1 | `vec4` values kept per item: `outState0` … `outState3`. |
+| Substeps | 1 | Simulation steps per frame, up to 8. |
+
+Everything a fragment stage can use is available in all three tabs — `uPrev`,
+`ceHistory`, the vision data, `ceStageTexture`, `Params` — so geometry can be
+placed by face, hand or body landmarks, sized by the camera's brightness, or
+steered by the person matte. A `Params` block can be declared in any tab;
+members with the same name share one control and must have the same type in
+each. The rest of the frame keeps what the stage started from, so with the
+default **Transparent** start a geometry stage replaces the frame like a stage
+that ignores `uPrev`; starting from **Previous Stage** builds on the chain
+instead.
+
+### Vertex tab
+
+| Symbol | Type | Description |
+| --- | --- | --- |
+| `ceItemIndex` | `int` | The item, 0 … `uCount` − 1 (the instance index). |
+| `ceVertexIndex` | `int` | The vertex within the item, 0 … `uVerticesPerItem` − 1. |
+| `ceEmit(uv)` | `void` | Places the vertex at `uv` in vUV space: (0, 0) top-left, (1, 1) bottom-right. |
+| `gl_PointSize` | `float` | Point diameter in pixels when drawing Points; 1 when not written. |
+| `vColor` | `out vec4` | Color for the Fragment tab, interpolated across the primitive. White by default. |
+| `vData0`, `vData1` | `out vec4` | Two more values for the Fragment tab. Zero by default. |
+| `ceQuadCorner(vertex)` | `vec2` | Corner 0 … 5 of a quad made of two triangles, in [−1, 1]: `ceEmit(center + ceQuadCorner(ceVertexIndex) * radius / uResolution)`. |
+| `ceGridPoint(index, cells)` | `vec2` | Center of cell `index` of a `cells` grid over the frame. |
+| `ceGridVertex(vertex, cells)` | `vec2` | Vertex of a mesh of `cells.x` × `cells.y` quads covering the frame — one item of `6 * cells.x * cells.y` vertices, drawn as Triangles. |
+| `ceHandBone(bone)`, `ceBodyBone(bone)` | `ivec2` | The two joint indices of a skeleton bone (`CE_HAND_BONES` = 20, `CE_BODY_BONES` = 18): one item per bone, two vertices each, drawn as Lines, traces a skeleton. Available in every stage. |
+
+`vUV` and `outColor` do not exist in the Vertex tab.
+
+### Fragment tab
+
+Like a fragment stage's shader, with `vColor`, `vData0` and `vData1` coming in
+from the Vertex tab and `gl_PointCoord` (0 … 1 across a point; Points only)
+for shaping points — `if (length(gl_PointCoord - 0.5) > 0.5) discard;` makes
+them round. `vUV` is the pixel's position, as in a fragment stage.
+
+### Simulation tab
+
+With **Simulation** on, a pass runs before the draw, once per item for every
+substep. Each item has **State slots** `vec4` values in 32-bit float textures
+sized to fit **Count** (about √Count × √Count texels), which persist from frame
+to frame. Read the previous step with `ceState(slot, ceItemIndex)` and write
+the next one to `outState0` … `outState3`; the Vertex and Fragment tabs read
+the result with the same `ceState()`. Two copies of the state alternate, so a
+step always reads a complete previous step, including other items' — handy
+for following a leader or reading neighbors.
+
+State starts out zero. `uSimFrame` is 0 on the first frame after a reset —
+the moment to seed it — and **Reset Simulation** in the stage controls starts
+over; so does changing Count or State slots.
+
+| Symbol | Type | Description |
+| --- | --- | --- |
+| `ceState(slot, index)` | `vec4` | State of item `index`; `vec4(0)` out of range or without a simulation. |
+| `outState0` … `outState3` | `out vec4` | The item's next state, one per slot (Simulation tab only). |
+| `uCount`, `uVerticesPerItem` | `int` | Count and Vertices per item. |
+| `uSimFrame` | `int` | Frames simulated since the last reset. |
+| `uSubstep`, `uSubsteps` | `int` | Which step of this frame is running, and how many there are. |
+| `uSimDelta` | `float` | `uTimeDelta / uSubsteps`: seconds per step. |
+| `uStateSlots`, `uStateSize` | `int`, `ivec2` | Slots per item (0 without simulation) and texels per slot. |
+| `uState` | `sampler2DArray` | The state itself, one slice per slot. Prefer `ceState()`. |
+
+The CEGeometry block is binding 25 and `uState` binding 26, in all three tabs.
+
+The new-stage template draws a grid of points sized by the camera's
+brightness. Switching **Simulation** on fills the Simulation tab with a
+curl-noise flow field, and — if the Vertex tab still holds the template — swaps
+it for one drawing a point per simulated particle. The built-in **Flow Field**
+effect goes further: particles that stream around the person, feeding a
+feedback trail stage.
+
+The simulation is a fragment pass rather than a Metal compute kernel: one
+invocation per item, writing every slot at once, covers particle simulations
+and flow fields, and reuses the same GLSL prelude as every other tab.
 
 ## Project layout
 

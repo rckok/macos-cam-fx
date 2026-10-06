@@ -1,0 +1,14 @@
+{
+  "name": "Particles",
+  "kind": "geometry",
+  "geometry": {
+    "primitive": "points",
+    "count": 50000,
+    "verticesPerItem": 1,
+    "startFrom": "transparent",
+    "blend": "additive",
+    "simulation": true,
+    "stateSlots": 1,
+    "substeps": 2
+  }
+}
