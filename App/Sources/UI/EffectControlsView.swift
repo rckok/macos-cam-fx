@@ -48,6 +48,11 @@ struct StageControls: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
+            if stage.kind == .geometry {
+                GeometryControls(stage: stage)
+                Divider()
+            }
+
             if stage.textureBindings.isEmpty && stage.parameters.isEmpty {
                 Text("No controls. Declare a `Params` uniform block for sliders and toggles, or `sampler2D` uniforms (binding ≥ 4) for media pickers.")
                     .font(.caption)
@@ -64,6 +69,110 @@ struct StageControls: View {
                 }
                 .id("\(parameter.name)-\(parameter.type)-\(parameter.values.count)-\(parameter.isColor)")
             }
+        }
+    }
+}
+
+/// A geometry stage's own controls: what it draws, how it combines with the
+/// frame, and its simulation pass.
+private struct GeometryControls: View {
+    @EnvironmentObject private var state: AppState
+    @ObservedObject var stage: Stage
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Geometry")
+                .font(.headline)
+
+            Picker("Primitive", selection: setting(\.primitive)) {
+                ForEach(GeometryPrimitive.allCases) { primitive in
+                    Text(primitive.title).tag(primitive)
+                }
+            }
+            .help("What each run of Vertices per item vertices draws. Strips connect within one item only.")
+
+            IntegerField(title: "Count", value: setting(\.count), range: GeometrySettings.countRange)
+                .help("Items drawn — and simulated, with a simulation pass. ceItemIndex runs 0 … Count − 1.")
+            IntegerField(
+                title: "Vertices per item",
+                value: setting(\.verticesPerItem),
+                range: GeometrySettings.verticesPerItemRange
+            )
+            .help("Vertices the Vertex tab runs for each item; ceVertexIndex runs 0 … this − 1. 1 for points, 2 for a line, 6 for a quad.")
+
+            Picker("Start from", selection: setting(\.startFrom)) {
+                ForEach(GeometryStartFrom.allCases) { start in
+                    Text(start.title).tag(start)
+                }
+            }
+            .help("What the stage's texture holds before the geometry is drawn each frame. Own Last Frame keeps everything drawn so far.")
+
+            Picker("Blend", selection: setting(\.blend)) {
+                ForEach(GeometryBlend.allCases) { blend in
+                    Text(blend.title).tag(blend)
+                }
+            }
+            .help("How outColor combines with what is already there: overwrite it, mix by alpha, or add to it.")
+
+            Toggle("Simulation", isOn: setting(\.simulation))
+                .toggleStyle(.switch)
+                .disabled(stage.isBuiltIn)
+                .help("Adds a Simulation tab that updates 32-bit float state for every item before each draw; read it with ceState().")
+
+            if stage.geometry.simulation {
+                Stepper(value: setting(\.stateSlots), in: GeometrySettings.stateSlotRange) {
+                    LabeledContent("State slots") {
+                        Text("\(stage.geometry.stateSlots)")
+                            .monospacedDigit()
+                    }
+                }
+                .disabled(stage.isBuiltIn)
+                .help("vec4 values per item: outState0 … outState\(GeometrySettings.stateSlotRange.upperBound - 1), read back with ceState(slot, index).")
+
+                Stepper(value: setting(\.substeps), in: GeometrySettings.substepRange) {
+                    LabeledContent("Substeps") {
+                        Text("\(stage.geometry.substeps)")
+                            .monospacedDigit()
+                    }
+                }
+                .help("Simulation steps per frame. uSimDelta is the frame's time split evenly between them.")
+
+                Button("Reset Simulation") {
+                    state.resetSimulation(stage)
+                }
+                .help("Start again from zeroed state, with uSimFrame back at 0. Changing Count or State slots also resets.")
+            }
+        }
+    }
+
+    private func setting<Value>(_ keyPath: WritableKeyPath<GeometrySettings, Value>) -> Binding<Value> {
+        Binding(
+            get: { stage.geometry[keyPath: keyPath] },
+            set: { newValue in
+                var geometry = stage.geometry
+                geometry[keyPath: keyPath] = newValue
+                state.setGeometry(geometry, for: stage)
+            }
+        )
+    }
+}
+
+/// A whole number typed in, applied on Return or when the field loses focus.
+private struct IntegerField: View {
+    let title: String
+    @Binding var value: Int
+    let range: ClosedRange<Int>
+
+    var body: some View {
+        LabeledContent(title) {
+            TextField(title, value: Binding(
+                get: { value },
+                set: { value = $0.clamped(to: range) }
+            ), format: .number)
+            .labelsHidden()
+            .multilineTextAlignment(.trailing)
+            .monospacedDigit()
+            .frame(maxWidth: 110)
         }
     }
 }
