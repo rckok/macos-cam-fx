@@ -45,6 +45,18 @@ enum ShaderReference {
             symbols: vision
         ),
         Category(id: "functions", title: "Functions", symbols: functions),
+        Category(
+            id: "noise",
+            title: "Noise and randomness",
+            footer: "Available in every stage and tab.",
+            symbols: noise
+        ),
+        Category(
+            id: "geometry",
+            title: "Geometry stages",
+            footer: "Only in geometry stages. The Vertex tab runs Vertices per item times for each of Count items and places each vertex with ceEmit(); the Fragment tab colors what it covers. The optional Simulation tab runs first, once per item for every substep, and keeps per-item state in 32-bit float textures. Everything above is available in all three tabs; vUV and outColor are not available in the Vertex tab.",
+            symbols: geometry
+        ),
         Category(id: "user", title: "You can also declare", symbols: userDefined),
     ]
 
@@ -272,7 +284,181 @@ enum ShaderReference {
             id: "ceNoise",
             name: "ceNoise(pixel)",
             type: "float",
-            description: "Cheap per-pixel noise in [0, 1) with no visible pattern (interleaved gradient noise). Pass vUV * uResolution. Useful for dithering and for rotating sample patterns."
+            description: "Cheap per-pixel noise in [0, 1) with no visible pattern (interleaved gradient noise). Pass vUV * uResolution. Every pixel is independent, so it suits dithering and rotating sample patterns, not smooth fields — use ceSimplex() for those."
+        ),
+        Symbol(
+            id: "ceHandBone",
+            name: "ceHandBone(bone)",
+            type: "ivec2",
+            description: "Bone `bone` (0 … CE_HAND_BONES − 1, 20 bones) of the hand skeleton as two joint indices, wrist to fingertip: draw a line from ceHandJoint(hand, b.x) to ceHandJoint(hand, b.y)."
+        ),
+        Symbol(
+            id: "ceBodyBone",
+            name: "ceBodyBone(bone)",
+            type: "ivec2",
+            description: "Bone `bone` (0 … CE_BODY_BONES − 1, 18 bones) of the body skeleton as two joint indices into ceBodyJoint(): face, arms, spine and legs."
+        ),
+    ]
+
+    static let noise: [Symbol] = [
+        Symbol(
+            id: "ceHash",
+            name: "ceHash(seed)",
+            type: "float",
+            description: "A random value in [0, 1) for an int, float, vec2 or vec3 seed. The same seed always gives the same value and neighboring seeds are unrelated — e.g. ceHash(ceItemIndex) for a per-particle random number."
+        ),
+        Symbol(
+            id: "ceHash4",
+            name: "ceHash4(seed)",
+            type: "vec4",
+            description: "Four independent random values in [0, 1) for one int seed."
+        ),
+        Symbol(
+            id: "ceSimplex",
+            name: "ceSimplex(p)",
+            type: "float",
+            description: "Smooth simplex noise in roughly [−1, 1] for a vec2 or vec3 point, with features about 1 unit apart. Scale p for bigger or smaller features; pass time as z to animate a 2D field."
+        ),
+        Symbol(
+            id: "ceFbm",
+            name: "ceFbm(p, octaves)",
+            type: "float",
+            description: "Fractal simplex noise in roughly [−1, 1]: `octaves` (up to 8) layers, each at twice the frequency and half the amplitude of the last. More detail than ceSimplex at `octaves` times the cost."
+        ),
+        Symbol(
+            id: "ceCurlNoise",
+            name: "ceCurlNoise(p, t)",
+            type: "vec2",
+            description: "A swirling 2D flow field at p, changing smoothly with t: the curl of simplex noise, which is divergence-free, so particles moved along it neither bunch up nor thin out. Magnitude roughly 0 … 3."
+        ),
+    ]
+
+    static let geometry: [Symbol] = [
+        Symbol(
+            id: "ceItemIndex",
+            name: "ceItemIndex",
+            type: "int (Simulation, Vertex)",
+            description: "The item being simulated or drawn, 0 … uCount − 1."
+        ),
+        Symbol(
+            id: "ceVertexIndex",
+            name: "ceVertexIndex",
+            type: "int (Vertex)",
+            description: "The vertex within the item, 0 … uVerticesPerItem − 1."
+        ),
+        Symbol(
+            id: "ceEmit",
+            name: "ceEmit(uv)",
+            type: "void (Vertex)",
+            description: "Places the vertex at `uv`, in vUV space: (0, 0) top-left, (1, 1) bottom-right — the same space as the vision coordinates. Sets gl_Position; a vertex that never calls it lands in the middle of the frame."
+        ),
+        Symbol(
+            id: "gl_PointSize",
+            name: "gl_PointSize",
+            type: "float (Vertex)",
+            description: "Diameter of a point in pixels when drawing Points; 1 when not written. Points are squares: discard outside length(gl_PointCoord − 0.5) < 0.5 in the Fragment tab for round ones."
+        ),
+        Symbol(
+            id: "vColor",
+            name: "vColor",
+            type: "vec4 (out in Vertex, in in Fragment)",
+            description: "Color handed from the Vertex to the Fragment tab, interpolated across each primitive. White when not written."
+        ),
+        Symbol(
+            id: "vData0",
+            name: "vData0, vData1",
+            type: "vec4 (out in Vertex, in in Fragment)",
+            description: "Two more values handed from the Vertex to the Fragment tab, interpolated across each primitive. Zero when not written."
+        ),
+        Symbol(
+            id: "gl_PointCoord",
+            name: "gl_PointCoord",
+            type: "vec2 (Fragment)",
+            description: "Position within the point being drawn, (0, 0) to (1, 1). Only defined when drawing Points."
+        ),
+        Symbol(
+            id: "ceQuadCorner",
+            name: "ceQuadCorner(vertex)",
+            type: "vec2 (Vertex)",
+            description: "Corner `vertex` (0 … 5) of a quad drawn as two triangles, in [−1, 1]. With 6 vertices per item and Triangles: ceEmit(center + ceQuadCorner(ceVertexIndex) * radius / uResolution) draws a square `radius` pixels from center to edge."
+        ),
+        Symbol(
+            id: "ceGridPoint",
+            name: "ceGridPoint(index, cells)",
+            type: "vec2 (Vertex)",
+            description: "Center of cell `index` of an ivec2 `cells` grid over the frame, row by row from the top-left, in vUV space."
+        ),
+        Symbol(
+            id: "ceGridVertex",
+            name: "ceGridVertex(vertex, cells)",
+            type: "vec2 (Vertex)",
+            description: "Vertex `vertex` of a mesh of `cells.x` × `cells.y` quads covering the frame, in vUV space. Draw as Triangles with one item of 6 × cells.x × cells.y vertices, then displace it."
+        ),
+        Symbol(
+            id: "ceState",
+            name: "ceState(slot, index)",
+            type: "vec4",
+            description: "State slot `slot` of item `index` from the latest simulation step. In the Simulation tab that is the previous step; in the Vertex and Fragment tabs, this frame's last. vec4(0) out of range, and without a simulation pass."
+        ),
+        Symbol(
+            id: "outState0",
+            name: "outState0 … outState3",
+            type: "out vec4 (Simulation)",
+            description: "Write the item's next state here, one output per state slot (set in the stage controls). State starts out zero after a reset."
+        ),
+        Symbol(
+            id: "uCount",
+            name: "uCount",
+            type: "int (CEGeometry, binding = 25)",
+            description: "Items drawn and simulated (Count in the stage controls)."
+        ),
+        Symbol(
+            id: "uVerticesPerItem",
+            name: "uVerticesPerItem",
+            type: "int (CEGeometry, binding = 25)",
+            description: "Vertices drawn per item (Vertices per item in the stage controls)."
+        ),
+        Symbol(
+            id: "uSimFrame",
+            name: "uSimFrame",
+            type: "int (CEGeometry, binding = 25)",
+            description: "Frames simulated since the last reset. 0 on the first frame — the moment to seed the state. Resets with Reset Simulation, and when Count or State slots change."
+        ),
+        Symbol(
+            id: "uSubstep",
+            name: "uSubstep",
+            type: "int (CEGeometry, binding = 25)",
+            description: "Which of this frame's uSubsteps simulation steps is running, 0-based."
+        ),
+        Symbol(
+            id: "uSubsteps",
+            name: "uSubsteps",
+            type: "int (CEGeometry, binding = 25)",
+            description: "Simulation steps per frame (Substeps in the stage controls)."
+        ),
+        Symbol(
+            id: "uSimDelta",
+            name: "uSimDelta",
+            type: "float (CEGeometry, binding = 25)",
+            description: "Seconds per simulation step: uTimeDelta / uSubsteps. Multiply velocities by it for motion that does not depend on frame rate or substeps."
+        ),
+        Symbol(
+            id: "uStateSlots",
+            name: "uStateSlots",
+            type: "int (CEGeometry, binding = 25)",
+            description: "vec4 state slots per item; 0 without a simulation pass."
+        ),
+        Symbol(
+            id: "uStateSize",
+            name: "uStateSize",
+            type: "ivec2 (CEGeometry, binding = 25)",
+            description: "Size in texels of each state slot: the smallest near-square texture holding uCount items. Prefer ceState(), which does the indexing."
+        ),
+        Symbol(
+            id: "uState",
+            name: "uState",
+            type: "uniform sampler2DArray, binding = 26",
+            description: "The simulation state as a 32-bit float texture array, one slice per slot. Prefer ceState()."
         ),
     ]
 

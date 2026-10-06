@@ -54,6 +54,56 @@ struct ShaderReflection: Codable {
     static let stageTexturesSampler = "uStageTextures"
     /// Prelude block carrying the per-stage index, count, and resolved name refs.
     static let stagesBlock = "CEStages"
+    /// Geometry stages: the draw and simulation counters.
+    static let geometryBlock = "CEGeometry"
+    /// Geometry stages: the simulation state, one array slice per slot.
+    static let stateSampler = "uState"
+
+    /// One reflection standing for all of a stage's shader files, for the
+    /// questions asked about the stage as a whole: which controls it has, which
+    /// prelude resources it reads. Never used to bind resources — Metal
+    /// indices differ per function. A resource counts as used when any file
+    /// uses it; `Params` members are merged by name, the first file's
+    /// declaration (and metadata) winning.
+    static func merged(_ reflections: [ShaderReflection]) -> ShaderReflection {
+        guard reflections.count > 1, let first = reflections.first else {
+            return reflections.first ?? ShaderReflection(entryPoint: "main0", textures: [], uniformBlocks: [])
+        }
+
+        var textures: [TextureBinding] = []
+        for texture in reflections.flatMap(\.textures) {
+            guard let index = textures.firstIndex(where: { $0.name == texture.name }) else {
+                textures.append(texture)
+                continue
+            }
+            let isGlobal = textures[index].isGlobal == true || texture.isGlobal == true
+            if textures[index].mslTexture < 0 && texture.mslTexture >= 0 {
+                textures[index] = texture
+            }
+            textures[index].isGlobal = isGlobal ? true : nil
+        }
+
+        var blocks: [UniformBlock] = []
+        for block in reflections.flatMap(\.uniformBlocks) {
+            guard let index = blocks.firstIndex(where: { $0.name == block.name }) else {
+                blocks.append(block)
+                continue
+            }
+            let existing = blocks[index]
+            let members = existing.members + block.members.filter { member in
+                !existing.members.contains { $0.name == member.name }
+            }
+            blocks[index] = UniformBlock(
+                name: existing.name,
+                binding: existing.binding,
+                mslBuffer: max(existing.mslBuffer, block.mslBuffer),
+                size: max(existing.size, block.size),
+                members: members
+            )
+        }
+
+        return ShaderReflection(entryPoint: first.entryPoint, textures: textures, uniformBlocks: blocks)
+    }
 
     /// True when the shader reads `uPrev`, i.e. it builds on the output of the
     /// stages before it. A prelude uniform the user source never references is
@@ -83,6 +133,51 @@ struct StageReference: Equatable {
     let slot: Int
     /// 1-based line in user source of the first call using this name.
     let line: Int
+    /// The shader file holding that call.
+    var file: ShaderFile = .fragment
+}
+
+/// One GLSL source file of a stage. Fragment stages only have `fragment`;
+/// geometry stages always have `vertex` and `fragment`, plus `simulation`
+/// while their simulation pass is on.
+enum ShaderFile: String, CaseIterable, Identifiable {
+    case simulation
+    case vertex
+    case fragment
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .simulation: return "Simulation"
+        case .vertex: return "Vertex"
+        case .fragment: return "Fragment"
+        }
+    }
+
+    var fileName: String {
+        switch self {
+        case .simulation: return "simulate.frag"
+        case .vertex: return "shader.vert"
+        case .fragment: return "shader.frag"
+        }
+    }
+}
+
+/// Which interface the prelude declares around a user source file.
+enum ShaderPrelude: Equatable {
+    /// A fragment stage: one fullscreen pass with `vUV` in and `outColor` out.
+    case fullscreen
+    /// A geometry stage's simulation pass, writing one `outStateN` per slot.
+    case simulation(stateSlots: Int)
+    /// A geometry stage's vertex shader.
+    case geometryVertex
+    /// A geometry stage's fragment shader, fed by its vertex shader.
+    case geometryFragment
+
+    var isGeometry: Bool {
+        self != .fullscreen
+    }
 }
 
 struct ShaderCompileOutput {
@@ -104,9 +199,18 @@ struct ShaderDiagnostic: Identifiable, Equatable, Error {
     let line: Int?
     let message: String
     var severity: Severity = .error
+    /// The stage file `line` refers to.
+    var file: ShaderFile = .fragment
 
     static func == (lhs: ShaderDiagnostic, rhs: ShaderDiagnostic) -> Bool {
         lhs.line == rhs.line && lhs.message == rhs.message && lhs.severity == rhs.severity
+            && lhs.file == rhs.file
+    }
+
+    func inFile(_ file: ShaderFile) -> ShaderDiagnostic {
+        var copy = self
+        copy.file = file
+        return copy
     }
 }
 
@@ -125,14 +229,88 @@ enum ShaderCompiler {
     /// detectors only run while a stage of the active effect actually uses one
     /// of those uniforms. Bindings 22-23 expose every stage's output texture
     /// and the per-stage index data behind `ceStageTexture`.
+    /// Geometry stages add binding 25 (`CEGeometry`) and 26 (`uState`).
     static let maxStageReferences = 8
 
-    static let prelude = """
-    #version 450
+    /// Upper bound of the Simulation pass' `outState0` … `outState3`.
+    static let maxStateSlots = 4
 
+    /// The prelude a fragment stage is compiled with.
+    static let prelude = makePrelude(for: .fullscreen)
+
+    static func makePrelude(for kind: ShaderPrelude) -> String {
+        var parts = ["#version 450\n"]
+        switch kind {
+        case .fullscreen:
+            parts.append(fullscreenInterface)
+        case .simulation(let stateSlots):
+            parts.append((0..<max(1, min(stateSlots, maxStateSlots))).map { slot in
+                "layout(location = \(slot)) out vec4 outState\(slot);\n"
+            }.joined())
+        case .geometryVertex:
+            parts.append(vertexInterface)
+        case .geometryFragment:
+            parts.append(geometryFragmentInterface)
+        }
+        parts.append(resources)
+        parts.append(noiseFunctions)
+        parts.append(skeletonFunctions)
+        if kind.isGeometry {
+            parts.append(geometryResources)
+        }
+        switch kind {
+        case .simulation:
+            parts.append(simulationFunctions)
+        case .geometryVertex:
+            parts.append(vertexFunctions)
+        case .fullscreen, .geometryFragment:
+            break
+        }
+        return parts.joined(separator: "\n")
+    }
+
+    /// Appended after a vertex shader's user source, whose `main` the prelude
+    /// renamed: every varying is written whatever the user's code does, which
+    /// Metal needs to link the vertex and fragment functions.
+    static let vertexEpilogue = """
+
+    #undef main
+    void main() {
+        gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
+        vColor = vec4(1.0);
+        vData0 = vec4(0.0);
+        vData1 = vec4(0.0);
+        ceUserMain();
+    }
+
+    """
+
+    private static let fullscreenInterface = """
     layout(location = 0) in vec2 vUV;
     layout(location = 0) out vec4 outColor;
 
+    """
+
+    private static let vertexInterface = """
+    // Varyings, interpolated across each primitive for the Fragment shader.
+    layout(location = 0) out vec4 vColor;
+    layout(location = 1) out vec4 vData0;
+    layout(location = 2) out vec4 vData1;
+
+    """
+
+    private static let geometryFragmentInterface = """
+    layout(location = 0) in vec4 vColor;
+    layout(location = 1) in vec4 vData0;
+    layout(location = 2) in vec4 vData1;
+    layout(location = 0) out vec4 outColor;
+
+    // The pixel being shaded, in the same space as a fragment stage's vUV.
+    #define vUV (gl_FragCoord.xy / uResolution)
+
+    """
+
+    private static let resources = """
     layout(binding = 0) uniform sampler2D uPrev;
     layout(binding = 1) uniform sampler3D uFrames;
 
@@ -312,12 +490,270 @@ enum ShaderCompiler {
 
     """
 
-    private static let preludeLineCount = prelude.components(separatedBy: "\n").count - 1
+    private static let noiseFunctions = """
+    // PCG hash (Jarzynski & Olano 2020).
+    uint _cePcg(uint v) {
+        uint state = v * 747796405u + 2891336453u;
+        uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+        return (word >> 22u) ^ word;
+    }
+
+    float _ceUnit(uint h) {
+        return float(h >> 8u) * (1.0 / 16777216.0);
+    }
+
+    // Stable random values in [0, 1): the same input always gives the same
+    // value, and neighbouring inputs are uncorrelated.
+    float ceHash(int n) { return _ceUnit(_cePcg(uint(n))); }
+    float ceHash(float x) { return _ceUnit(_cePcg(floatBitsToUint(x))); }
+    float ceHash(vec2 p) {
+        return _ceUnit(_cePcg(floatBitsToUint(p.x) ^ _cePcg(floatBitsToUint(p.y))));
+    }
+    float ceHash(vec3 p) {
+        return _ceUnit(_cePcg(floatBitsToUint(p.x) ^ _cePcg(floatBitsToUint(p.y) ^ _cePcg(floatBitsToUint(p.z)))));
+    }
+
+    // Four independent random values in [0, 1) for one integer seed.
+    vec4 ceHash4(int n) {
+        uint a = _cePcg(uint(n));
+        uint b = _cePcg(a);
+        uint c = _cePcg(b);
+        uint d = _cePcg(c);
+        return vec4(_ceUnit(a), _ceUnit(b), _ceUnit(c), _ceUnit(d));
+    }
+
+    vec3 _ceMod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+    vec4 _ceMod289(vec4 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+    vec4 _cePermute(vec4 x) { return _ceMod289(((x * 34.0) + 1.0) * x); }
+
+    // 3D simplex noise (Ashima Arts / Stefan Gustavson, MIT): smooth, in
+    // roughly [-1, 1], with features about 1 unit apart. Use time as z to
+    // animate a 2D field.
+    float ceSimplex(vec3 v) {
+        const vec2 C = vec2(1.0 / 6.0, 1.0 / 3.0);
+        const vec4 D = vec4(0.0, 0.5, 1.0, 2.0);
+
+        vec3 i = floor(v + dot(v, C.yyy));
+        vec3 x0 = v - i + dot(i, C.xxx);
+
+        vec3 g = step(x0.yzx, x0.xyz);
+        vec3 l = 1.0 - g;
+        vec3 i1 = min(g.xyz, l.zxy);
+        vec3 i2 = max(g.xyz, l.zxy);
+
+        vec3 x1 = x0 - i1 + C.xxx;
+        vec3 x2 = x0 - i2 + C.yyy;
+        vec3 x3 = x0 - D.yyy;
+
+        i = _ceMod289(i);
+        vec4 p = _cePermute(_cePermute(_cePermute(
+                    i.z + vec4(0.0, i1.z, i2.z, 1.0))
+                  + i.y + vec4(0.0, i1.y, i2.y, 1.0))
+                  + i.x + vec4(0.0, i1.x, i2.x, 1.0));
+
+        vec3 ns = 0.142857142857 * D.wyz - D.xzx;
+        vec4 j = p - 49.0 * floor(p * ns.z * ns.z);
+        vec4 x_ = floor(j * ns.z);
+        vec4 y_ = floor(j - 7.0 * x_);
+        vec4 x = x_ * ns.x + ns.yyyy;
+        vec4 y = y_ * ns.x + ns.yyyy;
+        vec4 h = 1.0 - abs(x) - abs(y);
+
+        vec4 b0 = vec4(x.xy, y.xy);
+        vec4 b1 = vec4(x.zw, y.zw);
+        vec4 s0 = floor(b0) * 2.0 + 1.0;
+        vec4 s1 = floor(b1) * 2.0 + 1.0;
+        vec4 sh = -step(h, vec4(0.0));
+        vec4 a0 = b0.xzyw + s0.xzyw * sh.xxyy;
+        vec4 a1 = b1.xzyw + s1.xzyw * sh.zzww;
+
+        vec3 p0 = vec3(a0.xy, h.x);
+        vec3 p1 = vec3(a0.zw, h.y);
+        vec3 p2 = vec3(a1.xy, h.z);
+        vec3 p3 = vec3(a1.zw, h.w);
+        vec4 norm = 1.79284291400159 - 0.85373472095314
+            * vec4(dot(p0, p0), dot(p1, p1), dot(p2, p2), dot(p3, p3));
+        p0 *= norm.x;
+        p1 *= norm.y;
+        p2 *= norm.z;
+        p3 *= norm.w;
+
+        vec4 m = max(0.6 - vec4(dot(x0, x0), dot(x1, x1), dot(x2, x2), dot(x3, x3)), 0.0);
+        m = m * m;
+        return 42.0 * dot(m * m, vec4(dot(p0, x0), dot(p1, x1), dot(p2, x2), dot(p3, x3)));
+    }
+
+    float ceSimplex(vec2 p) { return ceSimplex(vec3(p, 0.0)); }
+
+    // Fractal (layered) simplex noise in roughly [-1, 1]: `octaves` layers,
+    // each twice the frequency and half the amplitude of the one before.
+    float ceFbm(vec3 p, int octaves) {
+        float sum = 0.0;
+        float amplitude = 0.5;
+        float total = 0.0;
+        for (int i = 0; i < 8; i++) {
+            if (i >= octaves) { break; }
+            sum += amplitude * ceSimplex(p);
+            total += amplitude;
+            p = p * 2.0 + vec3(19.1, 7.3, 3.7);
+            amplitude *= 0.5;
+        }
+        return sum / max(total, 0.0001);
+    }
+
+    float ceFbm(vec2 p, int octaves) { return ceFbm(vec3(p, 0.0), octaves); }
+
+    // Curl of simplex noise at p, with t moving through the field: a
+    // swirling, divergence-free 2D flow, so particles advected by it neither
+    // bunch up nor thin out. Magnitude is roughly 0 ... 3.
+    vec2 ceCurlNoise(vec2 p, float t) {
+        const float e = 0.01;
+        float dx = ceSimplex(vec3(p.x + e, p.y, t)) - ceSimplex(vec3(p.x - e, p.y, t));
+        float dy = ceSimplex(vec3(p.x, p.y + e, t)) - ceSimplex(vec3(p.x, p.y - e, t));
+        return vec2(dy, -dx) / (2.0 * e);
+    }
+
+    """
+
+    private static let skeletonFunctions = """
+    #define CE_HAND_BONES 20
+    #define CE_BODY_BONES 18
+
+    // Bone `bone` (0 ... CE_HAND_BONES - 1) of the hand skeleton as a pair of
+    // joint indices, wrist to fingertip: ceHandJoint(hand, ceHandBone(i).x)
+    // to ceHandJoint(hand, ceHandBone(i).y).
+    ivec2 ceHandBone(int bone) {
+        const ivec2 bones[20] = ivec2[](
+            ivec2(0, 1), ivec2(1, 2), ivec2(2, 3), ivec2(3, 4),
+            ivec2(0, 5), ivec2(5, 6), ivec2(6, 7), ivec2(7, 8),
+            ivec2(0, 9), ivec2(9, 10), ivec2(10, 11), ivec2(11, 12),
+            ivec2(0, 13), ivec2(13, 14), ivec2(14, 15), ivec2(15, 16),
+            ivec2(0, 17), ivec2(17, 18), ivec2(18, 19), ivec2(19, 20)
+        );
+        return bones[clamp(bone, 0, 19)];
+    }
+
+    // Bone `bone` (0 ... CE_BODY_BONES - 1) of the body skeleton as a pair of
+    // joint indices into ceBodyJoint: face, arms, spine, legs.
+    ivec2 ceBodyBone(int bone) {
+        const ivec2 bones[18] = ivec2[](
+            ivec2(0, 1), ivec2(0, 2), ivec2(1, 3), ivec2(2, 4), ivec2(5, 0),
+            ivec2(5, 6), ivec2(6, 8), ivec2(8, 10),
+            ivec2(5, 7), ivec2(7, 9), ivec2(9, 11),
+            ivec2(5, 12), ivec2(12, 13), ivec2(13, 15), ivec2(15, 17),
+            ivec2(12, 14), ivec2(14, 16), ivec2(16, 18)
+        );
+        return bones[clamp(bone, 0, 17)];
+    }
+
+    """
+
+    private static let geometryResources = """
+    // Geometry stage data. The draw is uVerticesPerItem vertices for each of
+    // uCount items; the simulation state holds one texel per item and slot.
+    layout(std140, binding = 25) uniform CEGeometry {
+        int   uCount;           // items drawn (and simulated)
+        int   uVerticesPerItem; // vertices drawn per item
+        int   uSimFrame;        // frames simulated since the last reset
+        int   uSubstep;         // 0 ... uSubsteps - 1 within this frame
+        int   uSubsteps;        // simulation steps per frame
+        int   uStateSlots;      // vec4 slots per item; 0 without simulation
+        ivec2 uStateSize;       // texels of each state slot
+        float uSimDelta;        // uTimeDelta / uSubsteps
+    };
+
+    // Simulation state, one array slice per slot, 32-bit float. Reads the
+    // latest completed step.
+    layout(binding = 26) uniform sampler2DArray uState;
+
+    // State slot `slot` of item `index`. Reads vec4(0) for indices outside
+    // 0 ... uCount - 1, for missing slots, and without a simulation pass.
+    vec4 ceState(int slot, int index) {
+        if (slot < 0 || slot >= uStateSlots || index < 0 || index >= uCount) { return vec4(0.0); }
+        ivec2 texel = ivec2(index % uStateSize.x, index / uStateSize.x);
+        return texelFetch(uState, ivec3(texel, slot), 0);
+    }
+
+    """
+
+    private static let simulationFunctions = """
+    // The item this invocation updates.
+    #define ceItemIndex (int(gl_FragCoord.y) * uStateSize.x + int(gl_FragCoord.x))
+
+    """
+
+    private static let vertexFunctions = """
+    #define ceItemIndex gl_InstanceIndex
+    #define ceVertexIndex gl_VertexIndex
+
+    // Places this vertex at `uv`, in the same space as vUV: (0, 0) top-left,
+    // (1, 1) bottom-right.
+    void ceEmit(vec2 uv) {
+        gl_Position = vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 0.0, 1.0);
+    }
+
+    // Corner `vertex` (0 ... 5) of a quad drawn as two triangles, in [-1, 1].
+    // Six vertices per item and ceEmit(center + ceQuadCorner(ceVertexIndex)
+    // * radius / uResolution) give a camera-facing square `radius` px wide.
+    vec2 ceQuadCorner(int vertex) {
+        const vec2 corners[6] = vec2[](
+            vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(-1.0, 1.0),
+            vec2(-1.0, 1.0), vec2(1.0, -1.0), vec2(1.0, 1.0)
+        );
+        return corners[clamp(vertex, 0, 5)];
+    }
+
+    // Center of cell `index` of a `cells.x` x `cells.y` grid over the frame,
+    // row by row from the top-left, in vUV space.
+    vec2 ceGridPoint(int index, ivec2 cells) {
+        return (vec2(index % cells.x, index / cells.x) + 0.5) / vec2(cells);
+    }
+
+    // Vertex `vertex` of a mesh covering the frame with `cells.x` x `cells.y`
+    // quads, six vertices (two triangles) each, in vUV space. Draw it as
+    // Triangles with 6 * cells.x * cells.y vertices.
+    vec2 ceGridVertex(int vertex, ivec2 cells) {
+        int quad = vertex / 6;
+        vec2 corner = ceQuadCorner(vertex % 6) * 0.5 + 0.5;
+        return (vec2(quad % cells.x, quad / cells.x) + corner) / vec2(cells);
+    }
+
+    #define main ceUserMain
+
+    """
+
+    private static func lineCount(of text: String) -> Int {
+        text.components(separatedBy: "\n").count - 1
+    }
+
+    static let fullscreenPreludeLineCount = lineCount(of: prelude)
 
     private static var initialized = false
     private static let initLock = NSLock()
 
-    static func compile(userSource: String) throws -> ShaderCompileOutput {
+    /// Compiles one user source file with the prelude for `kind`. `file`
+    /// tags every diagnostic. `references` are the stage-name slots taken by
+    /// the stage's other files, so one name maps to one slot across all of
+    /// them; the output's `stageReferences` includes them.
+    static func compile(
+        userSource: String,
+        prelude kind: ShaderPrelude = .fullscreen,
+        file: ShaderFile = .fragment,
+        references: [StageReference] = []
+    ) throws -> ShaderCompileOutput {
+        do {
+            return try compileUntagged(userSource: userSource, kind: kind, file: file, references: references)
+        } catch let error as ShaderCompileError {
+            throw ShaderCompileError(diagnostics: error.diagnostics.map { $0.inFile(file) })
+        }
+    }
+
+    private static func compileUntagged(
+        userSource: String,
+        kind: ShaderPrelude,
+        file: ShaderFile,
+        references: [StageReference]
+    ) throws -> ShaderCompileOutput {
         initLock.lock()
         if !initialized {
             guard st_initialize() == 0 else {
@@ -332,32 +768,42 @@ enum ShaderCompiler {
 
         // Strip a user-provided #version line; the prelude supplies it.
         var source = userSource
-        var strippedVersionLine = false
         let lines = source.components(separatedBy: "\n")
         if let first = lines.first, first.trimmingCharacters(in: .whitespaces).hasPrefix("#version") {
             source = (["// #version supplied by prelude"] + lines.dropFirst()).joined(separator: "\n")
-            strippedVersionLine = true
-            _ = strippedVersionLine
         }
 
-        let rewrite = rewritingStageNames(in: source)
+        let rewrite = rewritingStageNames(in: source, file: file, existing: references)
         source = rewrite.source
 
-        let fullSource = prelude + source
+        let kindPrelude = kind == .fullscreen ? prelude : makePrelude(for: kind)
+        var fullSource = kindPrelude + source
+        if kind == .geometryVertex {
+            fullSource += vertexEpilogue
+        }
+        let stage = kind == .geometryVertex ? Int32(ST_STAGE_VERTEX) : Int32(ST_STAGE_FRAGMENT)
 
         var mslOut: UnsafeMutablePointer<CChar>?
         var reflectionOut: UnsafeMutablePointer<CChar>?
         var logOut: UnsafeMutablePointer<CChar>?
 
-        let status = st_compile_fragment(fullSource, &mslOut, &reflectionOut, &logOut)
+        let status = st_compile(fullSource, stage, &mslOut, &reflectionOut, &logOut)
         defer {
             st_string_free(mslOut)
             st_string_free(reflectionOut)
             st_string_free(logOut)
         }
 
-        let log = logOut.map { String(cString: $0) } ?? ""
-        var diagnostics = parseDiagnostics(log: log) + rewrite.diagnostics
+        var log = logOut.map { String(cString: $0) } ?? ""
+        if kind == .geometryVertex {
+            // The prelude renames the user's main; report it by its own name.
+            log = log.replacingOccurrences(of: "ceUserMain", with: "main")
+        }
+        var diagnostics = parseDiagnostics(
+            log: log,
+            preludeLineCount: lineCount(of: kindPrelude),
+            userLineCount: lineCount(of: source) + 1
+        ) + rewrite.diagnostics
 
         guard status == 0, let mslOut, let reflectionOut else {
             diagnostics.append(contentsOf: ParamMetadataParser.parse(from: userSource).diagnostics)
@@ -377,7 +823,7 @@ enum ShaderCompiler {
         return ShaderCompileOutput(
             msl: msl,
             reflection: reflection,
-            diagnostics: diagnostics.filter { $0.severity == .warning },
+            diagnostics: diagnostics.filter { $0.severity == .warning }.map { $0.inFile(file) },
             stageReferences: rewrite.references
         )
     }
@@ -392,9 +838,11 @@ enum ShaderCompiler {
     /// current index. The rewrite stays on the same line, so diagnostics keep
     /// their lines.
     static func rewritingStageNames(
-        in source: String
+        in source: String,
+        file: ShaderFile = .fragment,
+        existing: [StageReference] = []
     ) -> (source: String, references: [StageReference], diagnostics: [ShaderDiagnostic]) {
-        var references: [StageReference] = []
+        var references = existing
         var diagnostics: [ShaderDiagnostic] = []
         var rewritten: [String] = []
 
@@ -415,7 +863,7 @@ enum ShaderCompiler {
                     slot = existing.slot
                 } else if references.count < maxStageReferences {
                     slot = references.count
-                    references.append(StageReference(name: name, slot: slot, line: lineNumber))
+                    references.append(StageReference(name: name, slot: slot, line: lineNumber, file: file))
                 } else {
                     diagnostics.append(ShaderDiagnostic(
                         line: lineNumber,
@@ -525,7 +973,11 @@ enum ShaderCompiler {
 
     /// Parses glslang and Metal compiler logs and maps line numbers past
     /// the injected prelude back to the user's source.
-    static func parseDiagnostics(log: String) -> [ShaderDiagnostic] {
+    static func parseDiagnostics(
+        log: String,
+        preludeLineCount: Int = ShaderCompiler.fullscreenPreludeLineCount,
+        userLineCount: Int = .max
+    ) -> [ShaderDiagnostic] {
         var diagnostics: [ShaderDiagnostic] = []
         let glslangPattern = /(ERROR|WARNING):\s+\d+:(\d+):\s*(.*)/
         let metalPattern = /(?:^|\n)[^:\n]+:(\d+):\d+:\s*(error|warning):\s*([^\n]+)/
@@ -540,7 +992,7 @@ enum ShaderCompiler {
                 let message = String(match.3)
                 if isSummaryMessage(message) { continue }
                 diagnostics.append(ShaderDiagnostic(
-                    line: userLine >= 1 ? userLine : nil,
+                    line: userLine >= 1 && userLine <= userLineCount ? userLine : nil,
                     message: message,
                     severity: severity
                 ))

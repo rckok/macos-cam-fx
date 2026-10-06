@@ -137,12 +137,16 @@ enum GLSLSyntaxHighlighter {
         // Injected by the prelude
         "ceHistory", "ceHandJoint", "ceBodyJoint", "ceStageTexture", "ceSelfTexture",
         "ceDiscBlur", "ceGauss3x3", "ceNoise",
+        "ceHash", "ceHash4", "ceSimplex", "ceFbm", "ceCurlNoise", "ceHandBone", "ceBodyBone",
+        // Geometry stages
+        "ceEmit", "ceQuadCorner", "ceGridPoint", "ceGridVertex", "ceState",
     ]
 
     /// Variables and constants visible to every stage shader: GLSL built-ins
     /// plus everything `ShaderCompiler.prelude` injects.
     static let builtinSymbols: Set<String> = [
         "gl_FragCoord", "gl_FrontFacing", "gl_PointCoord", "gl_FragDepth",
+        "gl_Position", "gl_PointSize", "gl_VertexIndex", "gl_InstanceIndex",
         // Prelude I/O and textures
         "vUV", "outColor", "uPrev", "uFrames", "uStageTextures",
         // CEStages members
@@ -155,7 +159,12 @@ enum GLSLSyntaxHighlighter {
         "uFaceLeftEye", "uFaceRightEye", "uFaceMouth",
         "uHandCount", "uHandInfo", "uHandJoints",
         "uBodyCount", "uBodyInfo", "uBodyJoints",
+        // Geometry stages
+        "ceItemIndex", "ceVertexIndex", "vColor", "vData0", "vData1",
+        "outState0", "outState1", "outState2", "outState3", "uState",
+        "uCount", "uVerticesPerItem", "uSimFrame", "uSubstep", "uSubsteps", "uStateSlots", "uStateSize", "uSimDelta",
         // Prelude #defines
+        "CE_HAND_BONES", "CE_BODY_BONES",
         "CE_MAX_FACES", "CE_MAX_HANDS", "CE_HAND_JOINTS", "CE_MAX_STAGE_REFS",
         "CE_MAX_BODIES", "CE_BODY_JOINTS",
         "CE_WRIST",
