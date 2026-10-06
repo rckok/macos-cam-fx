@@ -241,6 +241,135 @@ struct StageTextureBinding: Identifiable, Equatable {
     var id: String { name }
 }
 
+/// What a stage draws. Chosen when the stage is created and fixed after.
+enum StageKind: String, Codable {
+    /// One fullscreen fragment shader pass.
+    case fragment
+    /// Geometry drawn by a vertex and a fragment shader, optionally driven by
+    /// a simulation pass whose state lives in 32-bit float textures.
+    case geometry
+
+    var title: String {
+        switch self {
+        case .fragment: return "Fragment Stage"
+        case .geometry: return "Geometry Stage"
+        }
+    }
+
+    /// The shader files a stage of this kind edits, in tab order.
+    func files(simulation: Bool) -> [ShaderFile] {
+        switch self {
+        case .fragment: return [.fragment]
+        case .geometry: return simulation ? [.simulation, .vertex, .fragment] : [.vertex, .fragment]
+        }
+    }
+}
+
+enum GeometryPrimitive: String, Codable, CaseIterable, Identifiable {
+    case points
+    case lines
+    case lineStrip
+    case triangles
+    case triangleStrip
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .points: return "Points"
+        case .lines: return "Lines"
+        case .lineStrip: return "Line Strip"
+        case .triangles: return "Triangles"
+        case .triangleStrip: return "Triangle Strip"
+        }
+    }
+}
+
+/// What a geometry stage's texture holds before it draws, each frame.
+enum GeometryStartFrom: String, Codable, CaseIterable, Identifiable {
+    /// Transparent black.
+    case transparent
+    /// The previous stage's output, the same image `uPrev` samples.
+    case previousStage
+    /// This stage's own output from the previous frame, so drawing accumulates.
+    case ownLastFrame
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .transparent: return "Transparent"
+        case .previousStage: return "Previous Stage"
+        case .ownLastFrame: return "Own Last Frame"
+        }
+    }
+}
+
+/// How a geometry stage's fragments combine with what is already there.
+enum GeometryBlend: String, Codable, CaseIterable, Identifiable {
+    case replace
+    case alpha
+    case additive
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .replace: return "Replace"
+        case .alpha: return "Alpha"
+        case .additive: return "Additive"
+        }
+    }
+}
+
+/// The stage-level controls of a geometry stage, saved in stage.json.
+struct GeometrySettings: Codable, Equatable {
+    static let countRange = 1...4_194_304
+    static let verticesPerItemRange = 1...1_048_576
+    static let stateSlotRange = 1...ShaderCompiler.maxStateSlots
+    static let substepRange = 1...8
+
+    var primitive: GeometryPrimitive = .points
+    /// Items drawn, and simulated when the simulation pass is on.
+    var count: Int = 10_000
+    var verticesPerItem: Int = 1
+    var startFrom: GeometryStartFrom = .transparent
+    var blend: GeometryBlend = .alpha
+    var simulation: Bool = false
+    /// vec4 state values per item: `outState0` … `outState3`.
+    var stateSlots: Int = 1
+    /// Simulation steps per rendered frame.
+    var substeps: Int = 1
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = GeometrySettings()
+        primitive = (try? container.decodeIfPresent(GeometryPrimitive.self, forKey: .primitive)) ?? defaults.primitive
+        count = (try? container.decodeIfPresent(Int.self, forKey: .count)) ?? defaults.count
+        verticesPerItem = (try? container.decodeIfPresent(Int.self, forKey: .verticesPerItem)) ?? defaults.verticesPerItem
+        startFrom = (try? container.decodeIfPresent(GeometryStartFrom.self, forKey: .startFrom)) ?? defaults.startFrom
+        blend = (try? container.decodeIfPresent(GeometryBlend.self, forKey: .blend)) ?? defaults.blend
+        simulation = (try? container.decodeIfPresent(Bool.self, forKey: .simulation)) ?? defaults.simulation
+        stateSlots = (try? container.decodeIfPresent(Int.self, forKey: .stateSlots)) ?? defaults.stateSlots
+        substeps = (try? container.decodeIfPresent(Int.self, forKey: .substeps)) ?? defaults.substeps
+        clamp()
+    }
+
+    mutating func clamp() {
+        count = count.clamped(to: Self.countRange)
+        verticesPerItem = verticesPerItem.clamped(to: Self.verticesPerItemRange)
+        stateSlots = stateSlots.clamped(to: Self.stateSlotRange)
+        substeps = substeps.clamped(to: Self.substepRange)
+    }
+
+    /// Changing these needs a recompile; the rest apply on the next frame.
+    func needsRecompile(comparedTo other: GeometrySettings) -> Bool {
+        blend != other.blend || simulation != other.simulation || stateSlots != other.stateSlots
+    }
+}
+
 /// On-disk manifest stored next to shader.frag in each stage folder.
 struct StageManifest: Codable {
     struct Param: Codable {
@@ -316,6 +445,10 @@ struct StageManifest: Codable {
     var name: String
     var params: [String: Param]?
     var textures: [String: TextureBinding]?
+    /// Absent for fragment stages, including every stage written before
+    /// geometry stages existed.
+    var kind: StageKind?
+    var geometry: GeometrySettings?
 }
 
 /// One stage of an effect: a GLSL shader on disk plus runtime compile state.
@@ -330,9 +463,19 @@ final class Stage: Identifiable, ObservableObject {
     /// Shipped with the app. The shader and name are read-only; parameter and
     /// media choices still apply and are persisted in config.json.
     let isBuiltIn: Bool
+    let kind: StageKind
 
     @Published var name: String
+    /// The fragment shader: the whole stage for fragment stages.
     @Published var source: String
+    /// Geometry stages only.
+    @Published var vertexSource: String
+    /// Geometry stages only; empty until the simulation pass is first enabled.
+    @Published var simulationSource: String
+    /// Geometry stages only.
+    @Published var geometry: GeometrySettings
+    /// Bumped to restart the simulation from zeroed state.
+    @Published var simulationResetCount = 0
     @Published var parameters: [StageParameter]
     @Published var textureBindings: [StageTextureBinding]
     /// From the last compile: errors, or warnings when it succeeded.
@@ -363,6 +506,7 @@ final class Stage: Identifiable, ObservableObject {
     /// Prelude-provided samplers that must not appear as media-library pickers.
     static let reservedTextureNames: Set<String> = [
         ShaderReflection.previousOutputSampler, "uFrames", ShaderReflection.stageTexturesSampler,
+        ShaderReflection.stateSampler,
         VisionUniforms.personMatteSampler,
         VisionUniforms.faceMaskSampler,
         VisionUniforms.handMaskSampler,
@@ -375,15 +519,57 @@ final class Stage: Identifiable, ObservableObject {
         source: String,
         parameters: [StageParameter],
         textureBindings: [StageTextureBinding] = [],
-        isBuiltIn: Bool = false
+        isBuiltIn: Bool = false,
+        kind: StageKind = .fragment,
+        vertexSource: String = "",
+        simulationSource: String = "",
+        geometry: GeometrySettings = GeometrySettings()
     ) {
         self.id = id
         self.folderURL = folderURL
         self.isBuiltIn = isBuiltIn
+        self.kind = kind
         self.name = name
         self.source = source
+        self.vertexSource = vertexSource
+        self.simulationSource = simulationSource
+        self.geometry = geometry
         self.parameters = parameters
         self.textureBindings = textureBindings
+    }
+
+    /// The files edited in this stage's tabs, in order.
+    var files: [ShaderFile] {
+        kind.files(simulation: geometry.simulation)
+    }
+
+    func text(of file: ShaderFile) -> String {
+        switch file {
+        case .fragment: return source
+        case .vertex: return vertexSource
+        case .simulation: return simulationSource
+        }
+    }
+
+    func setText(_ text: String, of file: ShaderFile) {
+        switch file {
+        case .fragment: source = text
+        case .vertex: vertexSource = text
+        case .simulation: simulationSource = text
+        }
+    }
+
+    /// Everything a compile depends on. A compile whose input no longer
+    /// matches the stage's by the time it finishes is discarded.
+    var compileInput: StageCompileInput {
+        StageCompileInput(
+            kind: kind,
+            fragmentSource: source,
+            vertexSource: kind == .geometry ? vertexSource : "",
+            simulationSource: kind == .geometry && geometry.simulation ? simulationSource : nil,
+            stateSlots: geometry.stateSlots,
+            blend: geometry.blend
+        )
     }
 
     /// Controls listed on the owning effect as well as on this stage.
@@ -462,6 +648,13 @@ final class Stage: Identifiable, ObservableObject {
                 textureBindings.append(StageTextureBinding(name: name, mediaID: binding.media))
             }
         }
+        // Whether there is a simulation, and its slots, follow the bundled
+        // shaders, which a saved value from an older version may not match.
+        if kind == .geometry, var saved = manifest.geometry {
+            saved.simulation = geometry.simulation
+            saved.stateSlots = geometry.stateSlots
+            geometry = saved
+        }
     }
 
     var manifest: StageManifest {
@@ -485,7 +678,20 @@ final class Stage: Identifiable, ObservableObject {
         return StageManifest(
             name: name,
             params: params,
-            textures: textureManifest.isEmpty ? nil : textureManifest
+            textures: textureManifest.isEmpty ? nil : textureManifest,
+            kind: kind == .geometry ? .geometry : nil,
+            geometry: kind == .geometry ? geometry : nil
         )
     }
+}
+
+/// The inputs of one stage compile; see `Stage.compileInput`.
+struct StageCompileInput: Equatable {
+    var kind: StageKind
+    var fragmentSource: String
+    var vertexSource: String
+    /// Nil while the simulation pass is off.
+    var simulationSource: String?
+    var stateSlots: Int
+    var blend: GeometryBlend
 }
