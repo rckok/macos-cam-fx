@@ -1,0 +1,6 @@
+{
+  "name": "Blur BG",
+  "params": {
+    "blur_background": { "type": "float", "value": 0, "min": 0, "max": 64, "global": true }
+  }
+}
