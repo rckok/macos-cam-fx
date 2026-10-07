@@ -2,7 +2,7 @@
 // and out over their lifetime, and mostly out over the person.
 
 layout(std140, binding = 3) uniform Params {
-    // @metadata(min=1.0 max=8.0 default=2.0)
+    // @metadata(min=1.0 max=8.0 default=1.0)
     float pointSize;
 };
 

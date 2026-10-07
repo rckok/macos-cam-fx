@@ -7,7 +7,7 @@ layout(std140, binding = 3) uniform Params {
     float speed_change;
     // @metadata(min=0.001 max=0.15 default=0.003)
     float max_speed;
-    // @metadata(min=0.001 max=1.0 default=0.6)
+    // @metadata(min=0.001 max=1.0 default=0.1)
     float color_change;
     bool undulateDirection;
 };
@@ -50,8 +50,8 @@ void main() {
         vec4 random = ceHash4(ceItemIndex * 7919 + uSimFrame * 104729 + uSubstep);
         vec2 pos = random.xy;
         vec4 cam = ceHistory(pos, 0);
-        vec2 motion = colorToMotion(cam.rgb, ceHash(ceItemIndex * 7919));
-        outState0 = vec4(position, motion);
+        vec2 motion = colorToMotion(cam.rgb, random.z);//ceHash(ceItemIndex * 7919));
+        outState0 = vec4(pos, motion);
         outState1 = cam;
         return;
     }
