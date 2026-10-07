@@ -3,12 +3,12 @@
   "kind": "geometry",
   "geometry": {
     "primitive": "points",
-    "count": 50000,
+    "count": 150000,
     "verticesPerItem": 1,
     "startFrom": "transparent",
-    "blend": "additive",
+    "blend": "alpha",
     "simulation": true,
-    "stateSlots": 1,
-    "substeps": 2
+    "stateSlots": 2,
+    "substeps": 4
   }
 }
