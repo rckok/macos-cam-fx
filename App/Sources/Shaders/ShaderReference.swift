@@ -134,7 +134,7 @@ enum ShaderReference {
             id: "uTime",
             name: "uTime",
             type: "float",
-            description: "Elapsed time in seconds since the capture stream started."
+            description: "Elapsed time in seconds since the capture stream started, or since Reset in the controls pane."
         ),
         Symbol(
             id: "uTimeDelta",

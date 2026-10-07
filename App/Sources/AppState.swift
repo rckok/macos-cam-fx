@@ -485,6 +485,12 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Starts the active effect over from `uTime` 0, with its feedback
+    /// cleared and every simulation zeroed.
+    func restartEffect() {
+        engine.restart()
+    }
+
     /// Starts the stage's simulation over from zeroed state.
     func resetSimulation(_ stage: Stage) {
         stage.simulationResetCount += 1

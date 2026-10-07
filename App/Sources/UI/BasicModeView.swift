@@ -283,11 +283,22 @@ struct BasicModeView: View {
     /// both modes.
     private var controlsPane: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(state.activeEffect?.name ?? "Controls")
-                .font(.headline)
-                .lineLimit(1)
-                .padding(.horizontal, 16)
-                .padding(.top, 14)
+            HStack(alignment: .firstTextBaseline) {
+                Text(state.activeEffect?.name ?? "Controls")
+                    .font(.headline)
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                Button {
+                    state.restartEffect()
+                } label: {
+                    Label("Reset", systemImage: "arrow.counterclockwise")
+                }
+                .controlSize(.small)
+                .disabled(state.activeEffect == nil)
+                .help("Restart the effect from uTime 0: clears feedback and resets every simulation.")
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 14)
 
             // Hugs its content while it fits, and scrolls once it does not.
             ViewThatFits(in: .vertical) {

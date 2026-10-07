@@ -385,11 +385,11 @@ reads stage textures renders all of its stages.
 | Member | Type | Description |
 | --- | --- | --- |
 | `uResolution` | `vec2` | Output size in pixels (1280 × 720). |
-| `uTime` | `float` | Seconds since the capture stream started. |
+| `uTime` | `float` | Seconds since the capture stream started, or since **Reset** in the controls pane. |
 | `uTimeDelta` | `float` | Seconds since the previous rendered frame. |
 | `uFrameCount` | `int` | Depth **N** of `uFrames` (Settings → Frame History). |
 | `uHeadIndex` | `int` | z-slice index of the newest raw frame (0 … N − 1). |
-| `uFrameNumber` | `int` | Frame counter since the stream started. |
+| `uFrameNumber` | `int` | Frame counter since the stream started, or since **Reset**. |
 
 ### Vision data (bindings 16–21, 24)
 
@@ -553,6 +553,12 @@ is listed on the owning **effect** as well as on the stage — which is what the
 floating controls pane shows, in both modes. Effects made of several stages
 group the borrowed controls under each stage's name.
 
+**Reset** at the top of the pane starts the running effect over: `uTime` and
+`uFrameNumber` count from 0 again, stage textures (and so any feedback) are
+transparent again, and every simulation restarts from zeroed state. The camera
+history in `uFrames` is kept. Effects share one clock, so an effect switched
+to afterwards also counts from that reset.
+
 Sampler uniforms take the same decorator, and `global` is the only key they
 accept — a sampler has no range and no components, so `min`, `max`, `default`
 and `color` are reported as errors on that line:
@@ -640,7 +646,7 @@ for following a leader or reading neighbors.
 
 State starts out zero. `uSimFrame` is 0 on the first frame after a reset —
 the moment to seed it — and **Reset Simulation** in the stage controls starts
-over; so does changing Count or State slots.
+over; so do changing Count or State slots, and **Reset** in the controls pane.
 
 | Symbol | Type | Description |
 | --- | --- | --- |

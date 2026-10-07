@@ -62,6 +62,8 @@ final class RenderEngine {
     private var stageCount: Int = 0
     private var historyDepth: Int = 16
     private var flipHorizontal: Bool = true
+    /// Set by `restart()`, consumed by the next frame.
+    private var restartRequested = false
     /// What the active effect's shaders read, per reflection.
     private var stageVisionFeatures: VisionFeatures = []
     /// `stageVisionFeatures` plus the person matte while a background is set.
@@ -265,6 +267,16 @@ final class RenderEngine {
         lock.unlock()
     }
 
+    /// Starts the active effect over on the next frame: `uTime` and
+    /// `uFrameNumber` from 0, stage textures (feedback) transparent again and
+    /// every simulation from zeroed state. Effects share one clock, so this
+    /// holds for whichever effect is switched to afterwards too.
+    func restart() {
+        lock.lock()
+        restartRequested = true
+        lock.unlock()
+    }
+
     func setFlipHorizontal(_ flip: Bool) {
         lock.lock()
         flipHorizontal = flip
@@ -341,7 +353,17 @@ final class RenderEngine {
         let depth = historyDepth
         let activeVision = visionFeatures
         let background = backgroundTexture
+        let restart = restartRequested
+        restartRequested = false
         lock.unlock()
+
+        if restart {
+            startTime = nil
+            lastFrameTime = nil
+            frameNumber = 0
+            simulationStates.removeAll()
+            stageTexturesNeedClear = true
+        }
 
         guard let frameTexture = makeTexture(from: pixelBuffer) else { return }
 
