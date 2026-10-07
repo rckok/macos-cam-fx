@@ -41,12 +41,17 @@ final class RenderEngine {
     private let flipHR8Pipeline: MTLRenderPipelineState
     private let backgroundCompositePipeline: MTLRenderPipelineState
     private let sampler: MTLSamplerState
+    /// For `uState`: 32-bit float textures are not filterable on every GPU,
+    /// and `ceState` reads exact texels anyway.
+    private let stateSampler: MTLSamplerState
 
     private let visionProcessor: VisionProcessor
     private let handMaskRenderer: HandMaskRenderer
     /// 1x1 zero textures bound when a vision result is not available yet.
     private let fallbackMaskTexture: MTLTexture
     private let fallbackRGBATexture: MTLTexture
+    /// Bound as `uState` for geometry stages without a simulation pass.
+    private let fallbackStateTexture: MTLTexture
 
     private let lock = NSLock()
     private let renderQueue = DispatchQueue(label: "cameraEffects.render", qos: .userInteractive)
@@ -57,6 +62,8 @@ final class RenderEngine {
     private var stageCount: Int = 0
     private var historyDepth: Int = 16
     private var flipHorizontal: Bool = true
+    /// Set by `restart()`, consumed by the next frame.
+    private var restartRequested = false
     /// What the active effect's shaders read, per reflection.
     private var stageVisionFeatures: VisionFeatures = []
     /// `stageVisionFeatures` plus the person matte while a background is set.
@@ -98,6 +105,8 @@ final class RenderEngine {
     private var startTime: CFTimeInterval?
     private var lastFrameTime: CFTimeInterval?
     private var outputPool: CVPixelBufferPool?
+    /// Simulation state of the active effect's geometry stages, by stage ID.
+    private var simulationStates: [String: SimulationState] = [:]
 
     /// Latest fully rendered output texture, for the preview view. Written on
     /// the render queue and read on the main thread, so the reference itself
@@ -169,6 +178,22 @@ final class RenderEngine {
         self.fallbackMaskTexture = try makeFallback(.r8Unorm, 1)
         self.fallbackRGBATexture = try makeFallback(.rgba8Unorm, 4)
 
+        let stateDescriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba32Float, width: 1, height: 1, mipmapped: false
+        )
+        stateDescriptor.textureType = .type2DArray
+        stateDescriptor.arrayLength = 1
+        stateDescriptor.usage = [.shaderRead]
+        guard let fallbackState = device.makeTexture(descriptor: stateDescriptor) else {
+            throw NSError(domain: "CameraEffects", code: 4, userInfo: [NSLocalizedDescriptionKey: "Failed to create fallback texture"])
+        }
+        var zeroState = [Float](repeating: 0, count: 4)
+        fallbackState.replace(
+            region: MTLRegionMake2D(0, 0, 1, 1), mipmapLevel: 0, slice: 0,
+            withBytes: &zeroState, bytesPerRow: 16, bytesPerImage: 16
+        )
+        self.fallbackStateTexture = fallbackState
+
         let samplerDescriptor = MTLSamplerDescriptor()
         samplerDescriptor.minFilter = .linear
         samplerDescriptor.magFilter = .linear
@@ -179,6 +204,16 @@ final class RenderEngine {
             throw NSError(domain: "CameraEffects", code: 3, userInfo: [NSLocalizedDescriptionKey: "Failed to create sampler"])
         }
         self.sampler = sampler
+
+        let stateSamplerDescriptor = MTLSamplerDescriptor()
+        stateSamplerDescriptor.minFilter = .nearest
+        stateSamplerDescriptor.magFilter = .nearest
+        stateSamplerDescriptor.sAddressMode = .clampToEdge
+        stateSamplerDescriptor.tAddressMode = .clampToEdge
+        guard let stateSampler = device.makeSamplerState(descriptor: stateSamplerDescriptor) else {
+            throw NSError(domain: "CameraEffects", code: 3, userInfo: [NSLocalizedDescriptionKey: "Failed to create sampler"])
+        }
+        self.stateSampler = stateSampler
     }
 
     // MARK: Configuration (called from the main thread)
@@ -229,6 +264,16 @@ final class RenderEngine {
     func setHistoryDepth(_ depth: Int) {
         lock.lock()
         historyDepth = max(1, min(depth, 120))
+        lock.unlock()
+    }
+
+    /// Starts the active effect over on the next frame: `uTime` and
+    /// `uFrameNumber` from 0, stage textures (feedback) transparent again and
+    /// every simulation from zeroed state. Effects share one clock, so this
+    /// holds for whichever effect is switched to afterwards too.
+    func restart() {
+        lock.lock()
+        restartRequested = true
         lock.unlock()
     }
 
@@ -308,7 +353,17 @@ final class RenderEngine {
         let depth = historyDepth
         let activeVision = visionFeatures
         let background = backgroundTexture
+        let restart = restartRequested
+        restartRequested = false
         lock.unlock()
+
+        if restart {
+            startTime = nil
+            lastFrameTime = nil
+            frameNumber = 0
+            simulationStates.removeAll()
+            stageTexturesNeedClear = true
+        }
 
         guard let frameTexture = makeTexture(from: pixelBuffer) else { return }
 
@@ -399,7 +454,7 @@ final class RenderEngine {
         // 4. Timing / context uniforms.
         let now = CACurrentMediaTime()
         if startTime == nil { startTime = now }
-        var context = ContextUniforms(
+        let context = ContextUniforms(
             resolution: SIMD2<Float>(Float(outputWidth), Float(outputHeight)),
             time: Float(now - (startTime ?? now)),
             timeDelta: Float(now - (lastFrameTime ?? now)),
@@ -417,6 +472,7 @@ final class RenderEngine {
         //    samples the camera frame through `uPrev`, so nothing carries over
         //    from whichever effect ran before.
         var currentInput: MTLTexture = workingTexture
+        var simulatedStageIDs = Set<String>()
         for running in currentStages {
             guard let scratchTexture, let stageTextures,
                   stageSliceViews.indices.contains(running.index)
@@ -424,91 +480,103 @@ final class RenderEngine {
             running.textureAssets.advanceVideoFrames()
 
             let stage = running.compiled
-            let stagesUniforms = Self.stagesUniformBytes(
-                index: running.index, count: currentStageCount, refs: running.stageRefs
+            let frame = FrameResources(
+                context: context,
+                historyTexture: historyTexture,
+                stageTextures: stageTextures,
+                vision: vision,
+                activeVision: activeVision,
+                faceSlots: faceSlots,
+                facePointSlots: facePointSlots,
+                handSlots: handSlots,
+                bodySlots: bodySlots,
+                stagesUniforms: Self.stagesUniformBytes(
+                    index: running.index, count: currentStageCount, refs: running.stageRefs
+                )
             )
+
+            // Geometry stages: advance the simulation, then draw from its
+            // latest state.
+            var stateTexture: MTLTexture?
+            var geometryUniforms: [Int32]?
+            if let geometry = running.geometry {
+                var simulation: SimulationState?
+                if let pipeline = stage.simulationPipeline, let bindings = stage.simulationBindings,
+                   let state = simulationState(for: running, slots: stage.stateSlots, commandBuffer: commandBuffer) {
+                    simulatedStageIDs.insert(running.stageID)
+                    for substep in 0..<geometry.substeps.clamped(to: GeometrySettings.substepRange) {
+                        encodeSimulationStep(
+                            commandBuffer: commandBuffer,
+                            pipeline: pipeline,
+                            bindings: bindings,
+                            state: state,
+                            running: running,
+                            frame: frame,
+                            previous: currentInput,
+                            geometryUniforms: Self.geometryUniformBytes(
+                                geometry: geometry, state: state, substep: substep, timeDelta: context.timeDelta
+                            )
+                        )
+                    }
+                    simulation = state
+                    stateTexture = state.latest
+                }
+                geometryUniforms = Self.geometryUniformBytes(
+                    geometry: geometry, state: simulation, substep: 0, timeDelta: context.timeDelta
+                )
+                simulation?.frame &+= 1
+            }
 
             let pass = MTLRenderPassDescriptor()
             pass.colorAttachments[0].texture = scratchTexture
             pass.colorAttachments[0].loadAction = .dontCare
             pass.colorAttachments[0].storeAction = .store
+            if let geometry = running.geometry {
+                // Geometry only covers part of the frame; the rest keeps what
+                // the stage starts from.
+                switch geometry.startFrom {
+                case .transparent:
+                    pass.colorAttachments[0].loadAction = .clear
+                    pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+                case .previousStage:
+                    encodeCopy(commandBuffer: commandBuffer, from: currentInput, to: scratchTexture)
+                    pass.colorAttachments[0].loadAction = .load
+                case .ownLastFrame:
+                    encodeCopy(commandBuffer: commandBuffer, from: stageSliceViews[running.index], to: scratchTexture)
+                    pass.colorAttachments[0].loadAction = .load
+                }
+            }
 
             guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { continue }
             encoder.setRenderPipelineState(stage.pipeline)
-
-            for texture in stage.reflection.textures {
-                let source: MTLTexture?
-                switch texture.name {
-                case ShaderReflection.previousOutputSampler: source = currentInput
-                case "uFrames": source = historyTexture
-                case ShaderReflection.stageTexturesSampler: source = stageTextures
-                case VisionUniforms.personMatteSampler:
-                    source = (personMatteValid ? personMatteTexture : nil) ?? fallbackMaskTexture
-                case VisionUniforms.faceMaskSampler:
-                    source = vision.faceMask ?? fallbackRGBATexture
-                case VisionUniforms.handMaskSampler:
-                    source = (activeVision.contains(.handMask) ? handMaskTexture : nil) ?? fallbackMaskTexture
-                default: source = running.textureAssets.texture(named: texture.name)
-                }
-                if let source, texture.mslTexture >= 0 {
-                    encoder.setFragmentTexture(source, index: texture.mslTexture)
-                }
-                if texture.mslSampler >= 0 {
-                    encoder.setFragmentSamplerState(sampler, index: texture.mslSampler)
-                }
+            if let vertexBindings = stage.vertexBindings {
+                bind(
+                    vertexBindings, as: .vertex, encoder: encoder, running: running, frame: frame,
+                    previous: currentInput, geometryUniforms: geometryUniforms, state: stateTexture
+                )
             }
-
-            for block in stage.reflection.uniformBlocks where block.mslBuffer >= 0 {
-                let requiredLength = stage.constantBufferLength(for: block)
-                switch block.name {
-                case "CEContext":
-                    withUnsafeBytes(of: &context) { bytes in
-                        Self.setFragmentBytes(encoder, bytes: bytes, index: block.mslBuffer, requiredLength: requiredLength)
-                    }
-                case "Params":
-                    if let paramsBuffer = stage.paramsBuffer {
-                        encoder.setFragmentBuffer(paramsBuffer, offset: 0, index: block.mslBuffer)
-                    }
-                case ShaderReflection.stagesBlock:
-                    stagesUniforms.withUnsafeBytes { bytes in
-                        Self.setFragmentBytes(encoder, bytes: bytes, index: block.mslBuffer, requiredLength: requiredLength)
-                    }
-                case VisionUniforms.faceBlock:
-                    faceSlots.withUnsafeBytes { bytes in
-                        Self.setFragmentBytes(encoder, bytes: bytes, index: block.mslBuffer, requiredLength: requiredLength)
-                    }
-                case VisionUniforms.facePointsBlock:
-                    facePointSlots.withUnsafeBytes { bytes in
-                        Self.setFragmentBytes(encoder, bytes: bytes, index: block.mslBuffer, requiredLength: requiredLength)
-                    }
-                case VisionUniforms.handsBlock:
-                    handSlots.withUnsafeBytes { bytes in
-                        Self.setFragmentBytes(encoder, bytes: bytes, index: block.mslBuffer, requiredLength: requiredLength)
-                    }
-                case VisionUniforms.bodiesBlock:
-                    bodySlots.withUnsafeBytes { bytes in
-                        Self.setFragmentBytes(encoder, bytes: bytes, index: block.mslBuffer, requiredLength: requiredLength)
-                    }
-                default:
-                    break
-                }
+            bind(
+                stage.fragmentBindings, as: .fragment, encoder: encoder, running: running, frame: frame,
+                previous: currentInput, geometryUniforms: geometryUniforms, state: stateTexture
+            )
+            if let geometry = running.geometry {
+                encoder.drawPrimitives(
+                    type: geometry.primitive.metalPrimitive,
+                    vertexStart: 0,
+                    vertexCount: geometry.verticesPerItem,
+                    instanceCount: geometry.count
+                )
+            } else {
+                encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
             }
-
-            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
             encoder.endEncoding()
 
-            if let blit = commandBuffer.makeBlitCommandEncoder() {
-                blit.copy(
-                    from: scratchTexture, sourceSlice: 0, sourceLevel: 0,
-                    sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
-                    sourceSize: MTLSize(width: outputWidth, height: outputHeight, depth: 1),
-                    to: stageTextures, destinationSlice: running.index, destinationLevel: 0,
-                    destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0)
-                )
-                blit.endEncoding()
-            }
+            encodeCopy(commandBuffer: commandBuffer, from: scratchTexture, to: stageTextures, slice: running.index)
             currentInput = stageSliceViews[running.index]
         }
+        // State belongs to the stages that just ran; anything else was
+        // removed, switched off or is no longer in the active effect.
+        simulationStates = simulationStates.filter { simulatedStageIDs.contains($0.key) }
 
         // 6. Copy the final image into a fresh IOSurface-backed pixel buffer
         //    for the virtual camera sink (always VirtualCamera dimensions).
@@ -630,17 +698,276 @@ final class RenderEngine {
         return SIMD4<Float>(scale.x, scale.y, offset.x, offset.y)
     }
 
+    // MARK: Stage passes
+
+    /// What every stage function of one stage may bind this frame.
+    private struct FrameResources {
+        let context: ContextUniforms
+        let historyTexture: MTLTexture
+        let stageTextures: MTLTexture
+        let vision: VisionSnapshot
+        let activeVision: VisionFeatures
+        let faceSlots: [SIMD4<Float>]
+        let facePointSlots: [SIMD4<Float>]
+        let handSlots: [SIMD4<Float>]
+        let bodySlots: [SIMD4<Float>]
+        let stagesUniforms: [Int32]
+    }
+
+    private enum FunctionStage {
+        case vertex
+        case fragment
+    }
+
+    /// A geometry stage's simulation state: two texture arrays with one
+    /// 32-bit float slice per slot, written alternately so a step never reads
+    /// the texture it writes.
+    private final class SimulationState {
+        let count: Int
+        let slots: Int
+        let width: Int
+        let height: Int
+        let resetCount: Int
+        let textures: [MTLTexture]
+        /// Index into `textures` of the latest completed step.
+        var current = 0
+        /// Frames simulated since the state was created.
+        var frame: Int32 = 0
+
+        var latest: MTLTexture { textures[current] }
+
+        /// The smallest near-square texture with a texel per item.
+        init?(device: MTLDevice, count: Int, slots: Int, resetCount: Int) {
+            let width = max(1, Int(Double(count).squareRoot().rounded(.up)))
+            let height = max(1, (count + width - 1) / width)
+            let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: .rgba32Float, width: width, height: height, mipmapped: false
+            )
+            descriptor.textureType = .type2DArray
+            descriptor.arrayLength = slots
+            descriptor.usage = [.renderTarget, .shaderRead]
+            descriptor.storageMode = .private
+            guard let first = device.makeTexture(descriptor: descriptor),
+                  let second = device.makeTexture(descriptor: descriptor)
+            else { return nil }
+            self.count = count
+            self.slots = slots
+            self.width = width
+            self.height = height
+            self.resetCount = resetCount
+            self.textures = [first, second]
+        }
+    }
+
+    /// The stage's state, created zeroed when it has none yet or when its
+    /// item count, slot count or reset counter changed.
+    private func simulationState(for running: RunningStage, slots: Int, commandBuffer: MTLCommandBuffer) -> SimulationState? {
+        guard let geometry = running.geometry, slots > 0 else { return nil }
+        if let existing = simulationStates[running.stageID],
+           existing.count == geometry.count,
+           existing.slots == slots,
+           existing.resetCount == running.simulationResetCount {
+            return existing
+        }
+        guard let state = SimulationState(
+            device: device, count: geometry.count, slots: slots, resetCount: running.simulationResetCount
+        ) else {
+            simulationStates[running.stageID] = nil
+            return nil
+        }
+        for texture in state.textures {
+            let pass = MTLRenderPassDescriptor()
+            for slot in 0..<slots {
+                pass.colorAttachments[slot].texture = texture
+                pass.colorAttachments[slot].slice = slot
+                pass.colorAttachments[slot].loadAction = .clear
+                pass.colorAttachments[slot].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+                pass.colorAttachments[slot].storeAction = .store
+            }
+            commandBuffer.makeRenderCommandEncoder(descriptor: pass)?.endEncoding()
+        }
+        simulationStates[running.stageID] = state
+        return state
+    }
+
+    /// One step: every item's texel of every slot, read from the latest state
+    /// and written to the other texture, which then becomes the latest.
+    private func encodeSimulationStep(
+        commandBuffer: MTLCommandBuffer,
+        pipeline: MTLRenderPipelineState,
+        bindings: ShaderFunctionBindings,
+        state: SimulationState,
+        running: RunningStage,
+        frame: FrameResources,
+        previous: MTLTexture,
+        geometryUniforms: [Int32]
+    ) {
+        let target = state.textures[1 - state.current]
+        let pass = MTLRenderPassDescriptor()
+        for slot in 0..<state.slots {
+            pass.colorAttachments[slot].texture = target
+            pass.colorAttachments[slot].slice = slot
+            pass.colorAttachments[slot].loadAction = .dontCare
+            pass.colorAttachments[slot].storeAction = .store
+        }
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return }
+        encoder.setRenderPipelineState(pipeline)
+        bind(
+            bindings, as: .fragment, encoder: encoder, running: running, frame: frame,
+            previous: previous, geometryUniforms: geometryUniforms, state: state.latest
+        )
+        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+        encoder.endEncoding()
+        state.current = 1 - state.current
+    }
+
+    /// std140 bytes of the `CEGeometry` block: six ints, an ivec2, a float,
+    /// padded to 48 bytes.
+    private static func geometryUniformBytes(
+        geometry: GeometrySettings,
+        state: SimulationState?,
+        substep: Int,
+        timeDelta: Float
+    ) -> [Int32] {
+        let substeps = geometry.substeps.clamped(to: GeometrySettings.substepRange)
+        let simDelta = timeDelta / Float(substeps)
+        return [
+            Int32(clamping: geometry.count),
+            Int32(clamping: geometry.verticesPerItem),
+            state?.frame ?? 0,
+            Int32(substep),
+            Int32(substeps),
+            Int32(state?.slots ?? 0),
+            Int32(state?.width ?? 0),
+            Int32(state?.height ?? 0),
+            Int32(bitPattern: simDelta.bitPattern),
+            0, 0, 0,
+        ]
+    }
+
+    /// Binds what `bindings` reflects to one function of the current pipeline.
+    private func bind(
+        _ bindings: ShaderFunctionBindings,
+        as function: FunctionStage,
+        encoder: MTLRenderCommandEncoder,
+        running: RunningStage,
+        frame: FrameResources,
+        previous: MTLTexture,
+        geometryUniforms: [Int32]?,
+        state: MTLTexture?
+    ) {
+        func setTexture(_ texture: MTLTexture, at index: Int) {
+            switch function {
+            case .vertex: encoder.setVertexTexture(texture, index: index)
+            case .fragment: encoder.setFragmentTexture(texture, index: index)
+            }
+        }
+        func setSampler(_ sampler: MTLSamplerState, at index: Int) {
+            switch function {
+            case .vertex: encoder.setVertexSamplerState(sampler, index: index)
+            case .fragment: encoder.setFragmentSamplerState(sampler, index: index)
+            }
+        }
+        func setBuffer(_ buffer: MTLBuffer, at index: Int) {
+            switch function {
+            case .vertex: encoder.setVertexBuffer(buffer, offset: 0, index: index)
+            case .fragment: encoder.setFragmentBuffer(buffer, offset: 0, index: index)
+            }
+        }
+        func setBytes<T>(_ values: [T], for block: ShaderReflection.UniformBlock) {
+            values.withUnsafeBytes { bytes in
+                Self.setBytes(
+                    encoder, function: function, bytes: bytes, index: block.mslBuffer,
+                    requiredLength: bindings.constantBufferLength(for: block)
+                )
+            }
+        }
+
+        let vision = frame.vision
+        for texture in bindings.reflection.textures {
+            let source: MTLTexture?
+            var textureSampler = sampler
+            switch texture.name {
+            case ShaderReflection.previousOutputSampler: source = previous
+            case "uFrames": source = frame.historyTexture
+            case ShaderReflection.stageTexturesSampler: source = frame.stageTextures
+            case ShaderReflection.stateSampler:
+                source = state ?? fallbackStateTexture
+                textureSampler = stateSampler
+            case VisionUniforms.personMatteSampler:
+                source = (personMatteValid ? personMatteTexture : nil) ?? fallbackMaskTexture
+            case VisionUniforms.faceMaskSampler:
+                source = vision.faceMask ?? fallbackRGBATexture
+            case VisionUniforms.handMaskSampler:
+                source = (frame.activeVision.contains(.handMask) ? handMaskTexture : nil) ?? fallbackMaskTexture
+            default: source = running.textureAssets.texture(named: texture.name)
+            }
+            if let source, texture.mslTexture >= 0 {
+                setTexture(source, at: texture.mslTexture)
+            }
+            if texture.mslSampler >= 0 {
+                setSampler(textureSampler, at: texture.mslSampler)
+            }
+        }
+
+        for block in bindings.reflection.uniformBlocks where block.mslBuffer >= 0 {
+            switch block.name {
+            case "CEContext":
+                setBytes([frame.context], for: block)
+            case "Params":
+                if let paramsBuffer = bindings.paramsBuffer {
+                    setBuffer(paramsBuffer, at: block.mslBuffer)
+                }
+            case ShaderReflection.stagesBlock:
+                setBytes(frame.stagesUniforms, for: block)
+            case ShaderReflection.geometryBlock:
+                setBytes(geometryUniforms ?? [Int32](repeating: 0, count: 12), for: block)
+            case VisionUniforms.faceBlock:
+                setBytes(frame.faceSlots, for: block)
+            case VisionUniforms.facePointsBlock:
+                setBytes(frame.facePointSlots, for: block)
+            case VisionUniforms.handsBlock:
+                setBytes(frame.handSlots, for: block)
+            case VisionUniforms.bodiesBlock:
+                setBytes(frame.bodySlots, for: block)
+            default:
+                break
+            }
+        }
+    }
+
+    /// Copies all of `source` into `destination` (or one of its slices); both
+    /// are output-sized `bgra8Unorm`.
+    private func encodeCopy(commandBuffer: MTLCommandBuffer, from source: MTLTexture, to destination: MTLTexture, slice: Int = 0) {
+        guard let blit = commandBuffer.makeBlitCommandEncoder() else { return }
+        blit.copy(
+            from: source, sourceSlice: 0, sourceLevel: 0,
+            sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
+            sourceSize: MTLSize(width: outputWidth, height: outputHeight, depth: 1),
+            to: destination, destinationSlice: slice, destinationLevel: 0,
+            destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0)
+        )
+        blit.endEncoding()
+    }
+
     /// Metal constant structs are 16-byte aligned; SPIR-V sizes often are not.
-    private static func setFragmentBytes(
+    private static func setBytes(
         _ encoder: MTLRenderCommandEncoder,
+        function: FunctionStage,
         bytes: UnsafeRawBufferPointer,
         index: Int,
         requiredLength: Int
     ) {
         guard let baseAddress = bytes.baseAddress else { return }
+        func set(_ pointer: UnsafeRawPointer, length: Int) {
+            switch function {
+            case .vertex: encoder.setVertexBytes(pointer, length: length, index: index)
+            case .fragment: encoder.setFragmentBytes(pointer, length: length, index: index)
+            }
+        }
         let length = max(bytes.count, requiredLength)
         if length == bytes.count {
-            encoder.setFragmentBytes(baseAddress, length: bytes.count, index: index)
+            set(baseAddress, length: length)
             return
         }
         var padded = [UInt8](repeating: 0, count: length)
@@ -648,7 +975,7 @@ final class RenderEngine {
             dest.copyMemory(from: UnsafeRawBufferPointer(start: baseAddress, count: min(bytes.count, length)))
         }
         padded.withUnsafeBytes { ptr in
-            encoder.setFragmentBytes(ptr.baseAddress!, length: length, index: index)
+            set(ptr.baseAddress!, length: length)
         }
     }
 
@@ -765,5 +1092,17 @@ final class RenderEngine {
         var pool: CVPixelBufferPool?
         CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, poolAttributes as CFDictionary, &pool)
         outputPool = pool
+    }
+}
+
+private extension GeometryPrimitive {
+    var metalPrimitive: MTLPrimitiveType {
+        switch self {
+        case .points: return .point
+        case .lines: return .line
+        case .lineStrip: return .lineStrip
+        case .triangles: return .triangle
+        case .triangleStrip: return .triangleStrip
+        }
     }
 }

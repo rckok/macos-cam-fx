@@ -123,12 +123,21 @@ struct StageListView: View {
                     .glassChromeButton()
                     .help("Copy this effect and its stages into Custom effects, where they can be edited")
             } else {
-                Button {
-                    state.addStage(toEffect: effect.id)
+                // The type is fixed once a stage exists, so it is picked here.
+                Menu {
+                    Button(StageKind.fragment.title) {
+                        state.addStage(toEffect: effect.id, kind: .fragment)
+                    }
+                    Button(StageKind.geometry.title) {
+                        state.addStage(toEffect: effect.id, kind: .geometry)
+                    }
                 } label: {
                     Label("Add Stage", systemImage: "plus")
                 }
+                .menuStyle(.button)
                 .glassChromeButton()
+                .fixedSize()
+                .help("Add a fragment stage (one fullscreen pass) or a geometry stage (points, lines or triangles, optionally simulated)")
                 Spacer()
             }
         }
@@ -222,6 +231,13 @@ private struct StageRow: View {
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
                 .help("Stage index: read this stage with ceStageTexture(\(index), uv)")
+
+            if stage.kind == .geometry {
+                Image(systemName: "point.3.connected.trianglepath.dotted")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .help(stage.geometry.simulation ? "Geometry stage with a simulation pass" : "Geometry stage")
+            }
 
             Text(stage.name)
                 .lineLimit(1)

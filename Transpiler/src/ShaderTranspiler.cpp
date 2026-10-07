@@ -80,14 +80,24 @@ int st_compile_fragment(const char* glsl_source,
                         char** out_msl,
                         char** out_reflection_json,
                         char** out_log) {
+    return st_compile(glsl_source, ST_STAGE_FRAGMENT, out_msl, out_reflection_json, out_log);
+}
+
+int st_compile(const char* glsl_source,
+               int stage,
+               char** out_msl,
+               char** out_reflection_json,
+               char** out_log) {
     if (out_msl) *out_msl = nullptr;
     if (out_reflection_json) *out_reflection_json = nullptr;
     if (out_log) *out_log = nullptr;
 
+    const EShLanguage language = stage == ST_STAGE_VERTEX ? EShLangVertex : EShLangFragment;
+
     // --- GLSL -> SPIR-V (glslang) ---
-    glslang::TShader shader(EShLangFragment);
+    glslang::TShader shader(language);
     shader.setStrings(&glsl_source, 1);
-    shader.setEnvInput(glslang::EShSourceGlsl, EShLangFragment, glslang::EShClientVulkan, 100);
+    shader.setEnvInput(glslang::EShSourceGlsl, language, glslang::EShClientVulkan, 100);
     shader.setEnvClient(glslang::EShClientVulkan, glslang::EShTargetVulkan_1_1);
     shader.setEnvTarget(glslang::EShTargetSpv, glslang::EShTargetSpv_1_3);
     shader.setAutoMapBindings(true);
@@ -121,7 +131,7 @@ int st_compile_fragment(const char* glsl_source,
     glslang::SpvOptions spvOptions;
     spvOptions.disableOptimizer = true;
     spvOptions.validate = false;
-    glslang::GlslangToSpv(*program.getIntermediate(EShLangFragment), spirv, &spvOptions);
+    glslang::GlslangToSpv(*program.getIntermediate(language), spirv, &spvOptions);
 
     // --- SPIR-V -> MSL (SPIRV-Cross) ---
     try {
@@ -130,6 +140,17 @@ int st_compile_fragment(const char* glsl_source,
         spirv_cross::CompilerMSL::Options mslOptions;
         mslOptions.platform = spirv_cross::CompilerMSL::Options::macOS;
         mslOptions.set_msl_version(2, 3);
+        if (language == EShLangVertex) {
+            // enable_base_index_zero stays off: it emits an undeclared
+            // gl_BaseInstance. Draws are never offset, so plain [[vertex_id]]
+            // and [[instance_id]] already start at zero.
+            //
+            // Points drawn by a shader that never writes gl_PointSize are
+            // otherwise undefined in size on Metal.
+            mslOptions.enable_point_size_builtin = true;
+            mslOptions.enable_point_size_default = true;
+            mslOptions.default_point_size = 1.0f;
+        }
         msl.set_msl_options(mslOptions);
 
         const std::string mslSource = msl.compile();

@@ -330,10 +330,14 @@ final class EffectStore: ObservableObject {
         var name = folder.lastPathComponent
         var parameters: [StageParameter] = []
         var textureBindings: [StageTextureBinding] = []
+        var kind = StageKind.fragment
+        var geometry = GeometrySettings()
 
         let manifestURL = folder.appendingPathComponent(Self.manifestFileName)
         if let manifest = Self.decodeManifest(StageManifest.self, at: manifestURL) {
             name = manifest.name
+            kind = manifest.kind ?? .fragment
+            geometry = manifest.geometry ?? GeometrySettings()
             for (paramName, param) in manifest.params ?? [:] {
                 let type = StageParameter.normalizeReflectionType(
                     param.type ?? inferredType(for: param)
@@ -358,6 +362,10 @@ final class EffectStore: ObservableObject {
             }
         }
 
+        func read(_ file: ShaderFile) -> String {
+            (try? String(contentsOf: folder.appendingPathComponent(file.fileName), encoding: .utf8)) ?? ""
+        }
+
         return Stage(
             id: id ?? folder.lastPathComponent,
             folderURL: folder,
@@ -365,33 +373,48 @@ final class EffectStore: ObservableObject {
             source: source,
             parameters: parameters,
             textureBindings: textureBindings,
-            isBuiltIn: isBuiltIn
+            isBuiltIn: isBuiltIn,
+            kind: kind,
+            vertexSource: kind == .geometry ? read(.vertex) : "",
+            simulationSource: kind == .geometry ? read(.simulation) : "",
+            geometry: geometry
         )
     }
 
     // MARK: Mutations — stages
 
-    func addStage(named requestedName: String, toEffect effectID: String) -> Stage? {
+    func addStage(named requestedName: String, kind: StageKind = .fragment, toEffect effectID: String) -> Stage? {
         guard let effectIndex = effects.firstIndex(where: { $0.id == effectID }) else { return nil }
 
         let folderName = uniqueFolderName(preferring: requestedName)
         let folder = stagesURL.appendingPathComponent(folderName, isDirectory: true)
         do {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            try Self.newStageTemplate.write(
-                to: folder.appendingPathComponent(Self.shaderFileName), atomically: true, encoding: .utf8
-            )
         } catch {
             return nil
         }
 
-        let stage = Stage(
-            id: folderName,
-            folderURL: folder,
-            name: folderName,
-            source: Self.newStageTemplate,
-            parameters: []
-        )
+        let stage: Stage
+        switch kind {
+        case .fragment:
+            stage = Stage(
+                id: folderName,
+                folderURL: folder,
+                name: folderName,
+                source: Self.newStageTemplate,
+                parameters: []
+            )
+        case .geometry:
+            stage = Stage(
+                id: folderName,
+                folderURL: folder,
+                name: folderName,
+                source: Self.newGeometryFragmentTemplate,
+                parameters: [],
+                kind: .geometry,
+                vertexSource: Self.newGeometryVertexTemplate
+            )
+        }
         stages.append(stage)
         updateEffect(at: effectIndex) { $0.stageIDs.append(stage.id) }
 
@@ -480,7 +503,11 @@ final class EffectStore: ObservableObject {
             name: name ?? folderName,
             source: stage.source,
             parameters: stage.parameters,
-            textureBindings: stage.textureBindings
+            textureBindings: stage.textureBindings,
+            kind: stage.kind,
+            vertexSource: stage.vertexSource,
+            simulationSource: stage.simulationSource,
+            geometry: stage.geometry
         )
         stages.append(copy)
         return copy
@@ -623,8 +650,15 @@ final class EffectStore: ObservableObject {
             saveConfigSoon()
             return
         }
-        let shaderURL = stage.folderURL.appendingPathComponent(Self.shaderFileName)
-        try? stage.source.write(to: shaderURL, atomically: true, encoding: .utf8)
+        for file in ShaderFile.allCases {
+            let text = stage.text(of: file)
+            // A simulation never enabled leaves no file behind.
+            guard file == .fragment || (stage.kind == .geometry && !text.isEmpty) else { continue }
+            let url = stage.folderURL.appendingPathComponent(file.fileName)
+            if (try? String(contentsOf: url, encoding: .utf8)) != text {
+                try? text.write(to: url, atomically: true, encoding: .utf8)
+            }
+        }
 
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -686,12 +720,18 @@ final class EffectStore: ObservableObject {
 
     private func reloadChangedShaders() {
         for stage in stages {
-            let shaderURL = stage.folderURL.appendingPathComponent(Self.shaderFileName)
-            guard let diskSource = try? String(contentsOf: shaderURL, encoding: .utf8),
-                  diskSource != stage.source
-            else { continue }
-            stage.source = diskSource
-            externalChange.send(stage)
+            var changed = false
+            for file in stage.files {
+                let url = stage.folderURL.appendingPathComponent(file.fileName)
+                guard let diskSource = try? String(contentsOf: url, encoding: .utf8),
+                      diskSource != stage.text(of: file)
+                else { continue }
+                stage.setText(diskSource, of: file)
+                changed = true
+            }
+            if changed {
+                externalChange.send(stage)
+            }
         }
     }
 
@@ -706,6 +746,107 @@ final class EffectStore: ObservableObject {
     void main() {
         vec4 color = texture(uPrev, vUV);
         outColor = mix(color, vec4(1.0 - color.rgb, color.a), amount);
+    }
+    """
+
+    /// A new geometry stage's Vertex tab: a grid of points sized by the
+    /// brightness of the frame under them.
+    static let newGeometryVertexTemplate = """
+    // Geometry stage, vertex shader: runs Vertices per item times for each of
+    // Count items (both set in the stage controls). Place each vertex with
+    // ceEmit(uv) and hand values to the Fragment tab through vColor, vData0
+    // and vData1. Built-in uniforms are listed behind the editor's `{ }` button.
+
+    layout(std140, binding = 3) uniform Params {
+        // @metadata(min=1.0 max=24.0 default=6.0 global)
+        float pointSize;
+    };
+
+    void main() {
+        // One point per item, on a grid with the frame's aspect ratio.
+        int columns = int(ceil(sqrt(float(uCount) * uResolution.x / uResolution.y)));
+        ivec2 cells = ivec2(columns, (uCount + columns - 1) / columns);
+        vec2 uv = ceGridPoint(ceItemIndex, cells);
+
+        vec4 color = texture(uPrev, uv);
+        float luma = dot(color.rgb, vec3(0.299, 0.587, 0.114));
+        ceEmit(uv);
+        gl_PointSize = pointSize * (0.2 + 0.8 * luma);
+        vColor = vec4(color.rgb, 1.0);
+    }
+    """
+
+    static let newGeometryFragmentTemplate = """
+    // Geometry stage, fragment shader: colors the pixels each point, line or
+    // triangle covers. vColor, vData0 and vData1 arrive from the Vertex tab,
+    // interpolated across the primitive; vUV is the pixel's position.
+
+    void main() {
+        // Round points. gl_PointCoord only applies to Points: remove this line
+        // when drawing lines or triangles.
+        if (length(gl_PointCoord - 0.5) > 0.5) { discard; }
+        outColor = vColor;
+    }
+    """
+
+    /// Replaces the Vertex tab when the simulation pass is first switched on,
+    /// as long as the tab still holds `newGeometryVertexTemplate`.
+    static let particleVertexTemplate = """
+    // Geometry stage, vertex shader: one point per simulated item. Its state,
+    // written by the Simulation tab, is read back with ceState(slot, index).
+
+    layout(std140, binding = 3) uniform Params {
+        // @metadata(min=1.0 max=16.0 default=3.0 global)
+        float pointSize;
+    };
+
+    void main() {
+        vec4 state = ceState(0, ceItemIndex); // xy = position, z = age, w = lifetime
+        float life = clamp(state.z / max(state.w, 0.0001), 0.0, 1.0);
+
+        ceEmit(state.xy);
+        gl_PointSize = pointSize;
+        // Camera color under the particle, fading in and out over its life.
+        vColor = vec4(ceHistory(state.xy, 0).rgb, sin(life * 3.14159265));
+    }
+    """
+
+    /// The Simulation tab when the simulation pass is first switched on: a
+    /// curl-noise flow field that the particle vertex template draws.
+    static let newSimulationTemplate = """
+    // Geometry stage, simulation: runs once per item for every substep, before
+    // the Vertex tab draws. Read the last step with ceState(slot, ceItemIndex)
+    // and write the next one to outState0 (plus outState1 ... for more slots,
+    // set in the stage controls). State starts out zero; uSimFrame is 0 on the
+    // first frame after a reset, the moment to seed it.
+
+    layout(std140, binding = 3) uniform Params {
+        // @metadata(min=0.0 max=0.5 default=0.08 global)
+        float speed;
+        // @metadata(min=0.5 max=10.0 default=3.0)
+        float noiseScale;
+        // @metadata(min=0.5 max=10.0 default=4.0)
+        float lifetime;
+    };
+
+    void main() {
+        vec4 state = ceState(0, ceItemIndex); // xy = position, z = age, w = lifetime
+        bool outside = any(lessThan(state.xy, vec2(0.0))) || any(greaterThan(state.xy, vec2(1.0)));
+
+        if (uSimFrame == 0 || state.z >= state.w || outside) {
+            // (Re)spawn at a random spot. The seed changes every frame so a
+            // respawned particle does not land where it started.
+            vec4 random = ceHash4(ceItemIndex * 7919 + uSimFrame * 104729 + uSubstep);
+            float age = uSimFrame == 0 ? random.z * lifetime : 0.0;
+            outState0 = vec4(random.xy, age, lifetime * (0.5 + random.w));
+            return;
+        }
+
+        // Drift along a slowly changing curl-noise flow field, corrected for the
+        // frame's aspect ratio so the flow is round on screen.
+        vec2 aspect = vec2(uResolution.y / uResolution.x, 1.0);
+        vec2 flow = ceCurlNoise(state.xy / aspect * noiseScale, uTime * 0.1) * aspect;
+        outState0 = vec4(state.xy + flow * speed * uSimDelta, state.z + uSimDelta, state.w);
     }
     """
 }

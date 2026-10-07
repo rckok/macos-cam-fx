@@ -6,6 +6,19 @@ struct EditorView: View {
     @ObservedObject var stage: Stage
     @State private var revealLine: Int?
     @State private var revealNonce = 0
+    /// The tab picked for a geometry stage; nil, or a tab the stage no
+    /// longer has, falls back to its Vertex tab.
+    @State private var chosenFile: ShaderFile?
+
+    private var currentFile: ShaderFile {
+        if let chosenFile, stage.files.contains(chosenFile) { return chosenFile }
+        return stage.kind == .geometry ? .vertex : .fragment
+    }
+
+    /// Diagnostics whose lines belong to the file in the editor.
+    private var fileDiagnostics: [ShaderDiagnostic] {
+        stage.allDiagnostics.filter { $0.file == currentFile }
+    }
 
     private var errorCount: Int {
         stage.allDiagnostics.filter { $0.severity == .error }.count
@@ -58,17 +71,24 @@ struct EditorView: View {
             .frame(maxWidth: .infinity)
             .glassChrome()
 
+            if stage.kind == .geometry {
+                fileTabs
+            }
+
             Color(nsColor: .textBackgroundColor)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .overlay {
+                    let file = currentFile
                     ShaderSourceEditor(
-                        text: stage.source,
-                        diagnostics: stage.allDiagnostics,
+                        text: stage.text(of: file),
+                        diagnostics: fileDiagnostics,
                         revealLine: revealLine,
                         revealNonce: revealNonce,
                         isEditable: !stage.isBuiltIn,
-                        onChange: handleEditorChange
+                        onChange: { handleEditorChange($0, file: file) }
                     )
+                    // One editor per file, so undo never crosses files.
+                    .id(file)
                 }
 
             if !stage.allDiagnostics.isEmpty {
@@ -76,6 +96,9 @@ struct EditorView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         ForEach(stage.allDiagnostics) { diagnostic in
                             Button {
+                                if stage.kind == .geometry {
+                                    chosenFile = diagnostic.file
+                                }
                                 guard let line = diagnostic.line else { return }
                                 revealLine = line
                                 revealNonce += 1
@@ -86,6 +109,10 @@ struct EditorView: View {
                                           : "exclamationmark.triangle.fill")
                                         .foregroundStyle(diagnostic.severity == .error ? .red : .yellow)
                                         .font(.caption)
+                                    if stage.kind == .geometry {
+                                        Text("\(diagnostic.file.title):")
+                                            .font(.caption.bold())
+                                    }
                                     if let line = diagnostic.line {
                                         Text("Line \(line):")
                                             .font(.caption.monospacedDigit().bold())
@@ -98,7 +125,7 @@ struct EditorView: View {
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
-                            .disabled(diagnostic.line == nil)
+                            .disabled(diagnostic.line == nil && stage.kind != .geometry)
                             .help(diagnostic.line == nil ? diagnostic.message : "Jump to line \(diagnostic.line!)")
                         }
                     }
@@ -112,6 +139,39 @@ struct EditorView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onChange(of: stage.id) { _, _ in
+            chosenFile = nil
+        }
+    }
+
+    /// Simulation (while it is on), Vertex and Fragment. A tab with errors
+    /// carries their count.
+    private var fileTabs: some View {
+        Picker("Shader", selection: Binding(
+            get: { currentFile },
+            set: { file in
+                // The new tab's editor would otherwise reveal the last line
+                // jumped to in another file.
+                revealLine = nil
+                chosenFile = file
+            }
+        )) {
+            ForEach(stage.files) { file in
+                Text(tabTitle(for: file)).tag(file)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .fixedSize()
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassChrome()
+    }
+
+    private func tabTitle(for file: ShaderFile) -> String {
+        let errors = stage.allDiagnostics.filter { $0.file == file && $0.severity == .error }.count
+        return errors > 0 ? "\(file.title) (\(errors))" : file.title
     }
 
     @ViewBuilder
@@ -131,10 +191,10 @@ struct EditorView: View {
         }
     }
 
-    private func handleEditorChange(_ newText: String) {
+    private func handleEditorChange(_ newText: String, file: ShaderFile) {
         DispatchQueue.main.async {
-            guard !stage.isBuiltIn, stage.source != newText else { return }
-            stage.source = newText
+            guard !stage.isBuiltIn, stage.text(of: file) != newText else { return }
+            stage.setText(newText, of: file)
             state.scheduleCompile(stage, debounce: true)
         }
     }

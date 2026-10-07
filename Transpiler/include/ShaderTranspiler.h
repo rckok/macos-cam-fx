@@ -40,6 +40,21 @@ int st_compile_fragment(const char* glsl_source,
                         char** out_reflection_json,
                         char** out_log);
 
+/// Shader stages accepted by st_compile.
+enum {
+    ST_STAGE_FRAGMENT = 0,
+    ST_STAGE_VERTEX = 1,
+};
+
+/// Same as st_compile_fragment, for the stage given by `stage`
+/// (ST_STAGE_FRAGMENT or ST_STAGE_VERTEX). The reflection JSON has the same
+/// shape; its Metal indices refer to that stage's argument tables.
+int st_compile(const char* glsl_source,
+               int stage,
+               char** out_msl,
+               char** out_reflection_json,
+               char** out_log);
+
 void st_string_free(char* str);
 
 #ifdef __cplusplus

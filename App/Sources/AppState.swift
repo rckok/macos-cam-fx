@@ -288,7 +288,10 @@ final class AppState: ObservableObject {
                     compiled: entry.compiled,
                     textureAssets: StageTextureAssets(bindings: entry.stage.textureBindings, cache: cache),
                     index: entry.index,
-                    stageRefs: stageRefs[entry.stage.id] ?? []
+                    stageRefs: stageRefs[entry.stage.id] ?? [],
+                    stageID: entry.stage.id,
+                    geometry: entry.stage.kind == .geometry ? entry.stage.geometry : nil,
+                    simulationResetCount: entry.stage.simulationResetCount
                 )
             },
             stageCount: activeStageCount
@@ -302,7 +305,8 @@ final class AppState: ObservableObject {
     /// stage may be observed (indices can be computed at runtime), so all of
     /// them render. Otherwise a stage that never samples `uPrev` overwrites
     /// the whole frame, so everything before it is invisible work and the
-    /// chain starts at the last such stage.
+    /// chain starts at the last such stage. A geometry stage starting from
+    /// the previous stage's output builds on it as if it sampled `uPrev`.
     private func renderedStages(of effect: Effect) -> [ChainEntry] {
         let runnable = effect.stageIDs.enumerated().compactMap { index, stageID -> ChainEntry? in
             guard let stage = store.stage(id: stageID), let compiled = stage.compiled else { return nil }
@@ -311,8 +315,13 @@ final class AppState: ObservableObject {
         if runnable.contains(where: { $0.compiled.reflection.samplesStageTextures }) {
             return runnable
         }
-        let start = runnable.lastIndex { !$0.compiled.reflection.samplesPreviousOutput } ?? runnable.startIndex
+        let start = runnable.lastIndex { !Self.buildsOnPreviousOutput($0.stage, $0.compiled) } ?? runnable.startIndex
         return Array(runnable[start...])
+    }
+
+    private static func buildsOnPreviousOutput(_ stage: Stage, _ compiled: CompiledStage) -> Bool {
+        compiled.reflection.samplesPreviousOutput
+            || (stage.kind == .geometry && stage.geometry.startFrom == .previousStage)
     }
 
     /// Maps the names in `ceStageTexture("Name", ...)` calls to positions in
@@ -345,13 +354,15 @@ final class AppState: ObservableObject {
                 warnings.append(ShaderDiagnostic(
                     line: reference.line,
                     message: "No stage named \"\(reference.name)\" in \(effect.name); ceStageTexture reads transparent black",
-                    severity: .warning
+                    severity: .warning,
+                    file: reference.file
                 ))
             } else if found.count > 1 {
                 warnings.append(ShaderDiagnostic(
                     line: reference.line,
                     message: "\(found.count) stages in \(effect.name) are named \"\(reference.name)\"; using the first (index \(found[0].index))",
-                    severity: .warning
+                    severity: .warning,
+                    file: reference.file
                 ))
             }
         }
@@ -360,10 +371,11 @@ final class AppState: ObservableObject {
 
     // MARK: Mutations — stages
 
-    func addStage(toEffect effectID: String? = nil) {
+    func addStage(toEffect effectID: String? = nil, kind: StageKind = .fragment) {
         let activeCustomID = activeEffect.flatMap { $0.isBuiltIn ? nil : $0.id }
+        let name = kind == .geometry ? "New Geometry Stage" : "New Stage"
         guard let target = effectID ?? activeCustomID ?? store.effects.first?.id,
-              let stage = store.addStage(named: "New Stage", toEffect: target)
+              let stage = store.addStage(named: name, kind: kind, toEffect: target)
         else { return }
         select(.stage(stage.id))
         scheduleCompile(stage, debounce: false)
@@ -446,6 +458,45 @@ final class AppState: ObservableObject {
         store.persist(stage: stage)
     }
 
+    /// Applies new geometry controls. Count, primitive, start and substeps
+    /// take effect on the next frame; blending and the simulation's shape
+    /// are compiled into the stage's pipelines.
+    func setGeometry(_ geometry: GeometrySettings, for stage: Stage) {
+        guard stage.kind == .geometry else { return }
+        var geometry = geometry
+        geometry.clamp()
+        let previous = stage.geometry
+        guard geometry != previous else { return }
+
+        if geometry.simulation && !previous.simulation && !stage.isBuiltIn {
+            if stage.simulationSource.isEmpty {
+                stage.simulationSource = EffectStore.newSimulationTemplate
+            }
+            if stage.vertexSource == EffectStore.newGeometryVertexTemplate {
+                stage.vertexSource = EffectStore.particleVertexTemplate
+            }
+        }
+        stage.geometry = geometry
+        store.persist(stage: stage)
+        if geometry.needsRecompile(comparedTo: previous) {
+            scheduleCompile(stage, debounce: false)
+        } else {
+            rebuildChain()
+        }
+    }
+
+    /// Starts the active effect over from `uTime` 0, with its feedback
+    /// cleared and every simulation zeroed.
+    func restartEffect() {
+        engine.restart()
+    }
+
+    /// Starts the stage's simulation over from zeroed state.
+    func resetSimulation(_ stage: Stage) {
+        stage.simulationResetCount += 1
+        rebuildChain()
+    }
+
     // MARK: Media library
 
     func addMediaAsset(from url: URL) {
@@ -522,14 +573,13 @@ final class AppState: ObservableObject {
     }
 
     private func compile(_ stage: Stage) async {
-        let source = stage.source
+        let input = stage.compileInput
         let device = engine.device
         let vertexFunction = engine.vertexFunction
 
         let result: Result<CompiledStage, Error> = await Task.detached(priority: .userInitiated) {
             do {
-                let output = try ShaderCompiler.compile(userSource: source)
-                let compiled = try CompiledStage(device: device, vertexFunction: vertexFunction, output: output)
+                let compiled = try CompiledStage(device: device, fullscreenVertex: vertexFunction, input: input)
                 return .success(compiled)
             } catch {
                 return .failure(error)
@@ -540,7 +590,7 @@ final class AppState: ObservableObject {
         // inline while a view is still updating and then trip the publish warning.
         DispatchQueue.main.async { [weak self, weak stage] in
             guard let self, let stage else { return }
-            guard stage.source == source else { return }
+            guard stage.compileInput == input else { return }
 
             switch result {
             case .success(let compiled):
