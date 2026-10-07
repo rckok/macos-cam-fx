@@ -364,6 +364,44 @@ struct GeometrySettings: Codable, Equatable {
         substeps = substeps.clamped(to: Self.substepRange)
     }
 
+    /// The settings a built-in stage's user may change, as differences from
+    /// the bundled values. Only these are saved, so a later version of the
+    /// bundle still takes effect for everything the user left alone.
+    /// Simulation and state slots follow the bundled shaders and never differ.
+    struct Changes: Codable, Equatable {
+        var primitive: GeometryPrimitive?
+        var count: Int?
+        var verticesPerItem: Int?
+        var startFrom: GeometryStartFrom?
+        var blend: GeometryBlend?
+        var substeps: Int?
+
+        var isEmpty: Bool { self == Changes() }
+    }
+
+    func changes(from base: GeometrySettings) -> Changes {
+        Changes(
+            primitive: primitive == base.primitive ? nil : primitive,
+            count: count == base.count ? nil : count,
+            verticesPerItem: verticesPerItem == base.verticesPerItem ? nil : verticesPerItem,
+            startFrom: startFrom == base.startFrom ? nil : startFrom,
+            blend: blend == base.blend ? nil : blend,
+            substeps: substeps == base.substeps ? nil : substeps
+        )
+    }
+
+    func applying(_ changes: Changes) -> GeometrySettings {
+        var result = self
+        result.primitive = changes.primitive ?? primitive
+        result.count = changes.count ?? count
+        result.verticesPerItem = changes.verticesPerItem ?? verticesPerItem
+        result.startFrom = changes.startFrom ?? startFrom
+        result.blend = changes.blend ?? blend
+        result.substeps = changes.substeps ?? substeps
+        result.clamp()
+        return result
+    }
+
     /// Changing these needs a recompile; the rest apply on the next frame.
     func needsRecompile(comparedTo other: GeometrySettings) -> Bool {
         blend != other.blend || simulation != other.simulation || stateSlots != other.stateSlots
@@ -448,7 +486,10 @@ struct StageManifest: Codable {
     /// Absent for fragment stages, including every stage written before
     /// geometry stages existed.
     var kind: StageKind?
+    /// Every geometry setting, for user stages and the bundle's own files.
     var geometry: GeometrySettings?
+    /// Built-in stage overrides only: what differs from the bundled settings.
+    var geometryChanges: GeometrySettings.Changes?
 }
 
 /// One stage of an effect: a GLSL shader on disk plus runtime compile state.
@@ -474,6 +515,9 @@ final class Stage: Identifiable, ObservableObject {
     @Published var simulationSource: String
     /// Geometry stages only.
     @Published var geometry: GeometrySettings
+    /// The settings the stage was loaded with: for built-in stages, the
+    /// bundle's, which saved changes are applied to and measured against.
+    let bundledGeometry: GeometrySettings
     /// Bumped to restart the simulation from zeroed state.
     @Published var simulationResetCount = 0
     @Published var parameters: [StageParameter]
@@ -534,6 +578,7 @@ final class Stage: Identifiable, ObservableObject {
         self.vertexSource = vertexSource
         self.simulationSource = simulationSource
         self.geometry = geometry
+        self.bundledGeometry = geometry
         self.parameters = parameters
         self.textureBindings = textureBindings
     }
@@ -648,12 +693,10 @@ final class Stage: Identifiable, ObservableObject {
                 textureBindings.append(StageTextureBinding(name: name, mediaID: binding.media))
             }
         }
-        // Whether there is a simulation, and its slots, follow the bundled
-        // shaders, which a saved value from an older version may not match.
-        if kind == .geometry, var saved = manifest.geometry {
-            saved.simulation = geometry.simulation
-            saved.stateSlots = geometry.stateSlots
-            geometry = saved
+        // A full `geometry` saved by an earlier build is ignored: it was
+        // written after every compile, so it mostly repeats old bundle values.
+        if kind == .geometry, let changes = manifest.geometryChanges {
+            geometry = bundledGeometry.applying(changes)
         }
     }
 
@@ -680,9 +723,14 @@ final class Stage: Identifiable, ObservableObject {
             params: params,
             textures: textureManifest.isEmpty ? nil : textureManifest,
             kind: kind == .geometry ? .geometry : nil,
-            geometry: kind == .geometry ? geometry : nil
+            geometry: kind == .geometry && !isBuiltIn ? geometry : nil,
+            geometryChanges: kind == .geometry && isBuiltIn ? nonEmpty(geometry.changes(from: bundledGeometry)) : nil
         )
     }
+}
+
+private func nonEmpty(_ changes: GeometrySettings.Changes) -> GeometrySettings.Changes? {
+    changes.isEmpty ? nil : changes
 }
 
 /// The inputs of one stage compile; see `Stage.compileInput`.
