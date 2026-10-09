@@ -695,7 +695,12 @@ brightness. Switching **Simulation** on fills the Simulation tab with a
 curl-noise flow field, and — if the Vertex tab still holds the template — swaps
 it for one drawing a point per simulated particle. The built-in **Flow Field**
 effect goes further: particles that stream around the person, feeding a
-feedback trail stage.
+feedback trail stage. **Fluid** uses the state as a grid instead: each item
+is one cell of a single-pass compressible fluid (velocity, density and curl in
+one slot, dye in the other), seeded with the camera frame on the first frame
+and stirred by `ceCameraMotion()`, then drawn as one quad per cell. **Count**
+sets the grid's resolution (shaped like the frame), and **Reset Simulation**
+repaints the dye from the camera.
 
 The simulation is a fragment pass rather than a Metal compute kernel: one
 invocation per item, writing every slot at once, covers particle simulations

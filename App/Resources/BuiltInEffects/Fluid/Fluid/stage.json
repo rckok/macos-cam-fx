@@ -1,0 +1,14 @@
+{
+  "name": "Fluid",
+  "kind": "geometry",
+  "geometry": {
+    "primitive": "triangles",
+    "count": 36864,
+    "verticesPerItem": 6,
+    "startFrom": "transparent",
+    "blend": "replace",
+    "simulation": true,
+    "stateSlots": 2,
+    "substeps": 2
+  }
+}
