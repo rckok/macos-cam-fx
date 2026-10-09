@@ -139,6 +139,7 @@ enum GLSLSyntaxHighlighter {
         "ceHistory", "ceHandJoint", "ceBodyJoint", "ceStageTexture", "ceSelfTexture",
         "ceDiscBlur", "ceDiscBlurArray", "ceGauss3x3", "ceNoise",
         "ceHash", "ceHash4", "ceSimplex", "ceFbm", "ceCurlNoise", "ceHandBone", "ceBodyBone",
+        "ceMotion", "ceCameraMotion",
         // Geometry stages
         "ceEmit", "ceQuadCorner", "ceGridPoint", "ceGridVertex", "ceState",
     ]

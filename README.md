@@ -325,6 +325,35 @@ stages instead — one blurring horizontally, the next vertically through
 that may take a few frames to settle (backgrounds, glows), feed the result
 back: `mix(ceSelfTexture(vUV), ceDiscBlur(uPrev, vUV, 6.0, 8, 1.0), 0.3)`.
 
+### Motion
+
+Available in every stage and, in geometry stages, every tab.
+
+| Symbol | Type | Description |
+| --- | --- | --- |
+| `ceMotion(current, previous, uv, radius)` | `vec2` | Apparent motion at `uv` from `previous` to `current`, two consecutive frames in any `sampler2D`s. `radius` in pixels sets the window and the largest motion it follows, about `radius` pixels per frame (16–32 suits a webcam). |
+| `ceCameraMotion(uv, radius)` | `vec2` | `ceMotion` between the two newest camera frames, `ceHistory(uv, 1)` and `ceHistory(uv, 0)`. Zero while Frame History is 1. |
+
+Both return a velocity in vUV units per second — x to the right, y down —
+so adding it to a particle's velocity pushes the particle the way the scene
+moved under it. It is Lucas–Kanade optical flow on luminance, sampled on a
+7 × 7 grid spanning `radius` with one refinement step, 147 texture reads per
+call: cheap per particle, but heavy for every pixel of a full-resolution
+pass. Flat, featureless areas read as zero, and along a plain edge only the
+motion across the edge can be seen. The camera history is a 3D texture, which
+GLSL cannot pass as a `sampler2D` — that is why the camera has its own
+function.
+
+```glsl
+// Simulation tab: state slot 0 = position (xy) and velocity (zw).
+void main() {
+    vec4 s = ceState(0, ceItemIndex);
+    // Drag plus impulse; settles at the scene's own speed while it moves.
+    vec2 velocity = s.zw * 0.95 + ceCameraMotion(s.xy, 24.0) * 0.05;
+    outState0 = vec4(s.xy + velocity * uSimDelta, velocity);
+}
+```
+
 ### Stage textures and feedback
 
 Each stage of the active effect owns one slice of `uStageTextures`, a
