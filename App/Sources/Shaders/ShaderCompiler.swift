@@ -253,6 +253,7 @@ enum ShaderCompiler {
             parts.append(geometryFragmentInterface)
         }
         parts.append(resources)
+        parts.append(mathFunctions)
         parts.append(noiseFunctions)
         parts.append(skeletonFunctions)
         if kind.isGeometry {
@@ -476,6 +477,27 @@ enum ShaderCompiler {
         }
         return sum / max(total, 0.0001);
     }
+    
+    // Single-pass disc blur: `taps` samples on a golden-angle spiral, rotated
+    // per pixel so undersampling reads as fine grain rather than rings.
+    // `radius` is in pixels; 16-32 taps is plenty. falloff 0.0 gives a flat
+    // disc (bokeh), 1.0 a soft, roughly Gaussian look. Cost = taps reads.
+    vec4 ceDiscBlur3D(sampler3D tex, vec2 uv, int index, float radius, int taps, float falloff) {
+        const float goldenAngle = 2.39996323;
+        float rotation = ceNoise(uv * uResolution) * 6.28318531;
+        vec2 scale = radius / uResolution;
+        vec4 sum = vec4(0.0);
+        float total = 0.0;
+        for (int i = 0; i < 128; i++) {
+            if (i >= taps) { break; }
+            float r = sqrt((float(i) + 0.5) / float(taps));
+            float a = float(i) * goldenAngle + rotation;
+            float w = 1.0 - falloff * r * r;
+            sum += texture(tex, vec3(uv + vec2(cos(a), sin(a)) * r * scale, float(index))) * w;
+            total += w;
+        }
+        return sum / max(total, 0.0001);
+    }
 
     // Exact 3x3 Gaussian ([1 2 1] x [1 2 1] / 16) from four bilinear reads at
     // half-texel offsets. `spread` = 1.0 for one texel; larger values widen
@@ -488,6 +510,73 @@ enum ShaderCompiler {
         );
     }
 
+    """
+    
+    private static let mathFunctions = """
+    #define PI 3.1415926536
+    #define TWO_PI 6.2831853072
+    
+    float degToRad(float deg) {
+        return deg * PI / 180.0;
+    }
+    
+    float radToDeg(float deg) {
+        return deg * 180.0 / PI;
+    }
+
+    float wrap(float a, float low, float high) {
+        if (a > high) return a - (high - low);
+        if (a < low) return a + (high - low);
+        return a;
+    }
+
+    vec2 wrap2(vec2 a, vec2 low, vec2 high) {
+        return vec2(wrap(a.x, low.x, high.x), wrap(a.y, low.y, high.y));
+    }
+    
+    vec3 wrap3(vec3 a, vec3 low, vec3 high) {
+        return vec3(wrap(a.x, low.x, high.x), wrap(a.y, low.y, high.y), wrap(a.z, low.z, high.z));
+    }
+    
+    vec4 wrap4(vec4 a, vec4 low, vec4 high) {
+        return vec4(wrap(a.x, low.x, high.x), wrap(a.y, low.y, high.y), wrap(a.z, low.z, high.z), wrap(a.w, low.w, high.w));
+    }
+    
+    float map(float value, float min1, float max1, float min2, float max2) {
+      return min2 + (value - min1) * (max2 - min2) / (max1 - min1);
+    }
+
+    vec2 map2(vec2 value, vec2 min1, vec2 max1, vec2 min2, vec2 max2) {
+      return min2 + (value - min1) * (max2 - min2) / (max1 - min1);
+    }
+    
+    vec3 map3(vec3 value, vec3 min1, vec3 max1, vec3 min2, vec3 max2) {
+      return min2 + (value - min1) * (max2 - min2) / (max1 - min1);
+    }
+    
+    vec4 map4(vec4 value, vec4 min1, vec4 max1, vec4 min2, vec4 max2) {
+      return min2 + (value - min1) * (max2 - min2) / (max1 - min1);
+    }
+
+    float luminance(vec3 color) {
+        return 0.21 * color.r + 0.72 * color.g + 0.07 * color.b;
+    }
+    
+    vec3 rgb2hsv(vec3 c) {
+        vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+        vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
+        vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+
+        float d = q.x - min(q.w, q.y);
+        float e = 1.0e-10;
+        return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+    }
+
+    vec3 hsv2rgb(vec3 c) {
+        vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+        vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+        return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+    }
     """
 
     private static let noiseFunctions = """

@@ -26,6 +26,7 @@ enum ShaderReference {
     static let categories: [Category] = [
         Category(id: "io", title: "Inputs / outputs", symbols: io),
         Category(id: "textures", title: "Textures", symbols: textures),
+        Category(id: "math", title: "Math", symbols: math),
         Category(
             id: "stages",
             title: "Stage textures (bindings 22–23)",
@@ -88,6 +89,87 @@ enum ShaderReference {
             type: "uniform sampler3D",
             description: "A ring buffer of the last N raw camera frames. The z axis is history: slice 0 is the oldest retained frame, slice N − 1 is the newest. Prefer ceHistory() over manual z indexing."
         ),
+    ]
+    
+    static let math: [Symbol] = [
+        Symbol(
+            id: "degToRad",
+            name: "degToRad(float deg)",
+            type: "float",
+            description: "Convert degrees to radians"
+        ),
+        Symbol(
+            id: "radToDeg",
+            name: "radToDeg(float deg)",
+            type: "float",
+            description: "Convert radians to degrees"
+        ),
+        Symbol(
+            id: "wrap",
+            name: "wrap(float a, float low, float high)",
+            type: "float",
+            description: "Wrap a float around a range"
+        ),
+        Symbol(
+            id: "wrap2",
+            name: "wrap2(vec2 a, vec2 low, vec2 high)",
+            type: "vec2",
+            description: "Wrap a vec2 around a range"
+        ),
+        Symbol(
+            id: "wrap3",
+            name: "wrap3(vec3 a, vec3 low, vec3 high)",
+            type: "vec3",
+            description: "Wrap a vec3 around a range"
+        ),
+        Symbol(
+            id: "wrap4",
+            name: "wrap4(vec4 a, vec4 low, vec4 high)",
+            type: "vec4",
+            description: "Wrap a vec3 around a range"
+        ),
+        Symbol(
+            id: "map",
+            name: "map(float value, float min1, float max1, float min2, float max2)",
+            type: "float",
+            description: "Remap a float from one range to another"
+        ),
+        Symbol(
+            id: "map2",
+            name: "map2(vec2 value, vec2 min1, vec2 max1, vec2 min2, vec2 max2)",
+            type: "vec2",
+            description: "Remap a vec2 from one range to another"
+        ),
+        Symbol(
+            id: "map3",
+            name: "map3(vec3 value, vec3 min1, vec3 max1, vec3 min2, vec3 max2)",
+            type: "vec3",
+            description: "Remap a vec3 from one range to another"
+        ),
+        Symbol(
+            id: "map4",
+            name: "map4(vec4 value, vec4 min1, vec4 max1, vec4 min2, vec4 max2)",
+            type: "vec4",
+            description: "Remap a vec4 from one range to another"
+        ),
+        Symbol(
+            id: "luminance",
+            name: "luminance(vec3 color)",
+            type: "float",
+            description: "Calculate the luminance of an RGB value"
+        ),
+        Symbol(
+            id: "rgb2hsv",
+            name: "rgb2hsv(vec3 c)",
+            type: "vec3",
+            description: "Convert RGB to HSV"
+        ),
+        Symbol(
+            id: "hsv2rgb",
+            name: "hsv2rgb(vec3 c)",
+            type: "vec3",
+            description: "Convert HSV to RGB"
+        )
     ]
 
     static let stages: [Symbol] = [
@@ -273,6 +355,12 @@ enum ShaderReference {
             name: "ceDiscBlur(tex, uv, radius, taps, falloff)",
             type: "vec4",
             description: "Single-pass disc blur of any sampler2D (uPrev, a media texture, …). `radius` in pixels; `taps` sets quality and cost (16–32 is plenty). `falloff` 0.0 gives a flat bokeh disc, 1.0 a soft Gaussian-like look. Samples lie on a per-pixel-rotated golden-angle spiral, so low tap counts show as fine grain rather than rings. For large true-Gaussian blurs prefer two stages (horizontal, then vertical through uPrev)."
+        ),
+        Symbol(
+            id: "ceDiscBlur3D",
+            name: "ceDiscBlur3D(tex, uv, index, radius, taps, falloff)",
+            type: "vec4",
+            description: "Single-pass disc blur of any sampler3D (e.g. uFrames). `index` specifies the frame to use. radius` in pixels; `taps` sets quality and cost (16–32 is plenty). `falloff` 0.0 gives a flat bokeh disc, 1.0 a soft Gaussian-like look. Samples lie on a per-pixel-rotated golden-angle spiral, so low tap counts show as fine grain rather than rings. For large true-Gaussian blurs prefer two stages (horizontal, then vertical through uPrev)."
         ),
         Symbol(
             id: "ceGauss3x3",

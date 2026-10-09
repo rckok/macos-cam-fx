@@ -5,8 +5,6 @@ layout(std140, binding = 3) uniform Params {
     float historySize;
 };
 
-#define PI 3.14159265359
-
 void main() {
     float frameCount = float(uFrameCount);
     float ago = 2.0 * abs(vUV.y - 0.5) * historySize * frameCount;

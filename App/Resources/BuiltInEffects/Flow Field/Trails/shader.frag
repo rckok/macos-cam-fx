@@ -36,7 +36,8 @@ vec4 blurSelfTexture(vec2 uv, float radius, int taps, float falloff) {
 void main() {
     // The small subtraction lets faint trails reach black despite 8-bit
     // rounding, which would otherwise hold them at a low glow forever.
-    vec3 trail = max(blurSelfTexture(vUV, trail_blur, 8, 1.0).rgb * trail_length - 1.5 / 255.0, 0.0);
+//    vec3 trail = max(blurSelfTexture(vUV, trail_blur, 8, 1.0).rgb * trail_length - 1.5 / 255.0, 0.0);
+    vec3 trail = max(ceDiscBlur3D(uStageTextures, vUV, uStageIndex, trail_blur, 8, 1.0).rgb * trail_length - 1.5 / 255.0, 0.0);
     vec3 particles = ceStageTexture("Particles", vUV).rgb;
     outColor = vec4(max(trail * trail_decay, particles), 1.0);
 }

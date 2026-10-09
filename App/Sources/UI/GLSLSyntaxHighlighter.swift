@@ -135,8 +135,9 @@ enum GLSLSyntaxHighlighter {
         "bitfieldExtract", "bitfieldInsert", "bitfieldReverse", "bitCount",
         "findLSB", "findMSB",
         // Injected by the prelude
+        "radToDeg", "degToRad", "wrap", "map", "luminance", "rgb2hsv", "hsv2rgb",
         "ceHistory", "ceHandJoint", "ceBodyJoint", "ceStageTexture", "ceSelfTexture",
-        "ceDiscBlur", "ceGauss3x3", "ceNoise",
+        "ceDiscBlur", "ceDiscBlur3D", "ceGauss3x3", "ceNoise",
         "ceHash", "ceHash4", "ceSimplex", "ceFbm", "ceCurlNoise", "ceHandBone", "ceBodyBone",
         // Geometry stages
         "ceEmit", "ceQuadCorner", "ceGridPoint", "ceGridVertex", "ceState",
@@ -145,6 +146,7 @@ enum GLSLSyntaxHighlighter {
     /// Variables and constants visible to every stage shader: GLSL built-ins
     /// plus everything `ShaderCompiler.prelude` injects.
     static let builtinSymbols: Set<String> = [
+        "PI", "TWO_PI",
         "gl_FragCoord", "gl_FrontFacing", "gl_PointCoord", "gl_FragDepth",
         "gl_Position", "gl_PointSize", "gl_VertexIndex", "gl_InstanceIndex",
         // Prelude I/O and textures

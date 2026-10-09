@@ -14,7 +14,6 @@ layout(std140, binding = 3) uniform Params {
 void main() {
     vec3 bg = ceHistory(vUV, 0).rgb * background_level;
     vec3 fg = ceHistory(vUV, 0).rgb * foreground_level;
-    // vec3 trails = texture(uPrev, vUV).rgb;
     vec3 trails = ceDiscBlur(uPrev, vUV, particles_blur, 8, 1.0).rgb;
     float person = texture(uPersonMatte, vUV).r;
     outColor = vec4((bg.rgb * show_bg + trails) * (1.0 - person) + fg.rgb * person, 1);

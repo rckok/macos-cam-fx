@@ -12,18 +12,12 @@ layout(std140, binding = 3) uniform Params {
     bool undulateDirection;
 };
 
-float TWO_PI = 2.0 * 3.1415926535;
-
 float person(vec2 uv) {
     return texture(uPersonMatte, uv).r;
 }
 
-float luminance(vec3 col) {
-    return 0.21 * col.r + 0.72 * col.g + 0.07 * col.b;
-}
-
 float max3 (vec3 v) {
-  return max (max(v.x, v.y), v.z);
+  return max(max(v.x, v.y), v.z);
 }
 
 vec2 colorToMotion(vec3 color, float jitter) {
