@@ -1,7 +1,5 @@
 // Face tracking visualization using vision data
 
-float PI = 3.1415926535;
-
 float sdSegment(vec2 p, vec2 a, vec2 b) {
     vec2 pa = p - a, ba = b - a;
     float h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-4), 0.0, 1.0);

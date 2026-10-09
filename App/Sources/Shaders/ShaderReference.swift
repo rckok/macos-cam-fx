@@ -105,52 +105,22 @@ enum ShaderReference {
             description: "Convert radians to degrees"
         ),
         Symbol(
+            id: "max",
+            name: "max(vec3|vec4 value)",
+            type: "vec3|vec4",
+            description: "Return the highest component value of a vector"
+        ),
+        Symbol(
             id: "wrap",
-            name: "wrap(float a, float low, float high)",
-            type: "float",
-            description: "Wrap a float around a range"
-        ),
-        Symbol(
-            id: "wrap2",
-            name: "wrap2(vec2 a, vec2 low, vec2 high)",
-            type: "vec2",
-            description: "Wrap a vec2 around a range"
-        ),
-        Symbol(
-            id: "wrap3",
-            name: "wrap3(vec3 a, vec3 low, vec3 high)",
-            type: "vec3",
-            description: "Wrap a vec3 around a range"
-        ),
-        Symbol(
-            id: "wrap4",
-            name: "wrap4(vec4 a, vec4 low, vec4 high)",
-            type: "vec4",
-            description: "Wrap a vec3 around a range"
+            name: "wrap(float|vec2|vec3|vec4 a, float|vec2|vec3|vec4 low, float|vec2|vec3|vec4 high)",
+            type: "float|vec2|vec3|vec4",
+            description: "Wrap around a range"
         ),
         Symbol(
             id: "map",
-            name: "map(float value, float min1, float max1, float min2, float max2)",
-            type: "float",
-            description: "Remap a float from one range to another"
-        ),
-        Symbol(
-            id: "map2",
-            name: "map2(vec2 value, vec2 min1, vec2 max1, vec2 min2, vec2 max2)",
-            type: "vec2",
-            description: "Remap a vec2 from one range to another"
-        ),
-        Symbol(
-            id: "map3",
-            name: "map3(vec3 value, vec3 min1, vec3 max1, vec3 min2, vec3 max2)",
-            type: "vec3",
-            description: "Remap a vec3 from one range to another"
-        ),
-        Symbol(
-            id: "map4",
-            name: "map4(vec4 value, vec4 min1, vec4 max1, vec4 min2, vec4 max2)",
-            type: "vec4",
-            description: "Remap a vec4 from one range to another"
+            name: "map(float|vec2|vec3|vec4 value, float|vec2|vec3|vec4 min1, float|vec2|vec3|vec4 max1, float|vec2|vec3|vec4 min2, float|vec2|vec3|vec4 max2)",
+            type: "float|vec2|vec3|vec4",
+            description: "Remap from one range to another"
         ),
         Symbol(
             id: "luminance",
@@ -385,6 +355,12 @@ enum ShaderReference {
             name: "ceBodyBone(int bone)",
             type: "ivec2",
             description: "Bone `bone` (0 … CE_BODY_BONES − 1, 18 bones) of the body skeleton as two joint indices into ceBodyJoint(): face, arms, spine and legs."
+        ),
+        Symbol(
+            id: "ceOpticalFlow",
+            name: "vec2 ceOpticalFlow(vec2 uv, int next, int past, float offset, float lambda, bool luma)",
+            type: "vec2",
+            description: "Pixel-based displacement calculation between two images, using the Lucas-Kanade method. `offset` is the distance between images; `lambda` is the optical flow sensitivity. `luma` is true for grayscale images, false for RGB."
         ),
     ]
 

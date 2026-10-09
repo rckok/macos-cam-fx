@@ -16,16 +16,12 @@ float person(vec2 uv) {
     return texture(uPersonMatte, uv).r;
 }
 
-float max3 (vec3 v) {
-  return max(max(v.x, v.y), v.z);
-}
-
 vec2 colorToMotion(vec3 color, float jitter) {
     float r = step(ceItemIndex, 0.33 * uCount); // first 1/3rd of particles follow red
     float g = step(ceItemIndex, 0.67 * uCount) - r; // second 1/3rd of particles follow green
     float b = step(0.67 * uCount, ceItemIndex); // third 1/3rd of particles follow blue
     vec3 mult = vec3(r, g, b);
-    float angle = max3(mult * color);
+    float angle = max(mult * color);
     angle += jitter * spread;
     if (undulateDirection) angle += sin(0.01 * uTime);
     float speed = min(luminance(color), max_speed);

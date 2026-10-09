@@ -509,6 +509,28 @@ enum ShaderCompiler {
             texture(tex, uv + vec2(-h.x,  h.y)) + texture(tex, uv + vec2(h.x,  h.y))
         );
     }
+    
+    float _luminance(vec3 color) {
+        return 0.21 * color.r + 0.72 * color.g + 0.07 * color.b;
+    }
+    
+    // Helper function for `opticalFlow()`, to sample a pixel color from the camera frame history
+    vec4 _cePx(vec2 uv, int ago, bool luma) {
+        vec4 color = ceHistory(uv, ago);
+        return luma ? vec4(vec3(_luminance(color.rgb)), color.a) : color;
+    }
+
+    // Pixel-based displacement calculation between two images, using the Lucas-Kanade method.
+    // `offset` is the distance between images; `lambda` is the optical flow sensitivity.
+    // `luma` is true for grayscale images, false for RGB.
+    vec2 ceOpticalFlow(vec2 uv, int next, int past, float offset, float lambda, bool luma) {
+        vec2 off = vec2(offset, 0);
+        vec4 gradX = (_cePx(uv + off.xy, next, luma) - _cePx(uv - off.xy, next, luma)) + (_cePx(uv + off.xy, past, luma) - _cePx(uv - off.xy, past, luma));
+        vec4 gradY = (_cePx(uv + off.yx, next, luma) - _cePx(uv - off.yx, next, luma)) + (_cePx(uv + off.yx, past, luma) - _cePx(uv - off.yx, past, luma));
+        vec4 gradMag = sqrt((gradX * gradX) + (gradY * gradY) + vec4(lambda));
+        vec4 diff = _cePx(uv, next, luma) - _cePx(uv, past, luma);
+        return vec2((diff * (gradX / gradMag)).x, (diff * (gradY / gradMag)).x);
+    }
 
     """
     
@@ -523,6 +545,14 @@ enum ShaderCompiler {
     float radToDeg(float deg) {
         return deg * 180.0 / PI;
     }
+    
+    float max(vec3 v) {
+      return max(max(v.x, v.y), v.z);
+    }
+    
+    float max(vec4 v) {
+      return max(max(v.x, v.y), max(v.z, v.w));
+    }
 
     float wrap(float a, float low, float high) {
         if (a > high) return a - (high - low);
@@ -530,15 +560,15 @@ enum ShaderCompiler {
         return a;
     }
 
-    vec2 wrap2(vec2 a, vec2 low, vec2 high) {
+    vec2 wrap(vec2 a, vec2 low, vec2 high) {
         return vec2(wrap(a.x, low.x, high.x), wrap(a.y, low.y, high.y));
     }
     
-    vec3 wrap3(vec3 a, vec3 low, vec3 high) {
+    vec3 wrap(vec3 a, vec3 low, vec3 high) {
         return vec3(wrap(a.x, low.x, high.x), wrap(a.y, low.y, high.y), wrap(a.z, low.z, high.z));
     }
     
-    vec4 wrap4(vec4 a, vec4 low, vec4 high) {
+    vec4 wrap(vec4 a, vec4 low, vec4 high) {
         return vec4(wrap(a.x, low.x, high.x), wrap(a.y, low.y, high.y), wrap(a.z, low.z, high.z), wrap(a.w, low.w, high.w));
     }
     
@@ -546,15 +576,15 @@ enum ShaderCompiler {
       return min2 + (value - min1) * (max2 - min2) / (max1 - min1);
     }
 
-    vec2 map2(vec2 value, vec2 min1, vec2 max1, vec2 min2, vec2 max2) {
+    vec2 map(vec2 value, vec2 min1, vec2 max1, vec2 min2, vec2 max2) {
       return min2 + (value - min1) * (max2 - min2) / (max1 - min1);
     }
     
-    vec3 map3(vec3 value, vec3 min1, vec3 max1, vec3 min2, vec3 max2) {
+    vec3 map(vec3 value, vec3 min1, vec3 max1, vec3 min2, vec3 max2) {
       return min2 + (value - min1) * (max2 - min2) / (max1 - min1);
     }
     
-    vec4 map4(vec4 value, vec4 min1, vec4 max1, vec4 min2, vec4 max2) {
+    vec4 map(vec4 value, vec4 min1, vec4 max1, vec4 min2, vec4 max2) {
       return min2 + (value - min1) * (max2 - min2) / (max1 - min1);
     }
 
