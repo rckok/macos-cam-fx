@@ -520,11 +520,13 @@ enum ShaderCompiler {
         return luma ? vec4(vec3(_luminance(color.rgb)), color.a) : color;
     }
 
-    // Pixel-based displacement calculation between two images, using the Lucas-Kanade method.
+    // Pixel-based displacement calculation between the most recent two camera frames, using the Lucas-Kanade method.
     // `offset` is the distance between images; `lambda` is the optical flow sensitivity.
     // `luma` is true for grayscale images, false for RGB.
-    vec2 ceOpticalFlow(vec2 uv, int next, int past, float offset, float lambda, bool luma) {
+    vec2 ceOpticalFlow(vec2 uv, float offset, float lambda, bool luma) {
         vec2 off = vec2(offset, 0);
+        int next = 0;
+        int past = 1;
         vec4 gradX = (_cePx(uv + off.xy, next, luma) - _cePx(uv - off.xy, next, luma)) + (_cePx(uv + off.xy, past, luma) - _cePx(uv - off.xy, past, luma));
         vec4 gradY = (_cePx(uv + off.yx, next, luma) - _cePx(uv - off.yx, next, luma)) + (_cePx(uv + off.yx, past, luma) - _cePx(uv - off.yx, past, luma));
         vec4 gradMag = sqrt((gradX * gradX) + (gradY * gradY) + vec4(lambda));

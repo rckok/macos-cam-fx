@@ -358,7 +358,7 @@ enum ShaderReference {
         ),
         Symbol(
             id: "ceOpticalFlow",
-            name: "vec2 ceOpticalFlow(vec2 uv, int next, int past, float offset, float lambda, bool luma)",
+            name: "ceOpticalFlow(vec2 uv, float offset, float lambda, bool luma)",
             type: "vec2",
             description: "Pixel-based displacement calculation between two images, using the Lucas-Kanade method. `offset` is the distance between images; `lambda` is the optical flow sensitivity. `luma` is true for grayscale images, false for RGB."
         ),
