@@ -137,7 +137,7 @@ enum GLSLSyntaxHighlighter {
         // Injected by the prelude
         "radToDeg", "degToRad", "wrap", "map", "luminance", "rgb2hsv", "hsv2rgb",
         "ceHistory", "ceHandJoint", "ceBodyJoint", "ceStageTexture", "ceSelfTexture",
-        "ceDiscBlur", "ceDiscBlur3D", "ceGauss3x3", "ceNoise",
+        "ceDiscBlur", "ceDiscBlurArray", "ceDiscBlur3D", "ceGauss3x3", "ceNoise",
         "ceHash", "ceHash4", "ceSimplex", "ceFbm", "ceCurlNoise", "ceHandBone", "ceBodyBone",
         // Geometry stages
         "ceEmit", "ceQuadCorner", "ceGridPoint", "ceGridVertex", "ceState",

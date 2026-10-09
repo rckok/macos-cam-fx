@@ -357,10 +357,16 @@ enum ShaderReference {
             description: "Single-pass disc blur of any sampler2D (uPrev, a media texture, …). `radius` in pixels; `taps` sets quality and cost (16–32 is plenty). `falloff` 0.0 gives a flat bokeh disc, 1.0 a soft Gaussian-like look. Samples lie on a per-pixel-rotated golden-angle spiral, so low tap counts show as fine grain rather than rings. For large true-Gaussian blurs prefer two stages (horizontal, then vertical through uPrev)."
         ),
         Symbol(
-            id: "ceDiscBlur3D",
-            name: "ceDiscBlur3D(tex, uv, index, radius, taps, falloff)",
+            id: "ceDiscBlurArray",
+            name: "ceDiscBlurArray(tex, uv, index, radius, taps, falloff)",
             type: "vec4",
-            description: "Single-pass disc blur of any sampler3D (e.g. uFrames). `index` specifies the frame to use. radius` in pixels; `taps` sets quality and cost (16–32 is plenty). `falloff` 0.0 gives a flat bokeh disc, 1.0 a soft Gaussian-like look. Samples lie on a per-pixel-rotated golden-angle spiral, so low tap counts show as fine grain rather than rings. For large true-Gaussian blurs prefer two stages (horizontal, then vertical through uPrev)."
+            description: "Single-pass disc blur of any sampler2DArray (e.g. uFrames). `index` specifies the frame to use. `radius` in pixels; `taps` sets quality and cost (16–32 is plenty). `falloff` 0.0 gives a flat bokeh disc, 1.0 a soft Gaussian-like look. Samples lie on a per-pixel-rotated golden-angle spiral, so low tap counts show as fine grain rather than rings. For large true-Gaussian blurs prefer two stages (horizontal, then vertical through uPrev)."
+        ),
+        Symbol(
+            id: "ceDiscBlur3D",
+            name: "ceDiscBlur3D(tex, uv, radius, taps, falloff)",
+            type: "vec4",
+            description: "Single-pass disc blur of any sampler3D (e.g. uFrames). `radius` in pixels; `taps` sets quality and cost (16–32 is plenty). `falloff` 0.0 gives a flat bokeh disc, 1.0 a soft Gaussian-like look. Samples lie on a per-pixel-rotated golden-angle spiral, so low tap counts show as fine grain rather than rings. For large true-Gaussian blurs prefer two stages (horizontal, then vertical through uPrev)."
         ),
         Symbol(
             id: "ceGauss3x3",
