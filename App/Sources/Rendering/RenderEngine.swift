@@ -119,6 +119,13 @@ final class RenderEngine {
     }
     // Protected by `lock`:
     private var latestOutputTexture: MTLTexture?
+    /// Frames waiting on the render queue or still running on the GPU. A
+    /// camera frame arriving while this is at `maxFramesInFlight` is dropped:
+    /// an effect slower than the camera would otherwise queue frames without
+    /// bound, stall `makeCommandBuffer()` once Metal's 64 command buffers are
+    /// taken, and hold the camera's pixel buffers until its own queue fills.
+    private var framesInFlight = 0
+    private static let maxFramesInFlight = 2
 
     /// Called on a Metal completion thread with each rendered output frame.
     var outputHandler: ((CVPixelBuffer, CMTime) -> Void)?
@@ -297,15 +304,32 @@ final class RenderEngine {
     // MARK: Frame processing
 
     func process(pixelBuffer: CVPixelBuffer, timestamp: CMTime) {
+        guard acquireFrameSlot() else { return }
         renderQueue.async { [self] in
             processOnRenderQueue(pixelBuffer: pixelBuffer, timestamp: timestamp)
         }
     }
 
+    private func acquireFrameSlot() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard framesInFlight < Self.maxFramesInFlight else { return false }
+        framesInFlight += 1
+        return true
+    }
+
+    private func releaseFrameSlot() {
+        lock.lock()
+        framesInFlight = max(framesInFlight - 1, 0)
+        lock.unlock()
+    }
+
+    /// Runs holding the frame slot `process` acquired.
     private func processOnRenderQueue(pixelBuffer: CVPixelBuffer, timestamp: CMTime) {
         lock.lock()
         if inputSuspended {
             lock.unlock()
+            releaseFrameSlot()
             return
         }
         let flip = flipHorizontal
@@ -314,15 +338,19 @@ final class RenderEngine {
 
         // Vision-backed stages wait for the snapshot computed from this buffer
         // so mattes line up with the image. Intermediate camera frames replace
-        // a single pending slot inside VisionProcessor (latest-wins).
+        // a single pending slot inside VisionProcessor (latest-wins), which
+        // never calls back for the frames it replaces — so the slot is given
+        // back here, and the frame takes a new one once its analysis is done.
         if !activeVision.isEmpty {
+            releaseFrameSlot()
             visionProcessor.submit(
                 pixelBuffer: pixelBuffer,
                 timestamp: timestamp,
                 mirrored: flip
             ) { [weak self] buffer, time, mirrored, snapshot in
                 self?.renderQueue.async {
-                    self?.encodeFrame(
+                    guard let self, self.acquireFrameSlot() else { return }
+                    self.encodeFrame(
                         pixelBuffer: buffer,
                         timestamp: time,
                         mirrored: mirrored,
@@ -341,12 +369,19 @@ final class RenderEngine {
         )
     }
 
+    /// Runs holding a frame slot, which goes back when the GPU finishes the
+    /// frame, or straight away when nothing is committed.
     private func encodeFrame(
         pixelBuffer: CVPixelBuffer,
         timestamp: CMTime,
         mirrored: Bool,
         vision: VisionSnapshot
     ) {
+        var committed = false
+        defer {
+            if !committed { releaseFrameSlot() }
+        }
+
         lock.lock()
         let currentStages = stages
         let currentStageCount = stageCount
@@ -609,7 +644,11 @@ final class RenderEngine {
         let publish = !inputSuspended
         lock.unlock()
         if publish {
+            commandBuffer.addCompletedHandler { [weak self] _ in
+                self?.releaseFrameSlot()
+            }
             commandBuffer.commit()
+            committed = true
         }
     }
 
