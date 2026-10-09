@@ -325,6 +325,35 @@ stages instead — one blurring horizontally, the next vertically through
 that may take a few frames to settle (backgrounds, glows), feed the result
 back: `mix(ceSelfTexture(vUV), ceDiscBlur(uPrev, vUV, 6.0, 8, 1.0), 0.3)`.
 
+### Motion
+
+Available in every stage and, in geometry stages, every tab.
+
+| Symbol | Type | Description |
+| --- | --- | --- |
+| `ceMotion(current, previous, uv, radius)` | `vec2` | Apparent motion at `uv` from `previous` to `current`, two consecutive frames in any `sampler2D`s. `radius` in pixels sets the window and the largest motion it follows, about `radius` pixels per frame (16–32 suits a webcam). |
+| `ceCameraMotion(uv, radius)` | `vec2` | `ceMotion` between the two newest camera frames, `ceHistory(uv, 1)` and `ceHistory(uv, 0)`. Zero while Frame History is 1. |
+
+Both return a velocity in vUV units per second — x to the right, y down —
+so adding it to a particle's velocity pushes the particle the way the scene
+moved under it. It is Lucas–Kanade optical flow on luminance, sampled on a
+7 × 7 grid spanning `radius` with one refinement step, 147 texture reads per
+call: cheap per particle, but heavy for every pixel of a full-resolution
+pass. Flat, featureless areas read as zero, and along a plain edge only the
+motion across the edge can be seen. The camera history is a 3D texture, which
+GLSL cannot pass as a `sampler2D` — that is why the camera has its own
+function.
+
+```glsl
+// Simulation tab: state slot 0 = position (xy) and velocity (zw).
+void main() {
+    vec4 s = ceState(0, ceItemIndex);
+    // Drag plus impulse; settles at the scene's own speed while it moves.
+    vec2 velocity = s.zw * 0.95 + ceCameraMotion(s.xy, 24.0) * 0.05;
+    outState0 = vec4(s.xy + velocity * uSimDelta, velocity);
+}
+```
+
 ### Stage textures and feedback
 
 Each stage of the active effect owns one slice of `uStageTextures`, a
@@ -666,7 +695,12 @@ brightness. Switching **Simulation** on fills the Simulation tab with a
 curl-noise flow field, and — if the Vertex tab still holds the template — swaps
 it for one drawing a point per simulated particle. The built-in **Flow Field**
 effect goes further: particles that stream around the person, feeding a
-feedback trail stage.
+feedback trail stage. **Fluid** uses the state as a grid instead: each item
+is one cell of a single-pass compressible fluid (velocity, density and curl in
+one slot, dye in the other), seeded with the camera frame on the first frame
+and stirred by `ceCameraMotion()`, then drawn as one quad per cell. **Count**
+sets the grid's resolution (shaped like the frame), and **Reset Simulation**
+repaints the dye from the camera.
 
 The simulation is a fragment pass rather than a Metal compute kernel: one
 invocation per item, writing every slot at once, covers particle simulations

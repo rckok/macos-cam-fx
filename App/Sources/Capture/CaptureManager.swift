@@ -48,7 +48,9 @@ final class CaptureManager: NSObject, ObservableObject {
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
             kCVPixelBufferMetalCompatibilityKey as String: true,
         ]
-        videoOutput.alwaysDiscardsLateVideoFrames = false
+        // A frame that waited behind a slow delegate is stale by the time it
+        // arrives; buffering them only adds latency and holds camera buffers.
+        videoOutput.alwaysDiscardsLateVideoFrames = true
         videoOutput.setSampleBufferDelegate(self, queue: captureQueue)
 
         discoveryObservation = discovery.observe(\.devices, options: [.initial]) { [weak self] _, _ in

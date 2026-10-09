@@ -53,6 +53,12 @@ enum ShaderReference {
             symbols: noise
         ),
         Category(
+            id: "motion",
+            title: "Motion",
+            footer: "Available in every stage and tab. Motion is in vUV units per second (x right, y down), so it adds straight to a particle velocity integrated with uSimDelta. Each call reads 147 texels: cheap per particle, heavy for every pixel of a full-resolution pass.",
+            symbols: motion
+        ),
+        Category(
             id: "geometry",
             title: "Geometry stages",
             footer: "Only in geometry stages. The Vertex tab runs Vertices per item times for each of Count items and places each vertex with ceEmit(); the Fragment tab colors what it covers. The optional Simulation tab runs first, once per item for every substep, and keeps per-item state in 32-bit float textures. Everything above is available in all three tabs; vUV and outColor are not available in the Vertex tab.",
@@ -356,12 +362,6 @@ enum ShaderReference {
             type: "ivec2",
             description: "Bone `bone` (0 … CE_BODY_BONES − 1, 18 bones) of the body skeleton as two joint indices into ceBodyJoint(): face, arms, spine and legs."
         ),
-        Symbol(
-            id: "ceOpticalFlow",
-            name: "ceOpticalFlow(vec2 uv, float offset, float lambda, bool luma)",
-            type: "vec2",
-            description: "Pixel-based displacement calculation between two images, using the Lucas-Kanade method. `offset` is the distance between images; `lambda` is the optical flow sensitivity. `luma` is true for grayscale images, false for RGB."
-        ),
     ]
 
     static let noise: [Symbol] = [
@@ -394,6 +394,21 @@ enum ShaderReference {
             name: "ceCurlNoise(vec2 p, float t)",
             type: "vec2",
             description: "A swirling 2D flow field at p, changing smoothly with t: the curl of simplex noise, which is divergence-free, so particles moved along it neither bunch up nor thin out. Magnitude roughly 0 … 3."
+        ),
+    ]
+
+    static let motion: [Symbol] = [
+        Symbol(
+            id: "ceMotion",
+            name: "ceMotion(sampler2D current, sampler2D previous, vec2 uv, float radius)",
+            type: "vec2",
+            description: "Apparent motion at uv from `previous` to `current`, two consecutive frames (Lucas–Kanade optical flow on luminance, with one refinement step). `radius` in pixels sets the window and the largest motion it follows — about `radius` pixels per frame; 16–32 suits a webcam. Flat, featureless areas read as zero, and along a plain edge only the motion across it is seen."
+        ),
+        Symbol(
+            id: "ceCameraMotion",
+            name: "ceCameraMotion(vec2 uv, float radius)",
+            type: "vec2",
+            description: "ceMotion between the two newest camera frames, ceHistory(uv, 1) and ceHistory(uv, 0) — the camera history is a 3D texture, so it cannot be passed to ceMotion. Zero while Frame History is 1. E.g. velocity += ceCameraMotion(position, 24.0) * strength in a Simulation tab pushes particles along with what moves in front of the camera."
         ),
     ]
 

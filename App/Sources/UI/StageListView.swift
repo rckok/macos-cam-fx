@@ -25,7 +25,11 @@ struct StageListView: View {
             set: { newValue in
                 // Clicking past the last row should not deselect the effect.
                 guard let newValue else { return }
-                state.select(.stage(newValue))
+                // The list also writes its selection while reconciling rows
+                // during a view update, where publishing is not allowed.
+                DispatchQueue.main.async {
+                    state.select(.stage(newValue))
+                }
             }
         )
     }

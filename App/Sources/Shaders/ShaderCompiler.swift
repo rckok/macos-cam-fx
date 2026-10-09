@@ -254,6 +254,7 @@ enum ShaderCompiler {
         }
         parts.append(resources)
         parts.append(mathFunctions)
+        parts.append(motionFunctions)
         parts.append(noiseFunctions)
         parts.append(skeletonFunctions)
         if kind.isGeometry {
@@ -509,30 +510,6 @@ enum ShaderCompiler {
             texture(tex, uv + vec2(-h.x,  h.y)) + texture(tex, uv + vec2(h.x,  h.y))
         );
     }
-    
-    float _luminance(vec3 color) {
-        return 0.21 * color.r + 0.72 * color.g + 0.07 * color.b;
-    }
-    
-    // Helper function for `opticalFlow()`, to sample a pixel color from the camera frame history
-    vec4 _cePx(vec2 uv, int ago, bool luma) {
-        vec4 color = ceHistory(uv, ago);
-        return luma ? vec4(vec3(_luminance(color.rgb)), color.a) : color;
-    }
-
-    // Pixel-based displacement calculation between the most recent two camera frames, using the Lucas-Kanade method.
-    // `offset` is the distance between images; `lambda` is the optical flow sensitivity.
-    // `luma` is true for grayscale images, false for RGB.
-    vec2 ceOpticalFlow(vec2 uv, float offset, float lambda, bool luma) {
-        vec2 off = vec2(offset, 0);
-        int next = 0;
-        int past = 1;
-        vec4 gradX = (_cePx(uv + off.xy, next, luma) - _cePx(uv - off.xy, next, luma)) + (_cePx(uv + off.xy, past, luma) - _cePx(uv - off.xy, past, luma));
-        vec4 gradY = (_cePx(uv + off.yx, next, luma) - _cePx(uv - off.yx, next, luma)) + (_cePx(uv + off.yx, past, luma) - _cePx(uv - off.yx, past, luma));
-        vec4 gradMag = sqrt((gradX * gradX) + (gradY * gradY) + vec4(lambda));
-        vec4 diff = _cePx(uv, next, luma) - _cePx(uv, past, luma);
-        return vec2((diff * (gradX / gradMag)).x, (diff * (gradY / gradMag)).x);
-    }
 
     """
     
@@ -609,6 +586,90 @@ enum ShaderCompiler {
         vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
         return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
     }
+    """
+
+    private static let motionFunctions = """
+    // Lucas-Kanade optical flow with one warped refinement step. Both frames
+    // are read as luminance on a 7 x 7 grid around uv, `radius` / 3 pixels
+    // apart; the inner 5 x 5 points each give one brightness-constancy
+    // constraint.
+    vec2 _ceFlowOffset(int i) {
+        return vec2(float(i % 7 - 3), float(i / 7 - 3));
+    }
+
+    vec2 _ceFlowStep(float radius) {
+        return max(radius, 1.0) / 3.0 / uResolution;
+    }
+
+    // Displacement of `prev` onto `cur` in grid steps. The small ridge term
+    // pulls flat, noise-only regions to zero instead of amplifying the noise;
+    // steps are capped because the linearization fails beyond them.
+    vec2 _ceFlowSolve(float cur[49], float prev[49]) {
+        float xx = 0.005, xy = 0.0, yy = 0.005, xt = 0.0, yt = 0.0;
+        for (int y = 1; y < 6; y++) {
+            for (int x = 1; x < 6; x++) {
+                int i = y * 7 + x;
+                float gx = 0.25 * (cur[i + 1] - cur[i - 1] + prev[i + 1] - prev[i - 1]);
+                float gy = 0.25 * (cur[i + 7] - cur[i - 7] + prev[i + 7] - prev[i - 7]);
+                float gt = cur[i] - prev[i];
+                xx += gx * gx;
+                xy += gx * gy;
+                yy += gy * gy;
+                xt += gx * gt;
+                yt += gy * gt;
+            }
+        }
+        vec2 flow = -vec2(yy * xt - xy * yt, xx * yt - xy * xt) / (xx * yy - xy * xy);
+        float len = length(flow);
+        return len > 1.5 ? flow * (1.5 / len) : flow;
+    }
+
+    // Grid steps per frame to vUV units per second.
+    vec2 _ceFlowVelocity(vec2 flow, vec2 stepUV) {
+        return flow * stepUV / max(uTimeDelta, 1.0 / 240.0);
+    }
+
+    // Apparent motion at `uv` from `previous` to `current`, two consecutive
+    // frames: a velocity in vUV units per second (x right, y down), ready to
+    // add to a particle's velocity. `radius` (pixels) sets the window and the
+    // largest motion it follows, about `radius` pixels per frame.
+    vec2 ceMotion(sampler2D current, sampler2D previous, vec2 uv, float radius) {
+        vec2 stepUV = _ceFlowStep(radius);
+        float cur[49];
+        float prev[49];
+        for (int i = 0; i < 49; i++) {
+            vec2 p = uv + _ceFlowOffset(i) * stepUV;
+            cur[i] = luminance(textureLod(current, p, 0.0).rgb);
+            prev[i] = luminance(textureLod(previous, p, 0.0).rgb);
+        }
+        vec2 flow = _ceFlowSolve(cur, prev);
+        for (int i = 0; i < 49; i++) {
+            prev[i] = luminance(textureLod(previous, uv + (_ceFlowOffset(i) - flow) * stepUV, 0.0).rgb);
+        }
+        flow += _ceFlowSolve(cur, prev);
+        return _ceFlowVelocity(flow, stepUV);
+    }
+
+    // ceMotion between the two newest camera frames, ceHistory(uv, 1) and
+    // ceHistory(uv, 0). Zero while the history holds a single frame.
+    vec2 ceCameraMotion(vec2 uv, float radius) {
+        if (uFrameCount < 2) { return vec2(0.0); }
+        vec2 stepUV = _ceFlowStep(radius);
+        float cur[49];
+        float prev[49];
+        for (int i = 0; i < 49; i++) {
+            vec2 p = uv + _ceFlowOffset(i) * stepUV;
+            cur[i] = luminance(ceHistory(p, 0).rgb);
+            prev[i] = luminance(ceHistory(p, 1).rgb);
+        }
+        vec2 flow = _ceFlowSolve(cur, prev);
+        for (int i = 0; i < 49; i++) {
+            prev[i] = luminance(ceHistory(uv + (_ceFlowOffset(i) - flow) * stepUV, 1).rgb);
+        }
+        flow += _ceFlowSolve(cur, prev);
+        return _ceFlowVelocity(flow, stepUV);
+    }
+
     """
 
     private static let noiseFunctions = """
