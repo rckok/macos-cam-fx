@@ -175,13 +175,13 @@ enum ShaderReference {
     static let stages: [Symbol] = [
         Symbol(
             id: "ceStageTexture",
-            name: "ceStageTexture(index, uv)",
+            name: "ceStageTexture(int index, vec2 uv)",
             type: "vec4",
             description: "Output of the stage at `index` (the number shown next to it in the stage list). Also accepts the stage's name as a string literal — ceStageTexture(\"Trail Buffer\", vUV) — which the app resolves against the effect, so reordering stages does not break it. Out-of-range indices and unknown names read transparent black."
         ),
         Symbol(
             id: "ceSelfTexture",
-            name: "ceSelfTexture(uv)",
+            name: "ceSelfTexture(vec2 uv)",
             type: "vec4",
             description: "This stage's own output from the previous frame — a feedback buffer. Same as ceStageTexture(uStageIndex, uv)."
         ),
@@ -313,7 +313,7 @@ enum ShaderReference {
         ),
         Symbol(
             id: "ceHandJoint",
-            name: "ceHandJoint(hand, joint)",
+            name: "ceHandJoint(int hand, int joint)",
             type: "vec4",
             description: "Joint of hand `hand` (0 … uHandCount − 1) at index `joint` — use the CE_* constants: wrist (CE_WRIST), then CMC/MP/IP/TIP for the thumb and MCP/PIP/DIP/TIP for each finger (CE_THUMB_*, CE_INDEX_*, CE_MIDDLE_*, CE_RING_*, CE_LITTLE_*)."
         ),
@@ -337,7 +337,7 @@ enum ShaderReference {
         ),
         Symbol(
             id: "ceBodyJoint",
-            name: "ceBodyJoint(body, joint)",
+            name: "ceBodyJoint(int body, int joint)",
             type: "vec4",
             description: "Joint of body `body` (0 … uBodyCount − 1) at index `joint` — use the CE_BODY_* constants: NOSE, LEFT/RIGHT_EYE, LEFT/RIGHT_EAR, NECK, LEFT/RIGHT_SHOULDER, LEFT/RIGHT_ELBOW, LEFT/RIGHT_WRIST, ROOT (hip center), LEFT/RIGHT_HIP, LEFT/RIGHT_KNEE, LEFT/RIGHT_ANKLE. Left and right are the person's own sides."
         ),
@@ -346,43 +346,43 @@ enum ShaderReference {
     static let functions: [Symbol] = [
         Symbol(
             id: "ceHistory",
-            name: "ceHistory(uv, ago)",
+            name: "ceHistory(vec2 uv, int ago)",
             type: "vec4",
             description: "Sample the raw camera frame from ago frames ago (0 = newest). Handles ring-buffer wrapping automatically."
         ),
         Symbol(
             id: "ceDiscBlur",
-            name: "ceDiscBlur(tex, uv, radius, taps, falloff)",
+            name: "ceDiscBlur(sampler2D tex, vec2 uv, float radius, int taps, float falloff)",
             type: "vec4",
             description: "Single-pass disc blur of any sampler2D (uPrev, a media texture, …). `radius` in pixels; `taps` sets quality and cost (16–32 is plenty). `falloff` 0.0 gives a flat bokeh disc, 1.0 a soft Gaussian-like look. Samples lie on a per-pixel-rotated golden-angle spiral, so low tap counts show as fine grain rather than rings. For large true-Gaussian blurs prefer two stages (horizontal, then vertical through uPrev)."
         ),
         Symbol(
             id: "ceDiscBlurArray",
-            name: "ceDiscBlurArray(tex, uv, index, radius, taps, falloff)",
+            name: "ceDiscBlurArray(sampler2DArray tex, vec2 uv, float index, float radius, int taps, float falloff)",
             type: "vec4",
             description: "Single-pass disc blur of any sampler2DArray (e.g. uStageTextures, uState). `index` specifies the slice to blur within; slices are not mixed. `radius` in pixels; `taps` sets quality and cost (16–32 is plenty). `falloff` 0.0 gives a flat bokeh disc, 1.0 a soft Gaussian-like look. Samples lie on a per-pixel-rotated golden-angle spiral, so low tap counts show as fine grain rather than rings. For large true-Gaussian blurs prefer two stages (horizontal, then vertical through uPrev)."
         ),
         Symbol(
             id: "ceGauss3x3",
-            name: "ceGauss3x3(tex, uv, spread)",
+            name: "ceGauss3x3(sampler2D tex, vec2 uv, float spread)",
             type: "vec4",
             description: "Exact 3×3 Gaussian ([1 2 1] ⊗ [1 2 1] / 16) from just four bilinear reads at half-texel offsets. `spread` = 1.0 blurs one texel; larger values widen the kernel at the same cost, with some undersampling."
         ),
         Symbol(
             id: "ceNoise",
-            name: "ceNoise(pixel)",
+            name: "ceNoise(vec2 pixel)",
             type: "float",
             description: "Cheap per-pixel noise in [0, 1) with no visible pattern (interleaved gradient noise). Pass vUV * uResolution. Every pixel is independent, so it suits dithering and rotating sample patterns, not smooth fields — use ceSimplex() for those."
         ),
         Symbol(
             id: "ceHandBone",
-            name: "ceHandBone(bone)",
+            name: "ceHandBone(int bone)",
             type: "ivec2",
             description: "Bone `bone` (0 … CE_HAND_BONES − 1, 20 bones) of the hand skeleton as two joint indices, wrist to fingertip: draw a line from ceHandJoint(hand, b.x) to ceHandJoint(hand, b.y)."
         ),
         Symbol(
             id: "ceBodyBone",
-            name: "ceBodyBone(bone)",
+            name: "ceBodyBone(int bone)",
             type: "ivec2",
             description: "Bone `bone` (0 … CE_BODY_BONES − 1, 18 bones) of the body skeleton as two joint indices into ceBodyJoint(): face, arms, spine and legs."
         ),
@@ -391,31 +391,31 @@ enum ShaderReference {
     static let noise: [Symbol] = [
         Symbol(
             id: "ceHash",
-            name: "ceHash(seed)",
+            name: "ceHash(int|float|vec2|vec3 seed)",
             type: "float",
             description: "A random value in [0, 1) for an int, float, vec2 or vec3 seed. The same seed always gives the same value and neighboring seeds are unrelated — e.g. ceHash(ceItemIndex) for a per-particle random number."
         ),
         Symbol(
             id: "ceHash4",
-            name: "ceHash4(seed)",
+            name: "ceHash4(int seed)",
             type: "vec4",
             description: "Four independent random values in [0, 1) for one int seed."
         ),
         Symbol(
             id: "ceSimplex",
-            name: "ceSimplex(p)",
+            name: "ceSimplex(vec2|vec3 p)",
             type: "float",
             description: "Smooth simplex noise in roughly [−1, 1] for a vec2 or vec3 point, with features about 1 unit apart. Scale p for bigger or smaller features; pass time as z to animate a 2D field."
         ),
         Symbol(
             id: "ceFbm",
-            name: "ceFbm(p, octaves)",
+            name: "ceFbm(vec2|vec3 p, int octaves)",
             type: "float",
             description: "Fractal simplex noise in roughly [−1, 1]: `octaves` (up to 8) layers, each at twice the frequency and half the amplitude of the last. More detail than ceSimplex at `octaves` times the cost."
         ),
         Symbol(
             id: "ceCurlNoise",
-            name: "ceCurlNoise(p, t)",
+            name: "ceCurlNoise(vec2 p, float t)",
             type: "vec2",
             description: "A swirling 2D flow field at p, changing smoothly with t: the curl of simplex noise, which is divergence-free, so particles moved along it neither bunch up nor thin out. Magnitude roughly 0 … 3."
         ),
@@ -436,7 +436,7 @@ enum ShaderReference {
         ),
         Symbol(
             id: "ceEmit",
-            name: "ceEmit(uv)",
+            name: "ceEmit(vec2 uv)",
             type: "void (Vertex)",
             description: "Places the vertex at `uv`, in vUV space: (0, 0) top-left, (1, 1) bottom-right — the same space as the vision coordinates. Sets gl_Position; a vertex that never calls it lands in the middle of the frame."
         ),
@@ -466,25 +466,25 @@ enum ShaderReference {
         ),
         Symbol(
             id: "ceQuadCorner",
-            name: "ceQuadCorner(vertex)",
+            name: "ceQuadCorner(int vertex)",
             type: "vec2 (Vertex)",
             description: "Corner `vertex` (0 … 5) of a quad drawn as two triangles, in [−1, 1]. With 6 vertices per item and Triangles: ceEmit(center + ceQuadCorner(ceVertexIndex) * radius / uResolution) draws a square `radius` pixels from center to edge."
         ),
         Symbol(
             id: "ceGridPoint",
-            name: "ceGridPoint(index, cells)",
+            name: "ceGridPoint(int index, ivec2 cells)",
             type: "vec2 (Vertex)",
             description: "Center of cell `index` of an ivec2 `cells` grid over the frame, row by row from the top-left, in vUV space."
         ),
         Symbol(
             id: "ceGridVertex",
-            name: "ceGridVertex(vertex, cells)",
+            name: "ceGridVertex(int vertex, ivec2 cells)",
             type: "vec2 (Vertex)",
             description: "Vertex `vertex` of a mesh of `cells.x` × `cells.y` quads covering the frame, in vUV space. Draw as Triangles with one item of 6 × cells.x × cells.y vertices, then displace it."
         ),
         Symbol(
             id: "ceState",
-            name: "ceState(slot, index)",
+            name: "ceState(int slot, int index)",
             type: "vec4",
             description: "State slot `slot` of item `index` from the latest simulation step. In the Simulation tab that is the previous step; in the Vertex and Fragment tabs, this frame's last. vec4(0) out of range, and without a simulation pass."
         ),
