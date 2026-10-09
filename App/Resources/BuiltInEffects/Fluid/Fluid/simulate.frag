@@ -9,7 +9,7 @@
 layout(std140, binding = 3) uniform Params {
     // How strongly the fluid takes on the camera's motion: 1 moves it with
     // the scene, lower values only nudge it.
-    // @metadata(min=0.0 max=1.0 default=0.6 global)
+    // @metadata(min=0.0 max=1.0 default=0.05 global)
     float motion_force;
     // Motion search window in pixels; also the fastest motion followed per frame.
     // @metadata(min=8.0 max=64.0 default=24.0)
@@ -19,7 +19,7 @@ layout(std140, binding = 3) uniform Params {
     float motion_threshold;
     // @metadata(min=0.0 max=0.15 default=0.05)
     float pressure;
-    // @metadata(min=0.0 max=0.1 default=0.05)
+    // @metadata(min=0.0 max=0.1 default=0.05 global)
     float viscosity;
     // @metadata(min=0.0 max=0.3 default=0.1 global)
     float vorticity;
