@@ -362,12 +362,6 @@ enum ShaderReference {
             type: "ivec2",
             description: "Bone `bone` (0 … CE_BODY_BONES − 1, 18 bones) of the body skeleton as two joint indices into ceBodyJoint(): face, arms, spine and legs."
         ),
-        Symbol(
-            id: "ceOpticalFlow",
-            name: "ceOpticalFlow(vec2 uv, float offset, float lambda, bool luma)",
-            type: "vec2",
-            description: "Pixel-based displacement calculation between two images, using the Lucas-Kanade method. `offset` is the distance between images; `lambda` is the optical flow sensitivity. `luma` is true for grayscale images, false for RGB."
-        ),
     ]
 
     static let noise: [Symbol] = [

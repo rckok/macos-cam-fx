@@ -49,8 +49,11 @@ void main() {
     // sample camera at particle position
     vec4 camera = ceHistory(position, 0);
     
+    vec2 motion = ceCameraMotion(position, 16.0);
+    motion *= step(0.01, abs(motion));
+    
     // calculate movement from angle and speed
-    vec2 step = vec2(cos(angle * TWO_PI) * speed, sin(angle * TWO_PI) * speed);
+    vec2 step = vec2(cos(angle * TWO_PI) * speed, sin(angle * TWO_PI) * speed) + motion * uSimDelta;
     vec2 next_pos = mod(position + step, vec2(1));
     if (next_pos.x < 0.0) next_pos.x += 1.0;
     if (next_pos.y < 0.0) next_pos.y += 1.0;

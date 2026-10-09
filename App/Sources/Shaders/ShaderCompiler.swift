@@ -510,30 +510,6 @@ enum ShaderCompiler {
             texture(tex, uv + vec2(-h.x,  h.y)) + texture(tex, uv + vec2(h.x,  h.y))
         );
     }
-    
-    float _luminance(vec3 color) {
-        return 0.21 * color.r + 0.72 * color.g + 0.07 * color.b;
-    }
-    
-    // Helper function for `opticalFlow()`, to sample a pixel color from the camera frame history
-    vec4 _cePx(vec2 uv, int ago, bool luma) {
-        vec4 color = ceHistory(uv, ago);
-        return luma ? vec4(vec3(_luminance(color.rgb)), color.a) : color;
-    }
-
-    // Pixel-based displacement calculation between the most recent two camera frames, using the Lucas-Kanade method.
-    // `offset` is the distance between images; `lambda` is the optical flow sensitivity.
-    // `luma` is true for grayscale images, false for RGB.
-    vec2 ceOpticalFlow(vec2 uv, float offset, float lambda, bool luma) {
-        vec2 off = vec2(offset, 0);
-        int next = 0;
-        int past = 1;
-        vec4 gradX = (_cePx(uv + off.xy, next, luma) - _cePx(uv - off.xy, next, luma)) + (_cePx(uv + off.xy, past, luma) - _cePx(uv - off.xy, past, luma));
-        vec4 gradY = (_cePx(uv + off.yx, next, luma) - _cePx(uv - off.yx, next, luma)) + (_cePx(uv + off.yx, past, luma) - _cePx(uv - off.yx, past, luma));
-        vec4 gradMag = sqrt((gradX * gradX) + (gradY * gradY) + vec4(lambda));
-        vec4 diff = _cePx(uv, next, luma) - _cePx(uv, past, luma);
-        return vec2((diff * (gradX / gradMag)).x, (diff * (gradY / gradMag)).x);
-    }
 
     """
     
