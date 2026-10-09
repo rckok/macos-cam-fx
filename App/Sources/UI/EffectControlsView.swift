@@ -167,7 +167,13 @@ private struct IntegerField: View {
         LabeledContent(title) {
             TextField(title, value: Binding(
                 get: { value },
-                set: { value = $0.clamped(to: range) }
+                set: { newValue in
+                    // A pending edit is committed when the field loses focus,
+                    // which can happen inside a view update (switching stages).
+                    DispatchQueue.main.async {
+                        value = newValue.clamped(to: range)
+                    }
+                }
             ), format: .number)
             .labelsHidden()
             .multilineTextAlignment(.trailing)
